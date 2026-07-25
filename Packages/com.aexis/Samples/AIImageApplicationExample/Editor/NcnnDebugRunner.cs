@@ -2611,7 +2611,7 @@ public static class NcnnDebugRunner
     {
         var start = Stopwatch.StartNew();
         var projectRoot = Directory.GetParent(Application.dataPath).FullName;
-        var modelDir = ResolveQwen35ModelDirectory(projectRoot, "qwen3.5_0.8b");
+        var modelDir = ResolveQwen35ModelDirectory(projectRoot, "qwen3.5_0.8b_mobile_q8");
         var outputPath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_TOKENIZER_REPORT");
         if (string.IsNullOrWhiteSpace(outputPath))
             outputPath = Path.Combine(projectRoot, "Tools", "Qwen35NcnnBaseline", "reports", "unity_tokenizer_contract.json");
@@ -2676,7 +2676,7 @@ public static class NcnnDebugRunner
     {
         var start = Stopwatch.StartNew();
         var projectRoot = Directory.GetParent(Application.dataPath).FullName;
-        var modelDir = ResolveQwen35ModelDirectory(projectRoot, "qwen3.5_0.8b");
+        var modelDir = ResolveQwen35ModelDirectory(projectRoot, "qwen3.5_0.8b_mobile_q8");
         var outputPath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_TEXT_GENERATION_REPORT");
         if (string.IsNullOrWhiteSpace(outputPath))
             outputPath = Path.Combine(projectRoot, "Tools", "Qwen35NcnnBaseline", "reports", "unity_text_generation.json");
@@ -2796,7 +2796,7 @@ public static class NcnnDebugRunner
     {
         var start = Stopwatch.StartNew();
         var projectRoot = Directory.GetParent(Application.dataPath).FullName;
-        var modelDir = ResolveQwen35ModelDirectory(projectRoot, "qwen3.5_0.8b");
+        var modelDir = ResolveQwen35ModelDirectory(projectRoot, "qwen3.5_0.8b_mobile_q8");
         var imagePath = ResolveQwen35ImagePath(projectRoot);
         var outputPath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_MULTIMODAL_REPORT");
         if (string.IsNullOrWhiteSpace(outputPath))
@@ -3254,7 +3254,11 @@ public static class NcnnDebugRunner
                     && progressTotalConsistent
                     && initializationProgressMonotonic
                     && pipelineProgressMonotonic
-                    && initializationProgressCallbacks.Count >= 20
+                    // Runner initialization reports asset/contract/tokenizer progress;
+                    // vision and decoder load progress is intentionally reported through
+                    // the pipeline callback below. The compact initialization contract
+                    // currently contains eleven events.
+                    && initializationProgressCallbacks.Count >= 10
                     && pipelineProgressCallbacks.Count >= 100
                     && previousInitializationProgress >= 0.999f
                     && previousPipelineProgress >= 0.999f

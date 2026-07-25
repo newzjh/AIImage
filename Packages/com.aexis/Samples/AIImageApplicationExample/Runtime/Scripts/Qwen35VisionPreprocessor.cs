@@ -5,15 +5,35 @@ namespace AIImage.Qwen35
 {
     public static class Qwen35VisionPreprocessor
     {
-        public static Vector2Int TargetImageSize(int height, int width, int patchSize = 16, int maxPatches = 49152)
+        public static Vector2Int TargetImageSize(
+            int height,
+            int width,
+            int patchSize = 16,
+            int maxPatches = 49152,
+            int maxTextureDimension = int.MaxValue)
         {
             if (height <= 0 || width <= 0) throw new ArgumentOutOfRangeException(nameof(height));
-            var effective = patchSize * 2; var scale = 1f;
+            if (patchSize <= 0) throw new ArgumentOutOfRangeException(nameof(patchSize));
+            if (maxPatches <= 0) throw new ArgumentOutOfRangeException(nameof(maxPatches));
+
+            var effective = patchSize * 2;
+            if (maxTextureDimension < effective)
+                throw new ArgumentOutOfRangeException(
+                    nameof(maxTextureDimension),
+                    "Qwen3.5 vision input requires a texture dimension of at least " + effective + ".");
+
+            var scale = 1f;
             while (true)
             {
                 var targetH = Mathf.Max(effective, Mathf.CeilToInt(height * scale / effective) * effective);
                 var targetW = Mathf.Max(effective, Mathf.CeilToInt(width * scale / effective) * effective);
-                if ((targetH / patchSize) * (targetW / patchSize) <= maxPatches) return new Vector2Int(targetW, targetH);
+                var patchCount = (long)(targetH / patchSize) * (targetW / patchSize);
+                if (targetH <= maxTextureDimension
+                    && targetW <= maxTextureDimension
+                    && patchCount <= maxPatches)
+                {
+                    return new Vector2Int(targetW, targetH);
+                }
                 scale -= .02f; if (scale <= 0f) throw new InvalidOperationException("image cannot fit Qwen3.5 patch budget");
             }
         }

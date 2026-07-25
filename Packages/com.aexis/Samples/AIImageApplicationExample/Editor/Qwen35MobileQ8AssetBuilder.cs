@@ -88,26 +88,11 @@ public static class Qwen35MobileQ8AssetBuilder
 
     internal static bool StageQ8PayloadForPlayer()
     {
-        var source = ResolveQ8SourceDirectory();
-        if (source == null)
-        {
-            var standardSource = Path.Combine(Application.dataPath, "StreamingAssets", "QWEN35");
-            if (!HasStandardPayload(standardSource))
-                return false;
-
-            source = Path.Combine(Application.temporaryCachePath, "AexisQwen35", "qwen3.5_0.8b_mobile_q8");
-            if (Qwen35MobileAssetSet.TryLoad(source, verifyHashes: false) == null)
-                Build(standardSource, source, DefaultShardBytes);
-        }
-
-        var destination = Path.Combine(Application.dataPath, "StreamingAssets", "QWEN35");
-        var copied = CopyMissingFiles(source, destination);
-        if (copied == 0)
-            return true;
-
-        AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
-        UnityEngine.Debug.Log("[Aexis.Editor] Staged " + copied + " Qwen3.5 q8 Player files from " + source + ".");
-        return true;
+        // Source StreamingAssets are intentionally immutable during release builds.
+        // AIImageReducedModelBuild copies the validated Q8 files directly into the
+        // generated player output, and the downloader stores optional payloads in
+        // persistent data. Keep this method as a compatibility probe only.
+        return ResolveQ8SourceDirectory() != null;
     }
 
     private static void Build(string sourceModel, string outputModel, int shardBytes)
@@ -503,14 +488,8 @@ public sealed class Qwen35PlayerBuildPreprocessor : IPreprocessBuildWithReport
 
     public void OnPreprocessBuild(BuildReport report)
     {
-        if (string.Equals(
-                Environment.GetEnvironmentVariable("AEXIS_SKIP_SAMPLE_STREAMING_ASSETS_STAGING"),
-                "1",
-                StringComparison.Ordinal))
-        {
-            return;
-        }
-
-        Qwen35MobileQ8AssetBuilder.StageQ8PayloadForPlayer();
+        // Model staging used to write Q8 files into Assets/StreamingAssets before
+        // every Player build. Reduced release builds now inject the selected files
+        // into the generated player output, so source StreamingAssets stay untouched.
     }
 }

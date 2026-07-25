@@ -17,6 +17,23 @@ The sample carries the permitted default model files for Clip, CodeFormer, DeepF
 
 GFPGAN, Stable Diffusion, SD Inpainting, MONAI/VISTA, and QWEN runners and configuration are included, but their model weights are deliberately omitted because of package-size and redistribution constraints. Add licensed weights to the paths expected by the corresponding runner before running inference.
 
+## Reduced player release and model delivery
+
+Use `Aexis/Release/Build Reduced` for Main2 player builds. The release builder never moves,
+deletes, or stages either `Assets/StreamingAssets` or package sample `StreamingAssets`. It
+rewrites only the generated player output and includes the Main2 default payloads: MobileCLIP
+S0, CodeFormer, Matting, Real-ESRGAN x4plus anime, GFPGAN, YOLOv8 person segmentation, DeepFillV2 case1
+ONNX, and Qwen3.5 mobile Q8. MONAI/VISTA, Stable Diffusion, HiFill, alternate YOLO/ESRGAN
+variants, full-precision Qwen, and other non-default assets are excluded.
+
+`Aexis/Release/Build Reduced/Prepare Model Release Assets` creates named ZIP artifacts and a
+release manifest for `newzjh/AIImage`. The downloader also maps the repository's existing
+per-release flat assets to their required model paths. Use `Tools/AIImage/Download Models...` to
+download optional models into the editor persistent model directory. Main2 presents a UI Toolkit confirmation dialog with progress and cancellation
+when a runtime action needs a missing downloadable group. The reduced `.unitypackage` excludes
+GFPGAN and Qwen weights in accordance with package redistribution policy; those assets are
+always delivered through the model release archives.
+
 ## Dependency isolation
 
 `Aexis` Runtime does not reference UniTask or SharpZipLib. The application example shades the source it needs into `Aexis.Samples.Async` and `Aexis.Samples.SharpZipLib`, so importing the sample does not declare, preload, or conflict with the host project's `Cysharp.Threading.Tasks` or `ICSharpCode.SharpZipLib` assemblies.

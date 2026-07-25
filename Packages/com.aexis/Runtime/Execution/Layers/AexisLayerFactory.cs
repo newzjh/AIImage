@@ -2,6 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
+using Aexis.Async;
 using UnityEngine;
 using UnityEngine.Rendering;
 
@@ -495,6 +498,11 @@ namespace Aexis.Execution
             return use;
         }
 
+        private sealed class LayerInferenceExecution
+        {
+            public InferResult Result;
+        }
+
         internal InferResult InferWithMultiInputsByLayerRepros(
             Dictionary<string, RenderTexture> textureInputs,
             Dictionary<string, AexisTensorBuffer> bufferInputs,
@@ -503,6 +511,76 @@ namespace Aexis.Execution
             string stopAfterTopName = null,
             string startAtTopName = null)
         {
+            var execution = new LayerInferenceExecution();
+            using (var steps = EnumerateInferWithMultiInputsByLayerRepros(
+                textureInputs,
+                bufferInputs,
+                pinnedNames,
+                textureInputShapes,
+                stopAfterTopName,
+                startAtTopName,
+                execution).GetEnumerator())
+            {
+                while (steps.MoveNext())
+                {
+                }
+            }
+
+            return execution.Result ?? throw new InvalidOperationException("Texture inference completed without producing a result.");
+        }
+
+        internal async Task<InferResult> InferWithMultiInputsByLayerReprosAsync(
+            Dictionary<string, RenderTexture> textureInputs,
+            Dictionary<string, AexisTensorBuffer> bufferInputs,
+            ICollection<string> pinnedNames = null,
+            Dictionary<string, BufferShape> textureInputShapes = null,
+            string stopAfterTopName = null,
+            string startAtTopName = null,
+            CancellationToken cancellationToken = default,
+            int yieldEveryLayers = 12)
+        {
+            yieldEveryLayers = Mathf.Max(1, yieldEveryLayers);
+            var layersSinceYield = 0;
+            var execution = new LayerInferenceExecution();
+            using (var steps = EnumerateInferWithMultiInputsByLayerRepros(
+                textureInputs,
+                bufferInputs,
+                pinnedNames,
+                textureInputShapes,
+                stopAfterTopName,
+                startAtTopName,
+                execution).GetEnumerator())
+            {
+                while (true)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (!steps.MoveNext())
+                        break;
+
+                    layersSinceYield++;
+                    if (!Application.isBatchMode && layersSinceYield >= yieldEveryLayers)
+                    {
+                        layersSinceYield = 0;
+                        await AexisAsync.YieldFrame();
+                        cancellationToken.ThrowIfCancellationRequested();
+                    }
+                }
+            }
+
+            return execution.Result ?? throw new InvalidOperationException("Texture inference completed without producing a result.");
+        }
+
+        private IEnumerable<bool> EnumerateInferWithMultiInputsByLayerRepros(
+            Dictionary<string, RenderTexture> textureInputs,
+            Dictionary<string, AexisTensorBuffer> bufferInputs,
+            ICollection<string> pinnedNames = null,
+            Dictionary<string, BufferShape> textureInputShapes = null,
+            string stopAfterTopName = null,
+            string startAtTopName = null,
+            LayerInferenceExecution execution = null)
+        {
+            if (execution == null)
+                throw new ArgumentNullException(nameof(execution));
             static string JoinNames(string[] names)
             {
                 if (names == null || names.Length == 0)
@@ -864,6 +942,7 @@ namespace Aexis.Execution
                         if (emitHeartbeat)
                             DebugLog("[LayerOutput] idx=" + li + " | name=" + (layer?.name ?? string.Empty) + " | path=skip-already-available");
                         Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                        yield return true;
                         continue;
                     }
 
@@ -911,6 +990,7 @@ namespace Aexis.Execution
                         {
                             break;
                         }
+                        yield return true;
                         continue;
                     }
 
@@ -975,6 +1055,7 @@ namespace Aexis.Execution
                     {
                         break;
                     }
+                    yield return true;
                 }
 
                 FinishLayerRuntimeProfile(runtimeProfile);
@@ -983,7 +1064,7 @@ namespace Aexis.Execution
                     || DisallowBufferOutputs
                     || DisallowBufferToTextureMaterialization
                     || DisallowInferenceTempComputeBuffers;
-                return new InferResult(
+                execution.Result = new InferResult(
                     textureBlobs,
                     textureShapes,
                     bufferBlobs,
@@ -992,6 +1073,7 @@ namespace Aexis.Execution
                     tempOwned,
                     this,
                     disallowTextureToBufferFallback);
+                yield break;
             }
             finally
             {

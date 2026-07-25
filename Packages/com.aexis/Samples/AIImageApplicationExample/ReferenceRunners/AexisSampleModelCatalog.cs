@@ -39,9 +39,9 @@ namespace Aexis.Samples
 
         public static readonly AexisNcnnSampleModel RealEsrgan = new AexisNcnnSampleModel
         {
-            displayName = "RealESRGAN x4plus",
-            paramRelativePath = "RealESRGAN/models/realesrgan-x4plus.param",
-            binRelativePath = "RealESRGAN/models/realesrgan-x4plus.bin"
+            displayName = "RealESRGAN x4plus anime",
+            paramRelativePath = "RealESRGAN/models/realesrgan-x4plus-anime.param",
+            binRelativePath = "RealESRGAN/models/realesrgan-x4plus-anime.bin"
         };
 
         public static readonly AexisNcnnSampleModel YoloV8Seg = new AexisNcnnSampleModel

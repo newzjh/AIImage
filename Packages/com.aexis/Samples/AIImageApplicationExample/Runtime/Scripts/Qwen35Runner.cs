@@ -238,7 +238,10 @@ namespace AIImage.Qwen35
                 onStage?.Invoke("encoding_image");
                 onPipelineProgress?.Invoke(new Qwen35Progress("encoding_image", "Preprocessing image", 0.2f));
                 await UniTask.Yield(PlayerLoopTiming.Update, cancellationToken);
-                using (var encoded = visionSession.Encode(image))
+                using (var encoded = await visionSession.EncodeAsync(
+                    image,
+                    cancellationToken,
+                    progress => onPipelineProgress?.Invoke(progress.Map(0.2f, 0.4f))))
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     standaloneVision = encoded.CloneStandalone();

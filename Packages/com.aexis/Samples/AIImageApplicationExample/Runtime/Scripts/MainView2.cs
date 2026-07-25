@@ -499,6 +499,12 @@ public sealed class MainView2 : BasePageView
             return;
         }
 
+        if (!await Host.EnsureModelGroupsAvailableAsync(
+                "Qwen3.5 model download",
+                _lifetimeCts.Token,
+                ResolveQwen35ModelGroup()))
+            return;
+
         var modelDirectory = ResolveQwen35ModelDirectory();
         if (!HasQwen35ModelPayload(modelDirectory))
         {
@@ -510,7 +516,6 @@ public sealed class MainView2 : BasePageView
         _qwenAnalysisCts = System.Threading.CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token);
         var operationCts = _qwenAnalysisCts;
         var token = operationCts.Token;
-        var streamedTokenIds = new List<int>(Qwen35AnalysisMaxNewTokens);
         var streamedText = new StringBuilder(2048);
         var stopwatch = Stopwatch.StartNew();
         _qwenAnalysisRunning = true;
@@ -535,9 +540,7 @@ public sealed class MainView2 : BasePageView
                     token,
                     (tokenId, piece) =>
                     {
-                        streamedTokenIds.Add(tokenId);
-                        streamedText.Clear();
-                        streamedText.Append(runner.Tokenizer.Decode(streamedTokenIds, true));
+                        streamedText.Append(piece);
                         _qwenAnalysisOutput.text = streamedText.ToString();
                     },
                     (completed, total) =>
@@ -593,6 +596,7 @@ public sealed class MainView2 : BasePageView
         _qwenAnalysisStatus.text = "准备分析当前历史图像";
         _qwenAnalysisProgress.value = 0;
         _qwenAnalysisProgress.title = "0%";
+        _qwenAnalysisCancelButton?.SetEnabled(true);
         _qwenAnalysisCancelButton.style.display = DisplayStyle.Flex;
         _qwenAnalysisCloseButton.style.display = DisplayStyle.None;
         _qwenAnalysisCopyButton.style.display = DisplayStyle.None;
@@ -646,6 +650,7 @@ public sealed class MainView2 : BasePageView
     {
         if (!_qwenAnalysisRunning)
             return;
+        _qwenAnalysisCancelButton?.SetEnabled(false);
         _qwenAnalysisStatus.text = "正在取消";
         try { _qwenAnalysisCts?.Cancel(); } catch { }
     }
@@ -669,18 +674,35 @@ public sealed class MainView2 : BasePageView
 
     private static string ResolveQwen35ModelDirectory()
     {
-        const string mobileModelDirectoryName = "qwen3.5_0.8b_mobile_q8";
+        var modelDirectoryName = ResolveQwen35ModelGroup() == AIImageModelGroupId.Qwen35FullPrecision
+            ? "qwen3.5_0.8b"
+            : "qwen3.5_0.8b_mobile_q8";
         var configured = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_MODEL_DIR");
         if (!string.IsNullOrWhiteSpace(configured))
-            return Qwen35ModelDirectoryResolver.Resolve(configured, mobileModelDirectoryName);
+        {
+            var configuredDirectory = Qwen35ModelDirectoryResolver.Resolve(configured, modelDirectoryName);
+            if (HasQwen35ModelPayload(configuredDirectory))
+                return configuredDirectory;
+        }
 
-        var mobileDirectory = Path.Combine(Application.persistentDataPath, mobileModelDirectoryName);
-        if (HasQwen35ModelPayload(mobileDirectory))
-            return mobileDirectory;
+        var persistentDirectory = Path.Combine(Application.persistentDataPath, modelDirectoryName);
+        if (HasQwen35ModelPayload(persistentDirectory))
+            return persistentDirectory;
+
+        var deliveredDirectory = Path.Combine(
+            AIImageModelDelivery.PersistentRoot,
+            "QWEN35",
+            modelDirectoryName);
+        if (HasQwen35ModelPayload(deliveredDirectory))
+            return deliveredDirectory;
+
+        var playerDirectory = Path.Combine(Application.streamingAssetsPath, "QWEN35", modelDirectoryName);
+        if (HasQwen35ModelPayload(playerDirectory))
+            return playerDirectory;
 
         if (Aexis.Samples.AexisSampleStreamingAssets.TryResolveDirectoryPath("QWEN35", out var streamingAssetsDirectory))
         {
-            var deployedDirectory = Qwen35ModelDirectoryResolver.Resolve(streamingAssetsDirectory, mobileModelDirectoryName);
+            var deployedDirectory = Qwen35ModelDirectoryResolver.Resolve(streamingAssetsDirectory, modelDirectoryName);
             if (HasQwen35ModelPayload(deployedDirectory))
                 return deployedDirectory;
         }
@@ -692,11 +714,11 @@ public sealed class MainView2 : BasePageView
             "Tools",
             "Qwen35NcnnBaseline",
             "_models",
-            "qwen3.5_0.8b_mobile_q8"));
+            modelDirectoryName));
         if (HasQwen35ModelPayload(projectDirectory))
             return projectDirectory;
 #endif
-        return mobileDirectory;
+        return persistentDirectory;
     }
 
     private static bool HasQwen35ModelPayload(string modelDirectory)
@@ -705,7 +727,18 @@ public sealed class MainView2 : BasePageView
             return false;
 
         if (File.Exists(Path.Combine(modelDirectory, Qwen35MobileAssetSet.ManifestFileName)))
-            return true;
+        {
+            try
+            {
+                // A stale interrupted download can leave only the manifest in the
+                // persistent path. Do not let it shadow the complete Player copy.
+                return Qwen35MobileAssetSet.TryLoad(modelDirectory) != null;
+            }
+            catch
+            {
+                return false;
+            }
+        }
 
         var requiredFiles = new[]
         {
@@ -1236,6 +1269,12 @@ public sealed class MainView2 : BasePageView
         if (src == null)
             return;
 
+        if (!await Host.EnsureModelGroupsAvailableAsync(
+                "CLIP model download",
+                _lifetimeCts.Token,
+                AIImageModelGroupId.ClipMobileClipS0))
+            return;
+
         _adjustRunning = true;
         ShowProgress("CLIP 分类");
         try
@@ -1348,6 +1387,18 @@ public sealed class MainView2 : BasePageView
         if (src == null)
             return;
 
+        var esrganGroup = string.Equals(
+            Host.RealEsrganReproRunner.modelName,
+            "realesrgan-x4plus-anime",
+            StringComparison.OrdinalIgnoreCase)
+            ? AIImageModelGroupId.RealEsrganX4PlusAnime
+            : AIImageModelGroupId.RealEsrganOptionalModels;
+        if (!await Host.EnsureModelGroupsAvailableAsync(
+                "Real-ESRGAN model download",
+                _lifetimeCts.Token,
+                esrganGroup))
+            return;
+
         _adjustRunning = true;
         ShowProgress("ESRGAN");
         try
@@ -1384,6 +1435,22 @@ public sealed class MainView2 : BasePageView
             return;
         var src = GetCurrentHistoryTexture() ?? GetOriginalHistoryTexture();
         if (src == null)
+            return;
+
+        var requestedGroups = new List<AIImageModelGroupId>
+        {
+            Host.YoloSegRunner.modelVariant == YoloSegNcnnReproRunner.YoloSegModelVariant.Yolo11nSeg
+                ? AIImageModelGroupId.Yolo11PersonSegmentation
+                : AIImageModelGroupId.YoloV8PersonSegmentation
+        };
+        if (useSdInpainting)
+            requestedGroups.Add(AIImageModelGroupId.StableDiffusion);
+        else
+            requestedGroups.Add(ResolveDeepFillV2ModelGroup(Host.DeepFillV2Runner, inpaintBackend));
+        if (!await Host.EnsureModelGroupsAvailableAsync(
+                "People removal model download",
+                _lifetimeCts.Token,
+                requestedGroups.ToArray()))
             return;
 
         _adjustRunning = true;
@@ -1524,6 +1591,42 @@ public sealed class MainView2 : BasePageView
         }
     }
 
+    private static AIImageModelGroupId ResolveQwen35ModelGroup()
+    {
+        const string mobileModelDirectoryName = "qwen3.5_0.8b_mobile_q8";
+        var configured = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_MODEL_DIR");
+        if (!string.IsNullOrWhiteSpace(configured))
+        {
+            var resolved = Qwen35ModelDirectoryResolver.Resolve(configured, mobileModelDirectoryName);
+            var directoryName = Path.GetFileName(resolved.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+            if (string.Equals(directoryName, "qwen3.5_0.8b", StringComparison.OrdinalIgnoreCase))
+                return AIImageModelGroupId.Qwen35FullPrecision;
+        }
+
+        return AIImageModelGroupId.Qwen35MobileQ8;
+    }
+
+    private static AIImageModelGroupId ResolveDeepFillV2ModelGroup(
+        DeepFillV2Runner runner,
+        PeopleRemovalInpaintBackend backend)
+    {
+        if (runner != null)
+        {
+            var selectedPath = backend == PeopleRemovalInpaintBackend.DeepFillV2Ncnn
+                ? runner.ncnnBinRelativePath
+                : runner.sourceOnnxRelativePath;
+            if (!string.IsNullOrWhiteSpace(selectedPath)
+                && selectedPath.IndexOf("deepfillv2_hifill", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return AIImageModelGroupId.DeepFillV2HiFill;
+            }
+        }
+
+        return backend == PeopleRemovalInpaintBackend.DeepFillV2Ncnn
+            ? AIImageModelGroupId.DeepFillV2Case1Ncnn
+            : AIImageModelGroupId.DeepFillV2Case1Onnx;
+    }
+
     private static async UniTask ReleaseGpuPressureBeforeInpaintAsync(CancellationToken ct)
     {
         await UniTask.Yield(PlayerLoopTiming.Update, ct);
@@ -1606,6 +1709,12 @@ public sealed class MainView2 : BasePageView
         if (src == null)
             return;
 
+        if (!await Host.EnsureModelGroupsAvailableAsync(
+                "Matting model download",
+                _lifetimeCts.Token,
+                AIImageModelGroupId.Matting))
+            return;
+
         _adjustRunning = true;
         ShowProgress("Matting");
         try
@@ -1638,6 +1747,12 @@ public sealed class MainView2 : BasePageView
         if (src == null)
             return;
 
+        if (!await Host.EnsureModelGroupsAvailableAsync(
+                "GFPGAN model download",
+                _lifetimeCts.Token,
+                AIImageModelGroupId.GfpganDefault))
+            return;
+
         _adjustRunning = true;
         ShowProgress("GFPGAN");
         try
@@ -1668,6 +1783,12 @@ public sealed class MainView2 : BasePageView
             return;
         var src = GetCurrentHistoryTexture() ?? GetOriginalHistoryTexture();
         if (src == null)
+            return;
+
+        if (!await Host.EnsureModelGroupsAvailableAsync(
+                "CodeFormer model download",
+                _lifetimeCts.Token,
+                AIImageModelGroupId.CodeFormerDefault))
             return;
 
         _adjustRunning = true;

@@ -88,6 +88,7 @@ namespace AIImage.Qwen35
             if (Application.isPlaying) UnityEngine.Object.Destroy(texture);
             else UnityEngine.Object.DestroyImmediate(texture);
         }
+
     }
 
     public sealed class Qwen35VisionEncoderSession : IDisposable
@@ -95,6 +96,10 @@ namespace AIImage.Qwen35
         public const int PatchSize = 16;
         public const int PatchDimension = 768;
         public const int SpatialMergeSize = 2;
+        private const int ModelMaximumPatchCount = 49152;
+        // reshape_100 expands the patch sequence to three scalar channels stored in Pack4 arrays.
+        private const int VisionEncoderArraySliceChannelsPerPatch = 3;
+        private const int PackedTextureChannels = 4;
 
         private readonly AexisOps _ops;
         private readonly AexisGraphSession _patch;
@@ -244,10 +249,23 @@ namespace AIImage.Qwen35
             ThrowIfDisposed();
             if (image == null) throw new ArgumentNullException(nameof(image));
 
-            var target = Qwen35VisionPreprocessor.TargetImageSize(image.height, image.width);
+            var maxTextureSize = Mathf.Max(1, SystemInfo.maxTextureSize);
+            var maxTextureArraySlices = Mathf.Max(1, SystemInfo.maxTextureArraySlices);
+            var maxPatchCount = ResolveMaximumPatchCount(maxTextureSize, maxTextureArraySlices);
+            var target = Qwen35VisionPreprocessor.TargetImageSize(
+                image.height,
+                image.width,
+                PatchSize,
+                maxPatchCount,
+                maxTextureSize);
             var gridWidth = target.x / PatchSize;
             var gridHeight = target.y / PatchSize;
             var patchCount = checked(gridWidth * gridHeight);
+            if (patchCount > maxPatchCount)
+                throw new InvalidOperationException(
+                    "Qwen3.5 vision patch count exceeds the active texture budget after preprocessing: patches="
+                    + patchCount + " maxTextureSize=" + maxTextureSize
+                    + " maxTextureArraySlices=" + maxTextureArraySlices + ".");
             var embeddingCount = checked((gridWidth / SpatialMergeSize) * (gridHeight / SpatialMergeSize));
             var normalized = Qwen35VisionPreprocessor.ResizeNormalize(image, target.x, target.y);
             var patches = Qwen35VisionPreprocessor.BuildDuplicatedPatches(normalized, target.x, target.y);
@@ -339,6 +357,178 @@ namespace AIImage.Qwen35
                     gridWidth,
                     gridHeight);
                 output = null;
+                return encoding;
+            }
+            finally
+            {
+                output?.Dispose();
+                if (atlas != null) _patch.ReturnTempArray(atlas);
+                if (patchSpatial != null) _patch.ReturnTempArray(patchSpatial);
+                if (patchLinear != null) _patch.ReturnTempArray(patchLinear);
+                if (positionGrid != null) _position.ReturnTempArray(positionGrid);
+                if (positionRaw != null) _position.ReturnTempArray(positionRaw);
+                if (positionMerged != null) _position.ReturnTempArray(positionMerged);
+                if (cosine != null) _encoder.ReturnTempArray(cosine);
+                if (sine != null) _encoder.ReturnTempArray(sine);
+            }
+        }
+
+        /// <summary>
+        /// Texture-only vision encoding that returns to the Player loop between the
+        /// CPU upload stages and during graph execution. Unity textures stay on the
+        /// main thread; this is cooperative scheduling, not a worker-thread path.
+        /// </summary>
+        public async UniTask<Qwen35VisionEncoding> EncodeAsync(
+            Texture2D image,
+            CancellationToken cancellationToken = default,
+            Action<Qwen35Progress> onProgress = null)
+        {
+            ThrowIfDisposed();
+            if (image == null) throw new ArgumentNullException(nameof(image));
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var maxTextureSize = Mathf.Max(1, SystemInfo.maxTextureSize);
+            var maxTextureArraySlices = Mathf.Max(1, SystemInfo.maxTextureArraySlices);
+            var maxPatchCount = ResolveMaximumPatchCount(maxTextureSize, maxTextureArraySlices);
+            var target = Qwen35VisionPreprocessor.TargetImageSize(
+                image.height,
+                image.width,
+                PatchSize,
+                maxPatchCount,
+                maxTextureSize);
+            var gridWidth = target.x / PatchSize;
+            var gridHeight = target.y / PatchSize;
+            var patchCount = checked(gridWidth * gridHeight);
+            if (patchCount > maxPatchCount)
+                throw new InvalidOperationException(
+                    "Qwen3.5 vision patch count exceeds the active texture budget after preprocessing: patches="
+                    + patchCount + " maxTextureSize=" + maxTextureSize
+                    + " maxTextureArraySlices=" + maxTextureArraySlices + ".");
+            var embeddingCount = checked((gridWidth / SpatialMergeSize) * (gridHeight / SpatialMergeSize));
+
+            onProgress?.Invoke(new Qwen35Progress("encoding_image", "Resizing and normalizing image", 0.04f));
+            await UniTask.Yield(PlayerLoopTiming.Update, cancellationToken);
+            var normalized = Qwen35VisionPreprocessor.ResizeNormalize(image, target.x, target.y);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            onProgress?.Invoke(new Qwen35Progress("encoding_image", "Building vision patches", 0.13f));
+            await UniTask.Yield(PlayerLoopTiming.Update, cancellationToken);
+            var patches = Qwen35VisionPreprocessor.BuildDuplicatedPatches(normalized, target.x, target.y);
+            Qwen35VisionPreprocessor.BuildVisionRope2D(gridHeight, gridWidth, out var ropeCosine, out var ropeSine);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            RenderTexture atlas = null;
+            RenderTexture patchSpatial = null;
+            RenderTexture patchLinear = null;
+            RenderTexture positionGrid = null;
+            RenderTexture positionRaw = null;
+            RenderTexture positionMerged = null;
+            RenderTexture cosine = null;
+            RenderTexture sine = null;
+            Qwen35OwnedTexture output = null;
+            try
+            {
+                onProgress?.Invoke(new Qwen35Progress("encoding_image", "Uploading vision patches", 0.2f));
+                await UniTask.Yield(PlayerLoopTiming.Update, cancellationToken);
+                atlas = CreatePatchAtlasTexture(patches, target.x, target.y);
+                cancellationToken.ThrowIfCancellationRequested();
+
+                onProgress?.Invoke(new Qwen35Progress("encoding_image", "Running patch embedding", 0.3f));
+                using (var result = await _patch.InferWithMultiInputsAsync(
+                    new Dictionary<string, RenderTexture>(StringComparer.Ordinal) { ["in0"] = atlas },
+                    null,
+                    null,
+                    new Dictionary<string, AexisGraphSession.BufferShape>(StringComparer.Ordinal)
+                    {
+                        ["in0"] = new AexisGraphSession.BufferShape(4, target.x, target.y, 2, 3)
+                    },
+                    cancellationToken: cancellationToken))
+                {
+                    patchSpatial = result.ExtractTexture("out0");
+                }
+                cancellationToken.ThrowIfCancellationRequested();
+
+                onProgress?.Invoke(new Qwen35Progress("encoding_image", "Reordering vision patches", 0.43f));
+                await UniTask.Yield(PlayerLoopTiming.Update, cancellationToken);
+                patchLinear = _patch.RentTempArray(PatchDimension / 4, patchCount, 1, RenderTextureFormat.ARGBFloat);
+                _ops.Pack4SpatialToPack4Linear(patchSpatial, patchLinear);
+                cancellationToken.ThrowIfCancellationRequested();
+
+                onProgress?.Invoke(new Qwen35Progress("encoding_image", "Running position embedding", 0.5f));
+                positionGrid = _position.RentTempMat(gridWidth, gridHeight, AexisGraphSession.ResolveLinearMatTextureFormat());
+                _ops.FillScalarTexture(new[] { 0f }, positionGrid);
+                using (var result = await _position.InferWithMultiInputsAsync(
+                    new Dictionary<string, RenderTexture>(StringComparer.Ordinal) { ["in0"] = positionGrid },
+                    null,
+                    null,
+                    new Dictionary<string, AexisGraphSession.BufferShape>(StringComparer.Ordinal)
+                    {
+                        ["in0"] = new AexisGraphSession.BufferShape(2, gridWidth, gridHeight, 1, 1)
+                    },
+                    cancellationToken: cancellationToken))
+                {
+                    positionRaw = result.ExtractTexture("out0");
+                }
+                cancellationToken.ThrowIfCancellationRequested();
+                if (positionRaw.dimension != TextureDimension.Tex2D
+                    || positionRaw.width != PatchDimension
+                    || positionRaw.height != patchCount)
+                    throw new InvalidOperationException(
+                        "Qwen3.5 position embedding has unexpected storage: "
+                        + positionRaw.dimension + " " + positionRaw.width + "x" + positionRaw.height + "x" + positionRaw.volumeDepth);
+
+                onProgress?.Invoke(new Qwen35Progress("encoding_image", "Preparing vision position data", 0.62f));
+                await UniTask.Yield(PlayerLoopTiming.Update, cancellationToken);
+                positionMerged = _position.RentTempMat(PatchDimension, patchCount, AexisGraphSession.ResolveLinearMatTextureFormat());
+                _ops.LinearMatReorderMergeRows(positionRaw, positionMerged, gridWidth, gridHeight, SpatialMergeSize);
+                cosine = CreateScalarRowsTexture(ropeCosine, 64, 32, patchCount, "Qwen35VisionCosUpload");
+                sine = CreateScalarRowsTexture(ropeSine, 64, 32, patchCount, "Qwen35VisionSinUpload");
+                cancellationToken.ThrowIfCancellationRequested();
+
+                onProgress?.Invoke(new Qwen35Progress("encoding_image", "Running vision encoder", 0.72f));
+                var inputs = new Dictionary<string, RenderTexture>(StringComparer.Ordinal)
+                {
+                    ["in0"] = patchLinear,
+                    ["in1"] = positionMerged,
+                    ["in2"] = cosine,
+                    ["in3"] = sine
+                };
+                var shapes = new Dictionary<string, AexisGraphSession.BufferShape>(StringComparer.Ordinal)
+                {
+                    ["in0"] = new AexisGraphSession.BufferShape(2, PatchDimension, patchCount, 1, 1),
+                    ["in1"] = new AexisGraphSession.BufferShape(2, PatchDimension, patchCount, 1, 1),
+                    ["in2"] = new AexisGraphSession.BufferShape(3, 32, patchCount, 1, 1),
+                    ["in3"] = new AexisGraphSession.BufferShape(3, 32, patchCount, 1, 1)
+                };
+                using (var result = await _encoder.InferWithMultiInputsAsync(
+                    inputs,
+                    null,
+                    null,
+                    shapes,
+                    cancellationToken: cancellationToken))
+                {
+                    if (!result.TryGetLogicalShape("out0", out var dims, out var w, out var h, out var d, out var c))
+                        throw new InvalidOperationException("Qwen3.5 vision encoder output shape is unavailable.");
+                    if (dims != 2 || w != Qwen35DecoderSession.HiddenSize || h != embeddingCount || d != 1 || c != 1)
+                        throw new InvalidOperationException(
+                            "Qwen3.5 vision encoder output shape mismatch: dims=" + dims + " w=" + w + " h=" + h + " d=" + d + " c=" + c);
+                    output = new Qwen35OwnedTexture(
+                        _encoder,
+                        result.ExtractTexture("out0"),
+                        new AexisGraphSession.BufferShape(dims, w, h, d, c));
+                }
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var encoding = new Qwen35VisionEncoding(
+                    output,
+                    image.width,
+                    image.height,
+                    target.x,
+                    target.y,
+                    gridWidth,
+                    gridHeight);
+                output = null;
+                onProgress?.Invoke(new Qwen35Progress("encoding_image", "Vision encoding ready", 1f));
                 return encoding;
             }
             finally
@@ -517,6 +707,16 @@ namespace AIImage.Qwen35
             if (value == null) return;
             if (Application.isPlaying) UnityEngine.Object.Destroy(value);
             else UnityEngine.Object.DestroyImmediate(value);
+        }
+
+        private static int ResolveMaximumPatchCount(int maxTextureSize, int maxTextureArraySlices)
+        {
+            // The first vision-encoder reshape expands a patch sequence into three scalar
+            // channels. Pack4 texture arrays therefore consume ceil(3 * patches / 4) slices.
+            var byArraySlices = (int)Math.Min(
+                int.MaxValue,
+                (long)maxTextureArraySlices * PackedTextureChannels / VisionEncoderArraySliceChannelsPerPatch);
+            return Mathf.Min(ModelMaximumPatchCount, maxTextureSize, byArraySlices);
         }
 
         private void ThrowIfDisposed()

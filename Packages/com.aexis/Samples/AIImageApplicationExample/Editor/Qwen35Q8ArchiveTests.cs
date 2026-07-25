@@ -255,6 +255,48 @@ public sealed class Qwen35Q8ArchiveTests
         }
     }
 
+    [Test]
+    public void VisionTargetFitsPlayerTextureLimitForLargeImage()
+    {
+        const int maxTextureSize = 16384;
+        const int maxTextureArraySlices = 2048;
+        const int maxPatches = maxTextureArraySlices * 4 / 3;
+        var target = Qwen35VisionPreprocessor.TargetImageSize(
+            3648,
+            2752,
+            Qwen35VisionEncoderSession.PatchSize,
+            maxPatches,
+            maxTextureSize);
+
+        Assert.That(target.x, Is.LessThanOrEqualTo(maxTextureSize));
+        Assert.That(target.y, Is.LessThanOrEqualTo(maxTextureSize));
+        Assert.That(target.x % (Qwen35VisionEncoderSession.PatchSize * Qwen35VisionEncoderSession.SpatialMergeSize), Is.EqualTo(0));
+        Assert.That(target.y % (Qwen35VisionEncoderSession.PatchSize * Qwen35VisionEncoderSession.SpatialMergeSize), Is.EqualTo(0));
+        Assert.That(
+            (long)(target.x / Qwen35VisionEncoderSession.PatchSize)
+            * (target.y / Qwen35VisionEncoderSession.PatchSize),
+            Is.LessThanOrEqualTo(maxPatches));
+    }
+
+    [Test]
+    public void VisionTargetFitsPlayerTextureArraySliceLimitForP1010085()
+    {
+        const int maxTextureSize = 16384;
+        const int maxTextureArraySlices = 2048;
+        const int maxPatches = maxTextureArraySlices * 4 / 3;
+        var target = Qwen35VisionPreprocessor.TargetImageSize(
+            1773,
+            2364,
+            Qwen35VisionEncoderSession.PatchSize,
+            maxPatches,
+            maxTextureSize);
+        var patchCount = (long)(target.x / Qwen35VisionEncoderSession.PatchSize)
+            * (target.y / Qwen35VisionEncoderSession.PatchSize);
+
+        Assert.That(patchCount, Is.LessThanOrEqualTo(maxPatches));
+        Assert.That((patchCount * 3 + 3) / 4, Is.LessThanOrEqualTo(maxTextureArraySlices));
+    }
+
     private static MemoryStream BuildRawNcnnMat(float[] values)
     {
         var stream = new MemoryStream();

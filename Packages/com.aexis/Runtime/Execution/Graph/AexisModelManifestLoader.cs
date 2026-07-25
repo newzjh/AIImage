@@ -200,7 +200,7 @@ namespace Aexis.Execution
         public static AexisPrecisionMode ResolveAutoPrecision(string modelId)
         {
             return string.Equals(modelId, "mobileclip_s0_export", StringComparison.Ordinal)
-                || string.Equals(modelId, "realesrgan-x4plus", StringComparison.Ordinal)
+                || IsRealEsrganX4Model(modelId)
                 ? AexisPrecisionMode.FP16
                 : AexisPrecisionMode.FP32;
         }
@@ -290,7 +290,7 @@ namespace Aexis.Execution
             manifestFileName = null;
             if (string.Equals(modelId, "mobileclip_s0_export", StringComparison.Ordinal))
                 manifestFileName = precisionMode == AexisPrecisionMode.INT4Selective ? "clip-mobileclip-s0.int4.model.json" : precisionMode == AexisPrecisionMode.INT8Selective ? "clip-mobileclip-s0.int8.model.json" : precisionMode == AexisPrecisionMode.FP16 ? "clip-mobileclip-s0.fp16.model.json" : "clip-mobileclip-s0.fp32.model.json";
-            else if (string.Equals(modelId, "realesrgan-x4plus", StringComparison.Ordinal))
+            else if (IsRealEsrganX4Model(modelId))
                 manifestFileName = precisionMode == AexisPrecisionMode.FP16 ? "esrgan-realesrgan-x4plus.fp16.model.json" : "esrgan-realesrgan-x4plus.fp32.model.json";
             else if (string.Equals(modelId, "matting.ncnn", StringComparison.Ordinal))
                 manifestFileName = precisionMode == AexisPrecisionMode.INT4Selective ? "matting.int4.model.json" : precisionMode == AexisPrecisionMode.INT8Selective ? "matting.int8.model.json" : precisionMode == AexisPrecisionMode.FP16 ? "matting.fp16.model.json" : "matting.fp32.model.json";
@@ -306,6 +306,12 @@ namespace Aexis.Execution
             else if (string.Equals(modelId, "wholeBrain probe", StringComparison.Ordinal))
                 manifestFileName = precisionMode == AexisPrecisionMode.FP16 ? "wholebrain-probe.fp16.model.json" : "wholebrain-probe.fp32.model.json";
             return !string.IsNullOrWhiteSpace(manifestFileName);
+        }
+
+        private static bool IsRealEsrganX4Model(string modelId)
+        {
+            return string.Equals(modelId, "realesrgan-x4plus", StringComparison.Ordinal)
+                || string.Equals(modelId, "realesrgan-x4plus-anime", StringComparison.Ordinal);
         }
 
         private static TensorDataType ParseActivationType(string value, string field, string source)

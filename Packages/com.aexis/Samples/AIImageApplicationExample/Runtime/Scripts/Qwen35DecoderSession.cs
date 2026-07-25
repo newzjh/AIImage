@@ -424,6 +424,37 @@ namespace AIImage.Qwen35
             }
         }
 
+        private async UniTask<Qwen35OwnedTexture> EmbedTokensAsync(
+            IReadOnlyList<int> tokenIds,
+            CancellationToken cancellationToken)
+        {
+            ThrowIfDisposed();
+            if (tokenIds == null || tokenIds.Count == 0)
+                throw new ArgumentException("Token ids are empty.", nameof(tokenIds));
+            cancellationToken.ThrowIfCancellationRequested();
+
+            using (var indices = new AexisTensorBuffer(tokenIds.Count, 1))
+            {
+                var values = new int[tokenIds.Count];
+                for (var i = 0; i < values.Length; i++)
+                {
+                    if (tokenIds[i] < 0 || tokenIds[i] >= Tokenizer.VocabularySize)
+                        throw new ArgumentOutOfRangeException(nameof(tokenIds), "Token id is outside the tokenizer vocabulary: " + tokenIds[i]);
+                    values[i] = tokenIds[i];
+                }
+                indices.buffer.SetData(values);
+                using (var result = await _embed.InferWithMultiInputsAsync(
+                    null,
+                    new Dictionary<string, AexisTensorBuffer>(StringComparer.Ordinal) { ["in0"] = indices },
+                    cancellationToken: cancellationToken))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var shape = GetShape(result, "out0");
+                    return new Qwen35OwnedTexture(_embed, result.ExtractTexture("out0"), shape);
+                }
+            }
+        }
+
         public Qwen35DecoderStep Decode(Qwen35OwnedTexture embeddings, int position, Qwen35DecoderState state)
         {
             var sequenceLength = embeddings?.LogicalShape.h ?? 0;
@@ -548,6 +579,134 @@ namespace AIImage.Qwen35
             }
         }
 
+        private async UniTask<Qwen35DecoderStep> DecodeCoreAsync(
+            Qwen35OwnedTexture embeddings,
+            int position,
+            Qwen35DecoderState state,
+            float[] customCosine,
+            float[] customSine,
+            int nextPosition,
+            CancellationToken cancellationToken)
+        {
+            ThrowIfDisposed();
+            if (embeddings == null || embeddings.Texture == null)
+                throw new ArgumentNullException(nameof(embeddings));
+            if (state == null)
+                throw new ArgumentNullException(nameof(state));
+            if (position < 0)
+                throw new ArgumentOutOfRangeException(nameof(position));
+            if (embeddings.LogicalShape.dims != 2 || embeddings.LogicalShape.w != HiddenSize || embeddings.LogicalShape.h <= 0)
+                throw new ArgumentException("Decoder embeddings must have logical shape [sequence, 1024].", nameof(embeddings));
+            if (state.PositionId != position)
+                throw new InvalidOperationException("Decoder position/cache mismatch: position=" + position + " cache_position=" + state.PositionId + " cache_sequence=" + state.SequenceLength);
+            if (nextPosition < position)
+                throw new ArgumentOutOfRangeException(nameof(nextPosition));
+
+            var sequenceLength = embeddings.LogicalShape.h;
+            if (state.SequenceLength + sequenceLength > _decoder.AttentionKvCacheTextureCapacity)
+                throw new NotSupportedException(
+                    "Qwen3.5 context exceeds the device texture-backed KV capacity: requested="
+                    + (state.SequenceLength + sequenceLength) + " capacity=" + _decoder.AttentionKvCacheTextureCapacity);
+            if ((customCosine == null) != (customSine == null))
+                throw new ArgumentException("Custom RoPE cosine and sine must be supplied together.");
+            if (customCosine != null && (customCosine.Length != sequenceLength * RopeHalfDimension || customSine.Length != customCosine.Length))
+                throw new ArgumentException("Custom RoPE cache shape must be [sequence, 32].");
+
+            RenderTexture mask = null;
+            RenderTexture cosine = null;
+            RenderTexture sine = null;
+            Qwen35OwnedTexture hidden = null;
+            Qwen35DecoderState nextState = null;
+            try
+            {
+                var currentDecodeInvocation = _decodeInvocation;
+                mask = CreateCausalMaskTexture(sequenceLength, state.SequenceLength);
+                if (customCosine == null)
+                {
+                    CreateRopeTextures(sequenceLength, position, out cosine, out sine);
+                }
+                else
+                {
+                    cosine = UploadScalarPack4(customCosine, RopeHalfDimension, sequenceLength, "Qwen35MropeCosUpload");
+                    try
+                    {
+                        sine = UploadScalarPack4(customSine, RopeHalfDimension, sequenceLength, "Qwen35MropeSinUpload");
+                    }
+                    catch
+                    {
+                        _decoder.ReturnTempArray(cosine);
+                        cosine = null;
+                        throw;
+                    }
+                }
+
+                cancellationToken.ThrowIfCancellationRequested();
+                var textureInputs = new Dictionary<string, RenderTexture>(state.Textures, StringComparer.Ordinal)
+                {
+                    ["in0"] = embeddings.Texture,
+                    ["in1"] = mask,
+                    ["in2"] = cosine,
+                    ["in3"] = sine
+                };
+                var shapes = new Dictionary<string, AexisGraphSession.BufferShape>(state.Shapes, StringComparer.Ordinal)
+                {
+                    ["in0"] = embeddings.LogicalShape,
+                    ["in1"] = new AexisGraphSession.BufferShape(2, state.SequenceLength + sequenceLength, sequenceLength, 1, 1),
+                    ["in2"] = new AexisGraphSession.BufferShape(3, RopeHalfDimension, sequenceLength, 1, 1),
+                    ["in3"] = new AexisGraphSession.BufferShape(3, RopeHalfDimension, sequenceLength, 1, 1)
+                };
+
+                using (var result = await _decoder.InferWithMultiInputsAsync(
+                    textureInputs,
+                    null,
+                    _decoderOutputs,
+                    shapes,
+                    cancellationToken: cancellationToken))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var hiddenShape = GetShape(result, "out0");
+                    DebugTextureReadback?.Invoke("decoder_out0", result.GetExistingTextureData("out0"));
+                    DebugReadbackPackedCaches(result, currentDecodeInvocation);
+                    hidden = new Qwen35OwnedTexture(_decoder, result.ExtractTexture("out0"), hiddenShape);
+                    nextState = new Qwen35DecoderState(_decoder, state.SequenceLength + sequenceLength, nextPosition);
+                    var transferAttentionKv = _decoder.EnableInPlaceAttentionKvCache && state.Textures.ContainsKey("cache_k0");
+                    for (var i = 0; i < AttentionCacheCount; i++)
+                    {
+                        if (transferAttentionKv)
+                        {
+                            state.TransferTo(nextState, "cache_k" + i, GetShape(result, "out_cache_k" + i));
+                            state.TransferTo(nextState, "cache_v" + i, GetShape(result, "out_cache_v" + i));
+                        }
+                        else
+                        {
+                            ExtractCache(result, nextState, "cache_k" + i, "out_cache_k" + i);
+                            ExtractCache(result, nextState, "cache_v" + i, "out_cache_v" + i);
+                        }
+                    }
+                    for (var i = 0; i < ConvCacheCount; i++)
+                    {
+                        ExtractCache(result, nextState, "cache_conv" + i, "out_cache_conv" + i);
+                        ExtractCache(result, nextState, "cache_gdr" + i, "out_cache_gdr" + i);
+                    }
+                }
+                cancellationToken.ThrowIfCancellationRequested();
+                CaptureDecoderRuntimeProfile(state.SequenceLength, sequenceLength);
+                _decodeInvocation = currentDecodeInvocation + 1;
+                var step = new Qwen35DecoderStep(hidden, nextState);
+                hidden = null;
+                nextState = null;
+                return step;
+            }
+            finally
+            {
+                hidden?.Dispose();
+                nextState?.Dispose();
+                if (mask != null) _decoder.ReturnTempArray(mask);
+                if (cosine != null) _decoder.ReturnTempArray(cosine);
+                if (sine != null) _decoder.ReturnTempArray(sine);
+            }
+        }
+
         public float[] ProjectLogits(Qwen35OwnedTexture hidden)
         {
             ThrowIfDisposed();
@@ -579,6 +738,101 @@ namespace AIImage.Qwen35
                 null,
                 new Dictionary<string, AexisGraphSession.BufferShape>(StringComparer.Ordinal) { ["in0"] = hidden.LogicalShape }))
             {
+                if (!result.TryGetExistingTexture("out0", out var logits)
+                    || !result.TryGetExistingTextureDescriptor("out0", out var logicalShape, out var storageShape))
+                {
+                    throw new InvalidOperationException("LM head did not publish texture-backed logits for GPU ArgMax.");
+                }
+                if (logicalShape.w < Tokenizer.VocabularySize)
+                    throw new InvalidOperationException("LM head texture does not cover the tokenizer vocabulary.");
+
+                var outputShape = new AexisGraphSession.BufferShape(logicalShape.dims, 1, 1, 1, 1);
+                var outputStorageShape = new AexisGraphSession.BufferShape(2, 1, 1, 1, 1);
+                var vocabularyAxis = logicalShape.dims - 1;
+                var argMax = _projection.RentTempMat(1, 1, AexisGraphSession.ResolveLinearMatTextureFormat());
+                try
+                {
+                    if (logits.dimension == UnityEngine.Rendering.TextureDimension.Tex2D)
+                    {
+                        _ops.AexisArgReduceLinearMat(
+                            logits,
+                            logicalShape,
+                            storageShape,
+                            vocabularyAxis,
+                            true,
+                            false,
+                            true,
+                            outputShape,
+                            outputStorageShape,
+                            argMax);
+                    }
+                    else if (logits.dimension == UnityEngine.Rendering.TextureDimension.Tex2DArray)
+                    {
+                        var packCount = (logicalShape.w + 3) / 4;
+                        var tileRows = Mathf.CeilToInt(packCount / (float)Mathf.Max(1, storageShape.w));
+                        if (logicalShape.dims != 2
+                            || logicalShape.h != 1
+                            || storageShape.dims != 3
+                            || storageShape.c != 4
+                            || storageShape.w != logits.width
+                            || storageShape.h != logits.height
+                            || storageShape.h != logicalShape.h * tileRows)
+                        {
+                            throw new InvalidOperationException(
+                                "Unsupported pack4 LM head texture contract"
+                                + " | logical=" + logicalShape
+                                + " | storage=" + storageShape
+                                + " | texture=" + logits.width + "x" + logits.height + "x" + logits.volumeDepth);
+                        }
+                        _ops.ArgMaxPack4LinearMat(logits, logicalShape.w, logicalShape.h, tileRows, argMax);
+                    }
+                    else
+                    {
+                        throw new InvalidOperationException(
+                            "Unsupported LM head texture dimension for GPU ArgMax: " + logits.dimension);
+                    }
+                    var token = Mathf.RoundToInt(AexisGraphSession.ReadScalarTexture(argMax));
+                    if (token < 0 || token >= Tokenizer.VocabularySize)
+                        throw new InvalidOperationException("GPU ArgMax returned an invalid token id: " + token);
+                    return token;
+                }
+                finally
+                {
+                    _projection.ReturnTempArray(argMax);
+                }
+            }
+        }
+
+        private async UniTask<int> SelectNextTokenAsync(
+            Qwen35OwnedTexture hidden,
+            Qwen35Sampler sampler,
+            CancellationToken cancellationToken)
+        {
+            if (sampler == null) throw new ArgumentNullException(nameof(sampler));
+            if (!sampler.CanUseTextureArgMax || DebugTextureReadback != null)
+            {
+                using (var result = await _projection.InferWithMultiInputsAsync(
+                    new Dictionary<string, RenderTexture>(StringComparer.Ordinal) { ["in0"] = hidden.Texture },
+                    null,
+                    null,
+                    new Dictionary<string, AexisGraphSession.BufferShape>(StringComparer.Ordinal) { ["in0"] = hidden.LogicalShape },
+                    cancellationToken: cancellationToken))
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var logits = result.ReadTextureDataForOutput("out0");
+                    DebugTextureReadback?.Invoke("logits", logits);
+                    return sampler.Select(logits);
+                }
+            }
+
+            using (var result = await _projection.InferWithMultiInputsAsync(
+                new Dictionary<string, RenderTexture>(StringComparer.Ordinal) { ["in0"] = hidden.Texture },
+                null,
+                null,
+                new Dictionary<string, AexisGraphSession.BufferShape>(StringComparer.Ordinal) { ["in0"] = hidden.LogicalShape },
+                cancellationToken: cancellationToken))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
                 if (!result.TryGetExistingTexture("out0", out var logits)
                     || !result.TryGetExistingTextureDescriptor("out0", out var logicalShape, out var storageShape))
                 {
@@ -799,8 +1053,19 @@ namespace AIImage.Qwen35
                         out var cosine,
                         out var sine,
                         out var nextPosition);
-                    using (var step = DecodeCore(embeddings, position, state, cosine, sine, nextPosition))
+                    cancellationToken.ThrowIfCancellationRequested();
+                    onPipelineProgress?.Invoke(new Qwen35Progress("prefill", "Running multimodal prefill", 0.38f));
+                    await UniTask.Yield(PlayerLoopTiming.Update, cancellationToken);
+                    using (var step = await DecodeCoreAsync(
+                        embeddings,
+                        position,
+                        state,
+                        cosine,
+                        sine,
+                        nextPosition,
+                        cancellationToken))
                     {
+                        cancellationToken.ThrowIfCancellationRequested();
                         var oldState = state;
                         state = step.DetachState();
                         hidden = step.DetachHidden();
@@ -815,9 +1080,22 @@ namespace AIImage.Qwen35
 
                 cancellationToken.ThrowIfCancellationRequested();
                 await UniTask.Yield(PlayerLoopTiming.Update, cancellationToken);
-                RunTokens(new[] { promptTokenIds[promptTokenIds.Count - 1] }, ref position, ref state, out hidden);
+                hidden = await RunTokensAsync(
+                    new[] { promptTokenIds[promptTokenIds.Count - 1] },
+                    position,
+                    state,
+                    cancellationToken,
+                    nextState =>
+                    {
+                        var oldState = state;
+                        state = nextState;
+                        oldState.Dispose();
+                    });
+                position++;
                 decoderRuns++;
-                var nextToken = SelectNextToken(hidden, sampler);
+                cancellationToken.ThrowIfCancellationRequested();
+                await UniTask.Yield(PlayerLoopTiming.Update, cancellationToken);
+                var nextToken = await SelectNextTokenAsync(hidden, sampler, cancellationToken);
                 hidden.Dispose();
                 hidden = null;
                 onPipelineProgress?.Invoke(new Qwen35Progress("prefill", "First token ready", 1f));
@@ -839,9 +1117,22 @@ namespace AIImage.Qwen35
                         break;
 
                     await UniTask.Yield(PlayerLoopTiming.Update, cancellationToken);
-                    RunTokens(new[] { nextToken }, ref position, ref state, out hidden);
+                    hidden = await RunTokensAsync(
+                        new[] { nextToken },
+                        position,
+                        state,
+                        cancellationToken,
+                        nextState =>
+                        {
+                            var oldState = state;
+                            state = nextState;
+                            oldState.Dispose();
+                        });
+                    position++;
                     decoderRuns++;
-                    nextToken = SelectNextToken(hidden, sampler);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    await UniTask.Yield(PlayerLoopTiming.Update, cancellationToken);
+                    nextToken = await SelectNextTokenAsync(hidden, sampler, cancellationToken);
                     hidden.Dispose();
                     hidden = null;
                 }
@@ -969,6 +1260,45 @@ namespace AIImage.Qwen35
                 hidden = step.DetachHidden();
                 position += tokens.Count;
                 oldState.Dispose();
+            }
+        }
+
+        private async UniTask<Qwen35OwnedTexture> RunTokensAsync(
+            IReadOnlyList<int> tokens,
+            int position,
+            Qwen35DecoderState state,
+            CancellationToken cancellationToken,
+            Action<Qwen35DecoderState> replaceState)
+        {
+            if (replaceState == null) throw new ArgumentNullException(nameof(replaceState));
+            using (var embeddings = await EmbedTokensAsync(tokens, cancellationToken))
+            using (var step = await DecodeCoreAsync(
+                embeddings,
+                position,
+                state,
+                null,
+                null,
+                checked(position + tokens.Count),
+                cancellationToken))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var nextState = step.DetachState();
+                var hidden = step.DetachHidden();
+                try
+                {
+                    replaceState(nextState);
+                    nextState = null;
+                    return hidden;
+                }
+                catch
+                {
+                    hidden?.Dispose();
+                    throw;
+                }
+                finally
+                {
+                    nextState?.Dispose();
+                }
             }
         }
 

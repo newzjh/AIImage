@@ -16,6 +16,7 @@ public sealed class AIImagePageHost : MonoBehaviour
     public UIDocument Document => _uiDocument;
     public Image2ImageAI Image2ImageAI => _image2ImageAI;
     public CodeOnlyFileDialog FileDialog => _fileDialog;
+    public AIImageModelDownloadDialog ModelDownloadDialog => _modelDownloadDialog;
     public ComputeShader ImageProcessingCS => _imageProcessingCS;
     public GpuSharpenRunner GpuSharpenRunner => _gpuSharpenRunner;
     public FaceMaskGenerator FaceMaskGenerator => _faceMaskGenerator;
@@ -39,6 +40,7 @@ public sealed class AIImagePageHost : MonoBehaviour
 
     private Image2ImageAI _image2ImageAI;
     private CodeOnlyFileDialog _fileDialog;
+    private AIImageModelDownloadDialog _modelDownloadDialog;
     private ComputeShader _imageProcessingCS;
     private GpuSharpenRunner _gpuSharpenRunner;
     private FaceMaskGenerator _faceMaskGenerator;
@@ -214,6 +216,24 @@ public sealed class AIImagePageHost : MonoBehaviour
         PlayerPrefs.Save();
     }
 
+    public UniTask<bool> EnsureModelGroupsAvailableAsync(
+        string operationName,
+        System.Threading.CancellationToken cancellationToken,
+        params AIImageModelGroupId[] groupIds)
+    {
+        if (_modelDownloadDialog == null)
+            return UniTask.FromResult(false);
+
+        var groups = new List<AIImageModelGroup>();
+        if (groupIds != null)
+        {
+            for (var index = 0; index < groupIds.Length; index++)
+                groups.Add(AIImageModelDelivery.GetGroup(groupIds[index]));
+        }
+
+        return _modelDownloadDialog.EnsureAvailableAsync(operationName, groups, cancellationToken);
+    }
+
     private void BuildRoot()
     {
         if (_uiDocument == null)
@@ -350,6 +370,8 @@ public sealed class AIImagePageHost : MonoBehaviour
     {
         _image2ImageAI = GetOrAdd<Image2ImageAI>();
         _fileDialog = GetOrAdd<CodeOnlyFileDialog>();
+        _modelDownloadDialog = GetOrAdd<AIImageModelDownloadDialog>();
+        _modelDownloadDialog.Configure(_uiDocument);
         _gpuSharpenRunner = GetOrAdd<GpuSharpenRunner>();
         _faceMaskGenerator = GetOrAdd<FaceMaskGenerator>();
         _realEsrganRunner = GetOrAdd<RealEsrganNcnnVulkanRunner>();

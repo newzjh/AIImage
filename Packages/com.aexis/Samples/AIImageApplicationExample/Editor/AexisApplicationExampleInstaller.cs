@@ -77,13 +77,7 @@ public static class AexisApplicationExampleInstaller
         output = Path.GetFullPath(output);
         Directory.CreateDirectory(Path.GetDirectoryName(output));
 
-        var report = BuildPipeline.BuildPlayer(new BuildPlayerOptions
-        {
-            scenes = new[] { AexisApplicationExamplePaths.Main2SceneAssetPath },
-            locationPathName = output,
-            target = target,
-            options = BuildOptions.None
-        });
+        var report = AIImageReducedModelBuild.BuildMain2(target, output, BuildOptions.None);
         if (report.summary.result != BuildResult.Succeeded || report.summary.totalErrors != 0)
         {
             throw new InvalidOperationException(

@@ -109,28 +109,13 @@ public static class Qwen35MobilePlatformBuild
                 ["android_min_sdk"] = target == BuildTarget.Android ? PlayerSettings.Android.minSdkVersion.ToString() : null,
                 ["development_build"] = true,
                 ["clean_build_cache"] = true,
-                ["qwen_model_bundled_in_player"] = false
+                ["qwen_model_bundled_in_player"] = true
             };
 
-            var previousSampleStaging = Environment.GetEnvironmentVariable(SkipSampleStreamingAssetsStagingEnvironmentVariable);
-            using (ExcludeUnrelatedStreamingAssets(root))
-            {
-                try
-                {
-                    Environment.SetEnvironmentVariable(SkipSampleStreamingAssetsStagingEnvironmentVariable, "1");
-                    buildReport = BuildPipeline.BuildPlayer(new BuildPlayerOptions
-                    {
-                        scenes = new[] { scene },
-                        locationPathName = output,
-                        target = target,
-                        options = BuildOptions.Development | BuildOptions.CompressWithLz4 | BuildOptions.CleanBuildCache
-                    });
-                }
-                finally
-                {
-                    Environment.SetEnvironmentVariable(SkipSampleStreamingAssetsStagingEnvironmentVariable, previousSampleStaging);
-                }
-            }
+            buildReport = AIImageReducedModelBuild.BuildMain2(
+                target,
+                output,
+                BuildOptions.Development | BuildOptions.CleanBuildCache);
             root["build"] = SerializeBuildReport(buildReport);
             root["valid"] = buildReport.summary.result == BuildResult.Succeeded
                 && buildReport.summary.totalErrors == 0;
@@ -269,19 +254,12 @@ public static class Qwen35MobilePlatformBuild
 
     private static IDisposable ExcludeUnrelatedStreamingAssets(JObject report)
     {
-        if (string.Equals(
-            Environment.GetEnvironmentVariable(IncludeStreamingAssetsEnvironmentVariable),
-            "1",
-            StringComparison.Ordinal))
+        report["existing_streaming_assets"] = new JObject
         {
-            report["existing_streaming_assets"] = new JObject
-            {
-                ["excluded_from_qwen_build"] = false,
-                ["reason"] = IncludeStreamingAssetsEnvironmentVariable + "=1"
-            };
-            return EmptyDisposable.Instance;
-        }
-        return StreamingAssetsExclusion.Begin(ProjectRoot, report);
+            ["excluded_from_qwen_build"] = false,
+            ["reason"] = "Reduced release builds never move or rename project StreamingAssets."
+        };
+        return EmptyDisposable.Instance;
     }
 
     private static JObject CreateReport(string target, string reportPath)

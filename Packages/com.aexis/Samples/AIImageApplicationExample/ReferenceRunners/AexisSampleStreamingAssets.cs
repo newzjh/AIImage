@@ -95,6 +95,16 @@ namespace Aexis.Samples
             }
 
             var normalized = (relativePath ?? string.Empty).TrimStart('/', '\\').Replace('/', Path.DirectorySeparatorChar);
+            if (!string.IsNullOrWhiteSpace(normalized))
+            {
+                var persistentPath = AIImageModelDelivery.GetPersistentPath(normalized);
+                if (PathExists(persistentPath, expectDirectory))
+                {
+                    path = persistentPath;
+                    return true;
+                }
+            }
+
             var playerRoot = Application.streamingAssetsPath.TrimEnd('/', '\\');
             var playerPath = string.IsNullOrEmpty(normalized) ? playerRoot : Path.Combine(playerRoot, normalized);
 

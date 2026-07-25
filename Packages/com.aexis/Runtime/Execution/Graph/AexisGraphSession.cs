@@ -8162,6 +8162,41 @@ namespace Aexis.Execution
             return null;
         }
 
+        /// <summary>
+        /// Executes the same strict texture-backed graph plan as <see cref="InferWithMultiInputs"/>,
+        /// yielding between small groups of layers so Player UI events and cancellation can run.
+        /// </summary>
+        public Task<InferResult> InferWithMultiInputsAsync(
+            Dictionary<string, RenderTexture> textureInputs,
+            Dictionary<string, AexisTensorBuffer> bufferInputs,
+            ICollection<string> pinnedNames = null,
+            Dictionary<string, BufferShape> textureInputShapes = null,
+            string stopAfterTopName = null,
+            string startAtTopName = null,
+            CancellationToken cancellationToken = default,
+            int yieldEveryLayers = 12)
+        {
+            if (Model == null || _blobUseCount == null)
+                throw new InvalidOperationException("model not loaded");
+            EnsureProductionDebugOverridesRejected();
+            if ((textureInputs == null || textureInputs.Count == 0) && (bufferInputs == null || bufferInputs.Count == 0))
+                throw new ArgumentNullException(nameof(textureInputs));
+            if (LayerRepros != null && LayerRepros.Count == Model.layers.Count)
+            {
+                return InferWithMultiInputsByLayerReprosAsync(
+                    textureInputs,
+                    bufferInputs,
+                    pinnedNames,
+                    textureInputShapes,
+                    stopAfterTopName,
+                    startAtTopName,
+                    cancellationToken,
+                    yieldEveryLayers);
+            }
+
+            return Task.FromResult<InferResult>(null);
+        }
+
         private string ResolveDefaultOutputBlobName()
         {
             if (Model != null && Model.layers != null)
