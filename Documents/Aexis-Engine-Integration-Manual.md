@@ -150,9 +150,18 @@ Aexis 源码使用 MIT，不自动改变模型权重许可证。每一个发布�
 4. 在空工程导入 AIImage Main2 Application Example，运行 StreamingAssets 安装器后再次编译，确认 Main2 与六类携带模型的 runner 可发现。
 5. 安装 Unity Test Framework 并设置 `AEXIS_INCLUDE_EDITOR_TESTS` 后，确认样例附带的 Editor NUnit 测试可被编译和发现；默认导入不应因测试框架缺失而失败。
 6. 检查 package archive 不包含 GFPGAN、Stable Diffusion、SD Inpainting、MONAI/VISTA、QWEN 模型和未声明许可的二进制文件；Json.NET 仅可作为带许可证、来源、固定提交和校验值记录的 `Aexis.Samples.Json` 源码副本存在，禁止复制 `Newtonsoft.Json.dll` 到 `Assets` 或声明同名 UPM 依赖。
-# Player Build Resource Staging
+# Reduced Main2 Model Delivery
 
-When a Player build includes the Main2 application sample, `AexisApplicationExamplePlayerBuildPreprocessor` stages every missing package-default sample resource into `Assets/StreamingAssets` before Unity collects Player data. This includes NCNN `.param` and `.bin` files, ONNX files, tokenizer files, and inference manifests. Existing project files are not overwritten, so large externally supplied GFPGAN, Stable Diffusion, MONAI/VISTA, and QWEN model files remain intact and are included by the normal Unity StreamingAssets build flow. Set `AEXIS_SKIP_SAMPLE_STREAMING_ASSETS_STAGING=1` only for a specialized build pipeline that intentionally replaces the whole StreamingAssets tree.
+Use `Aexis/Release/Build Reduced` for Main2 Player output. The release pipeline never stages,
+moves, or modifies `Assets/StreamingAssets` or package sample `StreamingAssets`; it rewrites only
+generated Player output. Its bundled groups are MobileCLIP S0, CodeFormer, Matting, Real-ESRGAN x4plus anime,
+GFPGAN, YOLOv8 person segmentation, DeepFillV2 case1 ONNX, and Qwen3.5 mobile Q8. MONAI and
+VISTA are excluded. The reduced `.unitypackage` excludes GFPGAN and Qwen model weights.
+
+`Aexis/Release/Build Reduced/Prepare Model Release Assets` creates named model ZIP archives and a
+manifest for the `newzjh/AIImage` GitHub Release. The Editor download window and runtime UI Toolkit
+confirmation dialog support both archives and configured per-release flat assets, installing them
+below persistent data at the runner's required path instead of any source StreamingAssets directory.
 
 ## P1 model contract additions
 
