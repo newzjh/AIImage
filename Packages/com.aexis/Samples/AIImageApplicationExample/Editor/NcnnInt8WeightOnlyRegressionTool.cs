@@ -103,7 +103,7 @@ public static class NcnnInt8WeightOnlyRegressionTool
     private const int GpuWarmupIterations = 2;
     private const int GpuMeasuredIterations = 5;
 
-    [MenuItem("AIImage/Inference/Export INT8 Selective Regression")]
+    [MenuItem("Aexis/Examples/Inference/Export INT8 Selective Regression")]
     public static void ExportFromMenu()
     {
         var root = Path.GetDirectoryName(Application.dataPath);

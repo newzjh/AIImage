@@ -45,7 +45,7 @@ public static class Qwen35MobileQ4AssetBuilder
         "qwen3.5_vision_encoder.ncnn.param"
     };
 
-    [MenuItem("AIImage/Qwen3.5/Build Mobile Q4 Assets")]
+    [MenuItem("Aexis/Examples/Qwen3.5/Build Mobile Q4 Assets")]
     public static void BuildInteractive()
     {
         Build(
@@ -73,15 +73,30 @@ public static class Qwen35MobileQ4AssetBuilder
     internal static string ResolveQ4SourceDirectory()
     {
         var configured = Environment.GetEnvironmentVariable(PlayerQ4ModelVariable);
-        if (!string.IsNullOrWhiteSpace(configured)
-            && Qwen35MobileAssetSet.TryLoad(Path.GetFullPath(configured), verifyHashes: false)?.QuantizationBits == 4)
+        var projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
+        var candidates = new[]
         {
-            return Path.GetFullPath(configured);
+            configured,
+            Path.Combine(projectRoot, "Tools", "Qwen35NcnnBaseline", "_models", "qwen3.5_0.8b_mobile_q4"),
+            Path.Combine(projectRoot, "Assets", "StreamingAssets", "QWEN35", "qwen3.5_0.8b_mobile_q4"),
+            Path.Combine(
+                Application.persistentDataPath,
+                AIImageModelDelivery.PersistentDirectoryName,
+                "QWEN35",
+                "qwen3.5_0.8b_mobile_q4")
+        };
+        for (var index = 0; index < candidates.Length; index++)
+        {
+            var candidate = candidates[index];
+            if (string.IsNullOrWhiteSpace(candidate))
+                continue;
+
+            var fullPath = Path.GetFullPath(candidate);
+            if (Qwen35MobileAssetSet.TryLoad(fullPath, verifyHashes: false)?.QuantizationBits == 4)
+                return fullPath;
         }
 
-        var projectRoot = Path.GetFullPath(Path.Combine(Application.dataPath, ".."));
-        var generated = Path.Combine(projectRoot, "Tools", "Qwen35NcnnBaseline", "_models", "qwen3.5_0.8b_mobile_q4");
-        return Qwen35MobileAssetSet.TryLoad(generated, verifyHashes: false)?.QuantizationBits == 4 ? generated : null;
+        return null;
     }
 
     private static void Build(string sourceModel, string outputModel, int shardBytes)

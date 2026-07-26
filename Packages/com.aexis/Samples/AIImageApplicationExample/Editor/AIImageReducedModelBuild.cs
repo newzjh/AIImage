@@ -201,6 +201,7 @@ public sealed class AIImageReducedModelBuild : IPostprocessBuildWithReport, IPos
         AndroidVulkanBuildSettingsOverride androidSettings = null;
         try
         {
+            ValidateDefaultModelSources();
             if (target == BuildTarget.Android && configureAndroidVulkan)
             {
                 androidSettings = new AndroidVulkanBuildSettingsOverride();
@@ -401,6 +402,21 @@ public sealed class AIImageReducedModelBuild : IPostprocessBuildWithReport, IPos
         CopyRuntimeMetadata(directory);
         WriteBundledManifest(directory);
         ValidateStreamingAssetsDirectory(directory);
+    }
+
+    private static void ValidateDefaultModelSources()
+    {
+        var files = GetDefaultModelFiles();
+        for (var index = 0; index < files.Count; index++)
+        {
+            var relative = files[index];
+            if (ResolveModelSourceFile(relative) == null)
+            {
+                throw new FileNotFoundException(
+                    "The default reduced release model is unavailable. Download or provide it before building.",
+                    relative);
+            }
+        }
     }
 
     private static void CopyRuntimeMetadata(string outputDirectory)

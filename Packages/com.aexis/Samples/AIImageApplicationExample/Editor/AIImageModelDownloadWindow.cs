@@ -14,7 +14,7 @@ public sealed class AIImageModelDownloadWindow : EditorWindow
     private AIImageModelGroupId? _activeGroup;
     private string _error;
 
-    [MenuItem("Tools/AIImage/Download Models...")]
+    [MenuItem("Aexis/Examples/Models/Download Models...")]
     public static void Open()
     {
         var window = GetWindow<AIImageModelDownloadWindow>();

@@ -42,7 +42,7 @@ public static class Qwen35MobileQ8AssetBuilder
         "qwen3.5_vision_encoder.ncnn.param"
     };
 
-    [MenuItem("AIImage/Qwen3.5/Build Mobile Q8 Assets")]
+    [MenuItem("Aexis/Examples/Qwen3.5/Build Mobile Q8 Assets")]
     public static void BuildInteractive()
     {
         Build(
@@ -67,7 +67,7 @@ public static class Qwen35MobileQ8AssetBuilder
         }
     }
 
-    [MenuItem("AIImage/Qwen3.5/Build Mobile INT4 GPU Manifest")]
+    [MenuItem("Aexis/Examples/Qwen3.5/Build Mobile INT4 GPU Manifest")]
     public static void BuildInt4GpuManifestInteractive()
     {
         BuildInt4GpuManifest(Environment.GetEnvironmentVariable(OutputModelVariable));

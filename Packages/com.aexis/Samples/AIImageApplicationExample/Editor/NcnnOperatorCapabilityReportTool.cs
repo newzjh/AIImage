@@ -11,7 +11,7 @@ public static class NcnnOperatorCapabilityReportTool
 {
     private const string DefaultOutputDirectory = "output/operator-capabilities";
 
-    [MenuItem("Tools/AIImage/Inference/Export Operator Capabilities")]
+    [MenuItem("Aexis/Examples/Inference/Export Operator Capabilities")]
     public static void ExportOperatorCapabilities()
     {
         var path = Path.Combine(Directory.GetCurrentDirectory(), DefaultOutputDirectory, "operator-capabilities.json");
@@ -19,7 +19,7 @@ public static class NcnnOperatorCapabilityReportTool
         Debug.Log("[OperatorCapabilities] wrote " + path);
     }
 
-    [MenuItem("Tools/AIImage/Inference/Preflight YOLO and FrozenCLIP")]
+    [MenuItem("Aexis/Examples/Inference/Preflight YOLO and FrozenCLIP")]
     public static void PreflightReferenceModels()
     {
         var root = Directory.GetCurrentDirectory();

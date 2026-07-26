@@ -349,49 +349,49 @@ public static class NcnnDebugRunner
         }
     }
 
-    [MenuItem("Tools/AIImage/Run NCNN Face Debug")]
+    [MenuItem("Aexis/Examples/Debug/Run NCNN Face Debug")]
     public static void RunFaceDebugMenu()
     {
         RunFaceDebug().Forget();
     }
 
-    [MenuItem("Tools/AIImage/Run CodeFormer Debug")]
+    [MenuItem("Aexis/Examples/Debug/Run CodeFormer Debug")]
     public static void RunCodeFormerDebugMenu()
     {
         RunCodeFormerDebug().Forget();
     }
 
-    [MenuItem("Tools/AIImage/Run CLIP Debug")]
+    [MenuItem("Aexis/Examples/Debug/Run CLIP Debug")]
     public static void RunClipDebugMenu()
     {
         RunClipDebug().Forget();
     }
 
-    [MenuItem("Tools/AIImage/Run CLIP Directory Debug")]
+    [MenuItem("Aexis/Examples/Debug/Run CLIP Directory Debug")]
     public static void RunClipDirectoryDebugMenu()
     {
         RunClipDirectoryDebug().Forget();
     }
 
-    [MenuItem("Tools/AIImage/Run GFPGAN Debug")]
+    [MenuItem("Aexis/Examples/Debug/Run GFPGAN Debug")]
     public static void RunGfpganDebugMenu()
     {
         RunGfpganDebug().Forget();
     }
 
-    [MenuItem("Tools/AIImage/Run Matting Debug")]
+    [MenuItem("Aexis/Examples/Debug/Run Matting Debug")]
     public static void RunMattingDebugMenu()
     {
         RunMattingDebug().Forget();
     }
 
-    [MenuItem("Tools/AIImage/Run YOLO Seg Debug")]
+    [MenuItem("Aexis/Examples/Debug/Run YOLO Seg Debug")]
     public static void RunYoloSegDebugMenu()
     {
         RunYoloSegDebug().Forget();
     }
 
-    [MenuItem("Tools/AIImage/Run YOLO + SD Inpainting Debug")]
+    [MenuItem("Aexis/Examples/Debug/Run YOLO + SD Inpainting Debug")]
     public static void RunYoloAndInpaintingDebugMenu()
     {
         RunYoloAndInpaintingDebug().Forget();
@@ -449,43 +449,43 @@ public static class NcnnDebugRunner
         return expected;
     }
 
-    [MenuItem("Tools/AIImage/Run YOLO + DeepFillV2 Debug")]
+    [MenuItem("Aexis/Examples/Debug/Run YOLO + DeepFillV2 Debug")]
     public static void RunYoloAndDeepFillV2DebugMenu()
     {
         RunYoloAndDeepFillV2DebugBatch();
     }
 
-    [MenuItem("Tools/AIImage/Run Stable Diffusion Debug")]
+    [MenuItem("Aexis/Examples/Debug/Run Stable Diffusion Debug")]
     public static void RunStableDiffusionDebugMenu()
     {
         RunStableDiffusionDebug().Forget();
     }
 
-    [MenuItem("Tools/AIImage/Run MONAI Debug")]
+    [MenuItem("Aexis/Examples/Debug/Run MONAI Debug")]
     public static void RunMonaiDebugMenu()
     {
         RunMonaiDebug().Forget();
     }
 
-    [MenuItem("Tools/AIImage/Run DesignView Composite Debug")]
+    [MenuItem("Aexis/Examples/Debug/Run DesignView Composite Debug")]
     public static void RunDesignViewCompositeDebugMenu()
     {
         RunDesignViewCompositeDebug().Forget();
     }
 
-    [MenuItem("Tools/AIImage/Run CodeFormer Stress (60x)")]
+    [MenuItem("Aexis/Examples/Debug/Run CodeFormer Stress (60x)")]
     public static void RunCodeFormerStressMenu()
     {
         RunCodeFormerStressBatch();
     }
 
-    [MenuItem("Tools/AIImage/Run Repro Suite Stress (02.png)")]
+    [MenuItem("Aexis/Examples/Debug/Run Repro Suite Stress (02.png)")]
     public static void RunReproSuiteStressMenu()
     {
         RunReproSuiteStressBatch();
     }
 
-    [MenuItem("Tools/AIImage/Run RealESRGAN Validation Batch")]
+    [MenuItem("Aexis/Examples/Debug/Run RealESRGAN Validation Batch")]
     public static void RunRealEsrganValidationMenu()
     {
         RunRealEsrganValidationBatch();
@@ -2246,7 +2246,7 @@ public static class NcnnDebugRunner
         }
     }
 
-    [MenuItem("Tools/AIImage/Run VISTA3D Debug")]
+    [MenuItem("Aexis/Examples/Debug/Run VISTA3D Debug")]
     public static void RunVista3dDebugMenu()
     {
         RunVista3dDebug().Forget();
