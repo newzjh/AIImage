@@ -11,7 +11,7 @@ using UnityEditor.Build.Reporting;
 using UnityEngine;
 using UnityEngine.Rendering;
 
-public static class AIImageAndroidMuMuSmokeTest
+public static class AIImageAndroidSmokeTest
 {
     private const string AdbPathEnvironmentVariable = "AIIMAGE_ANDROID_ADB_PATH";
     private const string AdbSerialEnvironmentVariable = "AIIMAGE_ANDROID_ADB_SERIAL";
@@ -22,41 +22,41 @@ public static class AIImageAndroidMuMuSmokeTest
     private const string RunnerInputDirectoryName = "aiimage-smoke";
     private const string SmokeMarker = "[AIIMAGE_ANDROID_SMOKE] ready";
 
-    public static void BuildInstallRunMuMuBatch()
+    public static void BuildInstallRunAndroidBatch()
     {
-        RunMuMuSmokeBatch(buildApk: true, requireVulkan: true, runDefaultRunners: false);
+        RunAndroidSmokeBatch(buildApk: true, requireVulkan: true, runDefaultRunners: false);
     }
 
-    public static void InstallRunMuMuExistingApkBatch()
+    public static void InstallRunExistingAndroidApkBatch()
     {
-        RunMuMuSmokeBatch(buildApk: false, requireVulkan: false, runDefaultRunners: false);
+        RunAndroidSmokeBatch(buildApk: false, requireVulkan: false, runDefaultRunners: false);
     }
 
-    public static void InstallRunMuMuExistingVulkanApkBatch()
+    public static void InstallRunExistingAndroidVulkanApkBatch()
     {
-        RunMuMuSmokeBatch(buildApk: false, requireVulkan: true, runDefaultRunners: false);
+        RunAndroidSmokeBatch(buildApk: false, requireVulkan: true, runDefaultRunners: false);
     }
 
-    public static void BuildInstallRunMuMuDefaultRunnersVulkanBatch()
+    public static void BuildInstallRunAndroidDefaultRunnersVulkanBatch()
     {
-        RunMuMuSmokeBatch(buildApk: true, requireVulkan: true, runDefaultRunners: true);
+        RunAndroidSmokeBatch(buildApk: true, requireVulkan: true, runDefaultRunners: true);
     }
 
-    public static void BuildInstallRunMuMuDefaultRunnersVulkanDeviceQualificationBatch()
+    public static void BuildInstallRunAndroidDefaultRunnersVulkanDeviceQualificationBatch()
     {
-        RunMuMuSmokeBatch(
+        RunAndroidSmokeBatch(
             buildApk: true,
             requireVulkan: true,
             runDefaultRunners: true,
             runQwenDeviceQualification: true);
     }
 
-    public static void InstallRunMuMuExistingDefaultRunnersVulkanBatch()
+    public static void InstallRunExistingAndroidDefaultRunnersVulkanBatch()
     {
-        RunMuMuSmokeBatch(buildApk: false, requireVulkan: true, runDefaultRunners: true);
+        RunAndroidSmokeBatch(buildApk: false, requireVulkan: true, runDefaultRunners: true);
     }
 
-    private static void RunMuMuSmokeBatch(
+    private static void RunAndroidSmokeBatch(
         bool buildApk,
         bool requireVulkan,
         bool runDefaultRunners,
@@ -66,7 +66,7 @@ public static class AIImageAndroidMuMuSmokeTest
         var reportPath = ResolveReportPath();
         var report = new JObject
         {
-            ["schema"] = "aiimage.android-mumu-smoke/v1",
+            ["schema"] = "aiimage.android-smoke/v1",
             ["started_utc"] = DateTime.UtcNow.ToString("O"),
             ["unity_version"] = Application.unityVersion,
             ["valid"] = false
@@ -75,7 +75,7 @@ public static class AIImageAndroidMuMuSmokeTest
         try
         {
             var adbPath = ResolveAdbPath();
-            var serial = ResolveSerial();
+            var serial = ResolveSerial(adbPath);
             var apkPath = ResolveApkPath();
             report["adb_path"] = adbPath;
             report["device_serial"] = serial;
@@ -85,14 +85,16 @@ public static class AIImageAndroidMuMuSmokeTest
             report["run_qwen_device_qualification"] = runQwenDeviceQualification;
 
             if (buildApk)
-                BuildNativeMuMuSmokeApk(apkPath, report);
+                BuildNativeAndroidSmokeApk(apkPath, report);
             else
                 report["reused_existing_apk"] = true;
             if (!File.Exists(apkPath))
                 throw new FileNotFoundException("Android smoke APK was not produced.", apkPath);
             report["apk_bytes"] = new FileInfo(apkPath).Length;
 
-            var connect = RunAdb(adbPath, "connect " + Quote(serial), TimeSpan.FromSeconds(20));
+            var connect = RequiresAdbConnect(serial)
+                ? RunAdb(adbPath, "connect " + Quote(serial), TimeSpan.FromSeconds(20))
+                : new CommandResult(0, "not required for the selected Android device", string.Empty);
             report["adb_connect"] = connect.ToJson();
             EnsureSuccess(connect, "ADB connect failed");
             var deviceState = RunAdb(adbPath, "-s " + Quote(serial) + " get-state", TimeSpan.FromSeconds(15));
@@ -233,7 +235,7 @@ public static class AIImageAndroidMuMuSmokeTest
             report["elapsed_ms"] = stopwatch.ElapsedMilliseconds;
             Directory.CreateDirectory(Path.GetDirectoryName(reportPath));
             File.WriteAllText(reportPath, report.ToString());
-            UnityEngine.Debug.Log("Android MuMu smoke report: " + reportPath + " valid=" + success);
+            UnityEngine.Debug.Log("Android smoke report: " + reportPath + " valid=" + success);
             EditorApplication.Exit(success ? 0 : 1);
         }
     }
@@ -242,17 +244,32 @@ public static class AIImageAndroidMuMuSmokeTest
     {
         var path = Environment.GetEnvironmentVariable(AdbPathEnvironmentVariable);
         if (string.IsNullOrWhiteSpace(path))
-            throw new InvalidOperationException(AdbPathEnvironmentVariable + " must contain the MuMu adb.exe path.");
+            throw new InvalidOperationException(AdbPathEnvironmentVariable + " must contain an Android adb.exe path.");
         path = Path.GetFullPath(path);
         if (!File.Exists(path))
             throw new FileNotFoundException("Configured Android adb.exe is missing.", path);
         return path;
     }
 
-    private static string ResolveSerial()
+    private static string ResolveSerial(string adbPath)
     {
         var serial = Environment.GetEnvironmentVariable(AdbSerialEnvironmentVariable);
-        return string.IsNullOrWhiteSpace(serial) ? "127.0.0.1:16384" : serial.Trim();
+        if (!string.IsNullOrWhiteSpace(serial))
+            return serial.Trim();
+
+        var devices = RunAdb(adbPath, "devices", TimeSpan.FromSeconds(15));
+        EnsureSuccess(devices, "Could not enumerate Android devices");
+        var matches = Regex.Matches(devices.StandardOutput, "^(?<serial>[^\\s]+)\\s+device$", RegexOptions.Multiline)
+            .Cast<Match>()
+            .Select(match => match.Groups["serial"].Value)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        if (matches.Length == 1)
+            return matches[0];
+        if (matches.Length == 0)
+            throw new InvalidOperationException("No Android device is connected. Set " + AdbSerialEnvironmentVariable + " for a TCP device before running the smoke test.");
+        throw new InvalidOperationException("Multiple Android devices are connected. Set " + AdbSerialEnvironmentVariable + " to select one.");
     }
 
     private static string ResolveApkPath()
@@ -268,10 +285,10 @@ public static class AIImageAndroidMuMuSmokeTest
         var path = Environment.GetEnvironmentVariable(ReportPathEnvironmentVariable);
         if (!string.IsNullOrWhiteSpace(path))
             return Path.GetFullPath(path);
-        return Path.Combine(ProjectRoot, "Logs", "AIImage_Android_MuMu_Smoke.json");
+        return Path.Combine(ProjectRoot, "Logs", "AIImage_Android_Smoke.json");
     }
 
-    private static void BuildNativeMuMuSmokeApk(string apkPath, JObject report)
+    private static void BuildNativeAndroidSmokeApk(string apkPath, JObject report)
     {
         const BuildTarget target = BuildTarget.Android;
         var originalBuildAppBundle = EditorUserBuildSettings.buildAppBundle;
@@ -281,7 +298,7 @@ public static class AIImageAndroidMuMuSmokeTest
 
             report["test_variant"] = new JObject
             {
-                ["purpose"] = "mumu-arm64-vulkan-install-startup-smoke",
+                ["purpose"] = "android-arm64-vulkan-install-startup-smoke",
                 ["graphics_api"] = GraphicsDeviceType.Vulkan.ToString(),
                 ["android_architecture"] = AndroidArchitecture.ARM64.ToString(),
                 ["application_entry"] = "GameActivity"
@@ -301,7 +318,7 @@ public static class AIImageAndroidMuMuSmokeTest
             };
             if (buildReport.summary.result != BuildResult.Succeeded || buildReport.summary.totalErrors != 0)
                 throw new InvalidOperationException(
-                    "MuMu native smoke APK build failed: result=" + buildReport.summary.result
+                    "Android native smoke APK build failed: result=" + buildReport.summary.result
                     + " errors=" + buildReport.summary.totalErrors);
         }
         finally
@@ -374,6 +391,11 @@ public static class AIImageAndroidMuMuSmokeTest
     private static CommandResult RunAdb(string adbPath, string arguments, TimeSpan timeout)
     {
         return RunProcess(adbPath, arguments, timeout);
+    }
+
+    private static bool RequiresAdbConnect(string serial)
+    {
+        return Regex.IsMatch(serial ?? string.Empty, "^[^\\s:]+:\\d+$", RegexOptions.CultureInvariant);
     }
 
     private static CommandResult RunProcess(string fileName, string arguments, TimeSpan timeout)
