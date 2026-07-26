@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <!-- Android 13+ media access. LibraryView requests this permission at runtime. -->
+  <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+
+  <!-- Required by the same LibraryView flow on Android 12L and earlier. -->
+  <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+
+  <application>
+    <activity
+        android:name="com.unity3d.player.UnityPlayerGameActivity"
+        android:theme="@style/BaseUnityGameActivityTheme"
+        android:enabled="true"
+        android:exported="true"
+        android:launchMode="singleTask"
+        android:screenOrientation="fullSensor"
+        android:configChanges="fontScale|keyboard|keyboardHidden|mcc|mnc|orientation|screenLayout|screenSize|smallestScreenSize|touchscreen|uiMode|layoutDirection|density"
+        android:hardwareAccelerated="false"
+        android:resizeableActivity="false">
+      <intent-filter>
+        <category android:name="android.intent.category.LAUNCHER" />
+        <action android:name="android.intent.action.MAIN" />
+      </intent-filter>
+      <meta-data android:name="unityplayer.UnityActivity" android:value="true" />
+      <meta-data android:name="android.app.lib_name" android:value="game" />
+      <meta-data android:name="notch_support" android:value="true" />
+      <layout android:minWidth="400dp" android:minHeight="300dp" />
+    </activity>
+  </application>
+</manifest>
