@@ -311,7 +311,10 @@ namespace Aexis.Execution
         private static bool IsRealEsrganX4Model(string modelId)
         {
             return string.Equals(modelId, "realesrgan-x4plus", StringComparison.Ordinal)
-                || string.Equals(modelId, "realesrgan-x4plus-anime", StringComparison.Ordinal);
+                || string.Equals(modelId, "realesrgan-x4plus-anime", StringComparison.Ordinal)
+                // AnimeVideo v3 uses the same validated x4 precision contract. The
+                // manifest is a storage contract, not an architecture identifier.
+                || string.Equals(modelId, "realesr-animevideov3-x4", StringComparison.Ordinal);
         }
 
         private static TensorDataType ParseActivationType(string value, string field, string source)

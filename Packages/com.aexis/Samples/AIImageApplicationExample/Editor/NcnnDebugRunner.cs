@@ -1984,8 +1984,8 @@ public static class NcnnDebugRunner
     {
         var configured = ResolveStringEnv(DeepFillV2BackendEnvVar, null);
         if (string.IsNullOrWhiteSpace(configured))
-            configured = ResolveStringEnv(InpaintBackendEnvVar, "both");
-        configured = (configured ?? "both").Trim();
+            configured = ResolveStringEnv(InpaintBackendEnvVar, "ncnn");
+        configured = (configured ?? "ncnn").Trim();
         if (string.Equals(configured, "both", StringComparison.OrdinalIgnoreCase)
             || string.Equals(configured, "all", StringComparison.OrdinalIgnoreCase)
             || string.Equals(configured, "deepfillv2", StringComparison.OrdinalIgnoreCase))
@@ -5800,7 +5800,7 @@ public static class NcnnDebugRunner
             var runner = go.AddComponent<RealEsrganNcnnReproRunner>();
             ConfigureRealEsrganRunner(runner, new RealEsrganValidationRunOptions
             {
-                modelName = models.Count > 0 ? models[0] : "realesrgan-x4plus",
+                modelName = models.Count > 0 ? models[0] : "realesr-animevideov3-x4",
                 useCommandBuffer = false,
                 pack4OnlyGuard = pack4OnlyGuard,
                 reusePersistentRunner = true
@@ -6356,7 +6356,7 @@ public static class NcnnDebugRunner
         }
 
         if (models.Count == 0)
-            models.Add("realesrgan-x4plus");
+            models.Add("realesr-animevideov3-x4");
 
         return models;
     }

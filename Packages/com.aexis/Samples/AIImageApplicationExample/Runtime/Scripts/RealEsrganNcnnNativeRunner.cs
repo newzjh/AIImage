@@ -10,7 +10,7 @@ using UnityEngine.Networking;
 [Obsolete("native plugin mode is not support any more")]
 public sealed class RealEsrganNcnnNativeRunner : MonoBehaviour
 {
-    public string modelName = "realesrgan-x4plus";
+    public string modelName = "realesr-animevideov3-x4";
     public int scale = 2;
     public int tileSize = 128;
     public int gpuId = -1;

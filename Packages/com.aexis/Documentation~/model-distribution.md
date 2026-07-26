@@ -8,9 +8,9 @@ After installing the sample payload, paths are relative to `Application.streamin
 | --- | --- | --- |
 | Clip | `Clip/mobileclip_s0_export` | NCNN image encoder, tokenizer data, label embeddings |
 | CodeFormer | `CodeFormer/models` | Encoder, generator, face detector NCNN pairs |
-| DeepFillV2 | `DeepFileV2` | ONNX source and NCNN pairs |
+| DeepFillV2 | `DeepFileV2` | NCNN `.param` + `.bin` pair by default; source ONNX + `.param` is an alternate representation |
 | Matting | `Matting` | NCNN pair |
-| RealESRGAN | `RealESRGAN/models` | `realesrgan-x4plus-anime` default NCNN pair; other variants on demand |
+| RealESRGAN | `RealESRGAN/models` | `realesr-animevideov3-x4` default NCNN pair; other variants on demand |
 | YOLO | `Yolo` | YOLOv8n-seg and YOLO11n-seg NCNN pairs |
 
 ## Excluded payloads
@@ -26,8 +26,8 @@ The current repository contains `RealESRGAN/LICENSE`; copy that notice with the 
 ## Reduced Main2 delivery
 
 The reduced Main2 release policy is defined by `AIImageModelDelivery`. Its bundled Player set is
-limited to MobileCLIP S0, CodeFormer, Matting, Real-ESRGAN x4plus anime, GFPGAN, YOLOv8 person
-segmentation, DeepFillV2 case1 ONNX, and Qwen3.5 mobile Q8. The Q8 archive is used instead of the FP32 Qwen
+limited to MobileCLIP S0, CodeFormer, Matting, Real-ESRGAN AnimeVideo v3 x4, GFPGAN, YOLOv8 person
+segmentation, DeepFillV2 case1 NCNN, and Qwen3.5 mobile Q8. The Q8 archive is used instead of the FP32 Qwen
 weights. MONAI and VISTA are never added to the reduced release catalog.
 
 `Aexis/Release/Build Reduced/Prepare Model Release Assets` writes one ZIP per delivery group and

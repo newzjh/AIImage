@@ -35,7 +35,7 @@ public sealed class DeepFillV2Runner : MonoBehaviour
     private const int InputWidth = 400;
     private const int InputHeight = 512;
 
-    public DeepFillV2Backend backend = DeepFillV2Backend.OnnxDirect;
+    public DeepFillV2Backend backend = DeepFillV2Backend.NcnnBin;
     public string sourceOnnxRelativePath = "DeepFileV2/deepfillv2_case1.source.onnx";
     public string ncnnParamRelativePath = "DeepFileV2/deepfillv2_case1.ncnn.param";
     public string ncnnBinRelativePath = "DeepFileV2/deepfillv2_case1.ncnn.bin";
@@ -54,6 +54,7 @@ public sealed class DeepFillV2Runner : MonoBehaviour
     private AexisOps _ops;
     private AexisGraphSession _repro;
     private DeepFillV2Backend _loadedBackend;
+    private DeepFillV2Backend _effectiveBackend = DeepFillV2Backend.NcnnBin;
     private string _loadedSignature = string.Empty;
     private bool _hasLoaded;
     private bool _hasAppliedPrecisionMode;
@@ -82,7 +83,7 @@ public sealed class DeepFillV2Runner : MonoBehaviour
             result.elapsedMs = sw.ElapsedMilliseconds;
             result.loadElapsedMs = loadMs;
             result.inferenceElapsedMs = inferMs;
-            result.backend = backend;
+            result.backend = _effectiveBackend;
             result.dumpDir = _lastDumpDir;
             if (string.IsNullOrEmpty(result.modelReport))
                 result.modelReport = BuildModelReport();
@@ -234,14 +235,15 @@ public sealed class DeepFillV2Runner : MonoBehaviour
 
     private async UniTask EnsureLoadedAsync(CancellationToken ct)
     {
-        var paramPath = ResolveStreamingAssetPath(ncnnParamRelativePath);
+        var effectiveBackend = ResolveAvailableBackend(out var paramPath, out var binPath, out var onnxPath);
+        _effectiveBackend = effectiveBackend;
         var signature = BuildLoadSignature(paramPath);
-        if (backend == DeepFillV2Backend.OnnxDirect)
-            signature += "|" + BuildLoadSignature(ResolveStreamingAssetPath(sourceOnnxRelativePath));
+        if (effectiveBackend == DeepFillV2Backend.OnnxDirect)
+            signature += "|" + BuildLoadSignature(onnxPath);
         else
-            signature += "|" + BuildLoadSignature(ResolveStreamingAssetPath(ncnnBinRelativePath));
+            signature += "|" + BuildLoadSignature(binPath);
 
-        if (_hasLoaded && _loadedBackend == backend && string.Equals(_loadedSignature, signature, StringComparison.Ordinal))
+        if (_hasLoaded && _loadedBackend == effectiveBackend && string.Equals(_loadedSignature, signature, StringComparison.Ordinal))
             return;
 
         if (_repro == null)
@@ -249,9 +251,8 @@ public sealed class DeepFillV2Runner : MonoBehaviour
         _repro.Release();
         _lastOnnxReport = null;
 
-        if (backend == DeepFillV2Backend.OnnxDirect)
+        if (effectiveBackend == DeepFillV2Backend.OnnxDirect)
         {
-            var onnxPath = ResolveStreamingAssetPath(sourceOnnxRelativePath);
             var imported = DeepFillV2OnnxNcnnImporter.Import(onnxPath, paramPath);
             _lastOnnxReport = imported.report;
             using (var ms = new MemoryStream(imported.ncnnBinBytes, false))
@@ -261,15 +262,42 @@ public sealed class DeepFillV2Runner : MonoBehaviour
         else
         {
             var paramText = File.ReadAllText(paramPath);
-            var binPath = ResolveStreamingAssetPath(ncnnBinRelativePath);
             using (var fs = File.OpenRead(binPath))
             using (var br = new NcnnBinReader(fs))
                 await _repro.LoadModelAsync(paramText, br, progress => LogLoadProgress("ncnn-bin", progress), ct);
         }
 
-        _loadedBackend = backend;
+        _loadedBackend = effectiveBackend;
         _loadedSignature = signature;
         _hasLoaded = true;
+    }
+
+    // A packaged model may provide either the NCNN payload or its source ONNX.
+    // Prefer the selected backend when it exists, then fall back to the available
+    // representation so old serialized scenes keep working after payload trimming.
+    private DeepFillV2Backend ResolveAvailableBackend(out string paramPath, out string binPath, out string onnxPath)
+    {
+        paramPath = ResolveStreamingAssetPath(ncnnParamRelativePath);
+        binPath = ResolveStreamingAssetPath(ncnnBinRelativePath);
+        onnxPath = ResolveStreamingAssetPath(sourceOnnxRelativePath);
+
+        var hasParam = File.Exists(paramPath);
+        var hasNcnn = hasParam && File.Exists(binPath);
+        var hasOnnx = hasParam && File.Exists(onnxPath);
+        if (backend == DeepFillV2Backend.NcnnBin && hasNcnn)
+            return DeepFillV2Backend.NcnnBin;
+        if (backend == DeepFillV2Backend.OnnxDirect && hasOnnx)
+            return DeepFillV2Backend.OnnxDirect;
+        if (hasNcnn)
+            return DeepFillV2Backend.NcnnBin;
+        if (hasOnnx)
+            return DeepFillV2Backend.OnnxDirect;
+
+        throw new FileNotFoundException(
+            "DeepFillV2 requires either NCNN .param + .bin or source .onnx + .param."
+            + " param=" + paramPath
+            + " bin=" + binPath
+            + " onnx=" + onnxPath);
     }
 
     private static string ResolveStreamingAssetPath(string relativePath)
@@ -279,7 +307,9 @@ public sealed class DeepFillV2Runner : MonoBehaviour
         if (Path.IsPathRooted(relativePath))
             return relativePath;
         var rel = relativePath.Replace('\\', '/').TrimStart('/');
-        return Aexis.Samples.AexisSampleStreamingAssets.ResolveFilePath(rel);
+        return Aexis.Samples.AexisSampleStreamingAssets.TryResolveFilePath(rel, out var path)
+            ? path
+            : null;
     }
 
     private static string BuildLoadSignature(string path)
@@ -366,8 +396,8 @@ public sealed class DeepFillV2Runner : MonoBehaviour
 
     private string BuildModelReport()
     {
-        if (backend != DeepFillV2Backend.OnnxDirect || _lastOnnxReport == null)
-            return "backend=" + backend;
+        if (_effectiveBackend != DeepFillV2Backend.OnnxDirect || _lastOnnxReport == null)
+            return "backend=" + _effectiveBackend;
         return "backend=OnnxDirect"
                + " onnxBytes=" + _lastOnnxReport.onnxBytes.ToString(CultureInfo.InvariantCulture)
                + " generatedBinBytes=" + _lastOnnxReport.generatedBinBytes.ToString(CultureInfo.InvariantCulture)

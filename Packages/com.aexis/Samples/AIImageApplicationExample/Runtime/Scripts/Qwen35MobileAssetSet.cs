@@ -407,9 +407,9 @@ namespace AIImage.Qwen35
     {
         private const long DefaultMobileLoadGcIntervalBytes = 0L;
         // Qwen3.5 emits a short planning prefix before the image description.
-        // Sixteen tokens reaches that prefix but not the answer; 64 is the
-        // smallest validated mobile budget that completes the response.
-        private const int DefaultMobileMaximumNewTokens = 64;
+        // A complete multi-person response needs room to state the count and
+        // enumerate every visible person; 64 tokens cuts that answer off.
+        private const int DefaultMobileMaximumNewTokens = 128;
         // 512 patches preserves the Q4 golden first token while reducing the vision
         // context, decoder KV textures, and transient Pack4 allocations on mobile.
         private const int DefaultMobileMaximumVisionPatches = 512;
@@ -434,7 +434,7 @@ namespace AIImage.Qwen35
             var configured = ResolvePositiveEnvironmentValue(
                 "AIIMAGE_QWEN35_MOBILE_MAX_NEW_TOKENS",
                 DefaultMobileMaximumNewTokens,
-                64);
+                128);
             return Math.Min(requested, configured);
         }
 

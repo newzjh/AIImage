@@ -27,6 +27,10 @@ public sealed class MainView2 : BasePageView
     private const string PrefKeyLumenfallApiKey = "MainView.AI.LumenfallApiKey";
     private const string InpaintBackendEnvVar = "AIIMAGE_INPAINT_BACKEND";
     private const int Qwen35AnalysisMaxNewTokens = 256;
+    private const string Qwen35DirectResponseInstruction =
+        "请直接用中文回答，不要复述任务或展示推理过程。第一行必须写出图中人物总数，"
+        + "然后按从左到右的顺序列出每个独立人物；单独可见的手、手臂、倒影或局部肢体不算额外人物，"
+        + "不要在描述第一个人物后结束。\n";
     private const string Qwen35AnalysisPrompt =
         "请对当前图像进行详细、客观的中文分析，涵盖主体与人物、场景环境、构图、色彩与光线、可见文字、关键细节和可能用途。"
         + "对无法确认的内容明确说明，不要编造。";
@@ -528,6 +532,8 @@ public sealed class MainView2 : BasePageView
         try
         {
             await UniTask.Yield(PlayerLoopTiming.Update, token);
+            var detectedPersonCount = await DetectQwenPersonCountAsync(source, token);
+            await UniTask.Yield(PlayerLoopTiming.Update, token);
             using (var runner = await Qwen35Runner.CreateAsync(
                 modelDirectory,
                 Qwen35AnalysisMaxNewTokens,
@@ -537,7 +543,7 @@ public sealed class MainView2 : BasePageView
             {
                 var result = await runner.GenerateImageAsync(
                     source,
-                    Qwen35AnalysisPrompt,
+                    BuildQwen35AnalysisPrompt(detectedPersonCount),
                     Qwen35SamplingConfig.Greedy(),
                     token,
                     (tokenId, piece) =>
@@ -590,6 +596,55 @@ public sealed class MainView2 : BasePageView
                 ? DisplayStyle.None
                 : DisplayStyle.Flex;
         }
+    }
+
+    private static string BuildQwen35AnalysisPrompt(int detectedPersonCount)
+    {
+        var prompt = Qwen35DirectResponseInstruction;
+        if (detectedPersonCount > 0)
+        {
+            prompt += "本地人物检测已确认图中有 " + detectedPersonCount
+                + " 个独立人物；请以这个人数为准完成逐人描述。\n";
+        }
+        return prompt + Qwen35AnalysisPrompt;
+    }
+
+    private async UniTask<int> DetectQwenPersonCountAsync(Texture2D source, CancellationToken token)
+    {
+        var runner = Host?.YoloSegRunner;
+        if (runner == null || source == null) return 0;
+
+        var result = default(YoloSegResult);
+        var originalTargetPersonOnly = runner.targetPersonOnly;
+        try
+        {
+            runner.targetPersonOnly = true;
+            result = await runner.ProcessAsync(source, token);
+            token.ThrowIfCancellationRequested();
+            return string.IsNullOrWhiteSpace(result.error) ? Mathf.Max(0, result.personCount) : 0;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            UnityEngine.Debug.LogWarning("Qwen3.5 person-count assist failed: " + exception.Message);
+            return 0;
+        }
+        finally
+        {
+            runner.targetPersonOnly = originalTargetPersonOnly;
+            DestroyQwenPersonCountTextures(result);
+            runner.ReleaseRuntimeResources();
+        }
+    }
+
+    private static void DestroyQwenPersonCountTextures(YoloSegResult result)
+    {
+        if (result.texture != null) UnityEngine.Object.Destroy(result.texture);
+        if (result.mask != null) UnityEngine.Object.Destroy(result.mask);
+        if (result.overlay != null) UnityEngine.Object.Destroy(result.overlay);
     }
 
     private void ShowQwenAnalysisOverlay()
@@ -1338,7 +1393,7 @@ public sealed class MainView2 : BasePageView
     {
         var value = Environment.GetEnvironmentVariable(InpaintBackendEnvVar);
         if (string.IsNullOrWhiteSpace(value))
-            return PeopleRemovalInpaintBackend.DeepFillV2Onnx;
+            return PeopleRemovalInpaintBackend.DeepFillV2Ncnn;
         value = value.Trim();
         if (string.Equals(value, "sd", StringComparison.OrdinalIgnoreCase)
             || string.Equals(value, "sd15", StringComparison.OrdinalIgnoreCase)
@@ -1397,10 +1452,9 @@ public sealed class MainView2 : BasePageView
         if (src == null)
             return;
 
-        var esrganGroup = string.Equals(
-            Host.RealEsrganReproRunner.modelName,
-            "realesrgan-x4plus-anime",
-            StringComparison.OrdinalIgnoreCase)
+        var esrganModelName = Host.RealEsrganReproRunner.modelName;
+        var esrganGroup = (string.IsNullOrWhiteSpace(esrganModelName)
+            || string.Equals(esrganModelName, "realesr-animevideov3-x4", StringComparison.OrdinalIgnoreCase))
             ? AIImageModelGroupId.RealEsrganX4PlusAnime
             : AIImageModelGroupId.RealEsrganOptionalModels;
         if (!await Host.EnsureModelGroupsAvailableAsync(
@@ -1456,7 +1510,7 @@ public sealed class MainView2 : BasePageView
         if (useSdInpainting)
             requestedGroups.Add(AIImageModelGroupId.StableDiffusion);
         else
-            requestedGroups.Add(ResolveDeepFillV2ModelGroup(Host.DeepFillV2Runner, inpaintBackend));
+            requestedGroups.Add(await ResolveDeepFillV2ModelGroupAsync(Host.DeepFillV2Runner, inpaintBackend));
         if (!await Host.EnsureModelGroupsAvailableAsync(
                 "People removal model download",
                 _lifetimeCts.Token,
@@ -1618,7 +1672,7 @@ public sealed class MainView2 : BasePageView
         return AIImageModelGroupId.Qwen35MobileQ4;
     }
 
-    private static AIImageModelGroupId ResolveDeepFillV2ModelGroup(
+    private static async UniTask<AIImageModelGroupId> ResolveDeepFillV2ModelGroupAsync(
         DeepFillV2Runner runner,
         PeopleRemovalInpaintBackend backend)
     {
@@ -1634,9 +1688,21 @@ public sealed class MainView2 : BasePageView
             }
         }
 
-        return backend == PeopleRemovalInpaintBackend.DeepFillV2Ncnn
+        var preferred = backend == PeopleRemovalInpaintBackend.DeepFillV2Ncnn
             ? AIImageModelGroupId.DeepFillV2Case1Ncnn
             : AIImageModelGroupId.DeepFillV2Case1Onnx;
+        var alternative = preferred == AIImageModelGroupId.DeepFillV2Case1Ncnn
+            ? AIImageModelGroupId.DeepFillV2Case1Onnx
+            : AIImageModelGroupId.DeepFillV2Case1Ncnn;
+
+        // Match DeepFillV2Runner's representation fallback before showing a
+        // download prompt. A build containing either supported representation
+        // should run without requesting the trimmed sibling payload.
+        if (await AIImageModelDelivery.IsAvailableAsync(AIImageModelDelivery.GetGroup(preferred)))
+            return preferred;
+        if (await AIImageModelDelivery.IsAvailableAsync(AIImageModelDelivery.GetGroup(alternative)))
+            return alternative;
+        return preferred;
     }
 
     private static async UniTask ReleaseGpuPressureBeforeInpaintAsync(CancellationToken ct)

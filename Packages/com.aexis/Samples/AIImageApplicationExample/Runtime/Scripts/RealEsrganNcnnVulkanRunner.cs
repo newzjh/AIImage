@@ -14,7 +14,7 @@ using Debug = UnityEngine.Debug;
 public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
 {
     public int scale = 2;
-    public string modelName = "realesrgan-x4plus";
+    public string modelName = "realesr-animevideov3-x4";
     public int tileSize = 128;
     public bool passZeroTileToExeWhenTileSizeIsZero = true;
     public int gpuId = -1;
@@ -87,7 +87,7 @@ public sealed class RealEsrganNcnnVulkanRunner : MonoBehaviour
             return Finish(new RealEsrganResult { error = "Real-ESRGAN model directory not found: " + (modelDir ?? ""), workDir = null });
 
         var s = Mathf.Clamp(scale, 2, 4);
-        var model = string.IsNullOrWhiteSpace(modelName) ? "realesrgan-x4plus" : modelName.Trim();
+        var model = string.IsNullOrWhiteSpace(modelName) ? "realesr-animevideov3-x4" : modelName.Trim();
         var modelFactor = InferModelFactor(model);
         var runFactor = modelFactor;
 

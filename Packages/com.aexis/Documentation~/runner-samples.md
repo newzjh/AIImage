@@ -18,9 +18,9 @@ This is the only application/runner sample. Its installer copies the sample's co
 | `AexisOnnxInspectionRunner` | Cross-platform ONNX byte loading and graph summary | Any `.onnx` model |
 | `Aexis.Samples.Runners.ClipNcnnReproRunner` | Image embedding and label-cache classification | Clip MobileCLIP S0 |
 | `Aexis.Samples.Runners.CodeFormerNcnnReproRunner2` | Face detection, alignment, restoration, and compositing | CodeFormer encoder/generator/detector |
-| `Aexis.Samples.Runners.DeepFillV2Runner` | Masked-image inpainting through ONNX-direct or NCNN loading | DeepFillV2 |
+| `Aexis.Samples.Runners.DeepFillV2Runner` | Masked-image inpainting using the available NCNN pair or source ONNX representation | DeepFillV2 |
 | `Aexis.Samples.Runners.MatterNcnnReproRunner` | Foreground matting and alpha composite generation | Matting |
-| `Aexis.Samples.Runners.RealEsrganNcnnReproRunner` | Tiled texture-native upscaling | RealESRGAN |
+| `Aexis.Samples.Runners.RealEsrganNcnnReproRunner` | Tiled texture-native upscaling | RealESRGAN AnimeVideo v3 x4 |
 | `Aexis.Samples.Runners.YoloSegNcnnReproRunner` | Segmentation detection, masks, transparent output, and overlay | YOLOv8n/YOLO11n segmentation |
 
 The catalog exposes default paths under `Clip`, `CodeFormer`, `DeepFileV2`, `Matting`, `RealESRGAN`, and `Yolo`. Application-specific preprocessing/postprocessing remains example code: applications own input normalization, prompt/token construction, detection decoding, alpha composition, UI, and result presentation.

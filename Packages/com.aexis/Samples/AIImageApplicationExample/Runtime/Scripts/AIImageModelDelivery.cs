@@ -151,12 +151,12 @@ public static class AIImageModelDelivery
             }),
         new AIImageModelGroup(
             AIImageModelGroupId.RealEsrganX4PlusAnime,
-            "Real-ESRGAN x4plus anime",
+            "Real-ESRGAN AnimeVideo v3 x4",
             true,
             new[]
             {
-                "RealESRGAN/models/realesrgan-x4plus-anime.param",
-                "RealESRGAN/models/realesrgan-x4plus-anime.bin"
+                "RealESRGAN/models/realesr-animevideov3-x4.param",
+                "RealESRGAN/models/realesr-animevideov3-x4.bin"
             },
             flatReleaseTag: "realesr"),
         new AIImageModelGroup(
@@ -182,7 +182,7 @@ public static class AIImageModelDelivery
         new AIImageModelGroup(
             AIImageModelGroupId.DeepFillV2Case1Onnx,
             "DeepFillV2 case1 (ONNX)",
-            true,
+            false,
             new[]
             {
                 "DeepFileV2/deepfillv2_case1.source.onnx",
@@ -242,7 +242,7 @@ public static class AIImageModelDelivery
         new AIImageModelGroup(
             AIImageModelGroupId.DeepFillV2Case1Ncnn,
             "DeepFillV2 case1 (NCNN)",
-            false,
+            true,
             new[]
             {
                 "DeepFileV2/deepfillv2_case1.ncnn.param",
@@ -280,9 +280,7 @@ public static class AIImageModelDelivery
                 "RealESRGAN/models/realesr-animevideov3-x2.param",
                 "RealESRGAN/models/realesr-animevideov3-x2.bin",
                 "RealESRGAN/models/realesr-animevideov3-x3.param",
-                "RealESRGAN/models/realesr-animevideov3-x3.bin",
-                "RealESRGAN/models/realesr-animevideov3-x4.param",
-                "RealESRGAN/models/realesr-animevideov3-x4.bin"
+                "RealESRGAN/models/realesr-animevideov3-x3.bin"
             },
             flatReleaseTag: "realesr"),
         new AIImageModelGroup(

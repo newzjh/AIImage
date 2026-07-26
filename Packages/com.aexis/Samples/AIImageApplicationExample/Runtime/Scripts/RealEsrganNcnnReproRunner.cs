@@ -14,7 +14,9 @@ using Aexis.Execution;
 
 public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
 {
-    public string modelName = "realesrgan-x4plus-anime";
+    private const string DefaultModelName = "realesr-animevideov3-x4";
+
+    public string modelName = "realesr-animevideov3-x4";
     public AexisPrecisionMode precisionMode = AexisPrecisionMode.Auto;
     public int tileSize = 128;
     public int tilePad = 10;
@@ -1127,7 +1129,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
 
     private async UniTask EnsureLoaded()
     {
-        var model = string.IsNullOrWhiteSpace(modelName) ? "realesrgan-x4plus-anime" : modelName.Trim();
+        var model = string.IsNullOrWhiteSpace(modelName) ? DefaultModelName : modelName.Trim();
         if (_loaded && !string.Equals(_loadedModelName, model, StringComparison.Ordinal))
         {
             try { _repro?.Release(); } catch { }
@@ -1252,7 +1254,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             var ops = new AexisOps();
             _repro = NcnnInferenceSessionFactory.Create(
                 ops,
-                string.IsNullOrWhiteSpace(modelName) ? "realesrgan-x4plus-anime" : modelName.Trim(),
+                string.IsNullOrWhiteSpace(modelName) ? DefaultModelName : modelName.Trim(),
                 precisionMode);
             _repro.OnConvComplete += OnConvCompleteHandler;
             _appliedPrecisionMode = precisionMode;

@@ -19,6 +19,9 @@ internal sealed class AIImageAndroidRuntimeSmokeReporter : MonoBehaviour
     private const string RunnerInputDirectoryName = "aiimage-smoke";
     private const string FaceInputFileName = "face.png";
     private const string SceneInputFileName = "scene.jpg";
+    private const string QwenMultiPersonSmokePrompt =
+        "Respond directly without explaining the task or your reasoning. First state the total number of distinct people in the image, then list every person from left to right. Do not count an isolated hand, arm, reflection, or other body fragment as an additional person. Do not stop after the first person.";
+    private const int ExpectedQwenPeopleCount = 4;
     // Match Main2's product request. The validated mobile Q4 asset set applies
     // its runtime cap, so this also proves that the mobile tuning is active.
     private const int QwenProductRequestedMaxNewTokens = 256;
@@ -70,6 +73,7 @@ internal sealed class AIImageAndroidRuntimeSmokeReporter : MonoBehaviour
 
     private bool _runDefaultRunnerSmoke;
     private bool _runQwenDeviceQualification;
+    private int _qwenDetectedPersonCount;
     private readonly RunnerReport _runnerReport = new RunnerReport();
 
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
@@ -168,7 +172,10 @@ internal sealed class AIImageAndroidRuntimeSmokeReporter : MonoBehaviour
             await RunYoloAndDeepFillAsync(faceInput);
             await RunMattingAsync(sceneInput);
             await RunClipAsync(faceInput);
-            await RunQwenAsync(sceneInput, _runQwenDeviceQualification);
+            // The face input is ref/02.png: four people arranged from left to right.
+            // It guards against a valid-looking response that silently stops after
+            // describing only the first person.
+            await RunQwenAsync(faceInput, _runQwenDeviceQualification);
 
             _runnerReport.nonQwenValid = AllNonQwenPassed();
             _runnerReport.valid = _runnerReport.nonQwenValid
@@ -240,7 +247,7 @@ internal sealed class AIImageAndroidRuntimeSmokeReporter : MonoBehaviour
 
     private async UniTask RunRealEsrganAsync(Texture2D input)
     {
-        var entry = BeginRunner("realesrgan_x4plus_anime", AIImageModelGroupId.RealEsrganX4PlusAnime);
+        var entry = BeginRunner("realesr_animevideov3_x4", AIImageModelGroupId.RealEsrganX4PlusAnime);
         GameObject gameObject = null;
         Texture2D smallInput = null;
         try
@@ -249,7 +256,7 @@ internal sealed class AIImageAndroidRuntimeSmokeReporter : MonoBehaviour
             smallInput = ResizeInput(input, 128);
             gameObject = new GameObject("AndroidSmoke_RealEsrgan");
             var runner = gameObject.AddComponent<RealEsrganNcnnReproRunner>();
-            runner.modelName = "realesrgan-x4plus-anime";
+            runner.modelName = "realesr-animevideov3-x4";
             runner.enableGpuLayerProfiling = false;
             runner.useCommandBuffer = false;
             runner.disallowBufferAccess = true;
@@ -304,7 +311,7 @@ internal sealed class AIImageAndroidRuntimeSmokeReporter : MonoBehaviour
     private async UniTask RunYoloAndDeepFillAsync(Texture2D input)
     {
         var yoloEntry = BeginRunner("yolov8_person_segmentation", AIImageModelGroupId.YoloV8PersonSegmentation);
-        var deepFillEntry = BeginRunner("deepfillv2_case1_onnx", AIImageModelGroupId.DeepFillV2Case1Onnx);
+        var deepFillEntry = BeginRunner("deepfillv2_case1_ncnn", AIImageModelGroupId.DeepFillV2Case1Ncnn);
         GameObject gameObject = null;
         YoloSegResult yolo = default;
         try
@@ -328,10 +335,11 @@ internal sealed class AIImageAndroidRuntimeSmokeReporter : MonoBehaviour
                 CompleteRunner(deepFillEntry, false, "YOLO did not produce a person mask; DeepFillV2 was not started.", 0L, null);
                 return;
             }
+            _qwenDetectedPersonCount = yolo.personCount;
 
-            await MaterializeGroupAsync(AIImageModelGroupId.DeepFillV2Case1Onnx, deepFillEntry);
+            await MaterializeGroupAsync(AIImageModelGroupId.DeepFillV2Case1Ncnn, deepFillEntry);
             var deepFillRunner = gameObject.AddComponent<DeepFillV2Runner>();
-            deepFillRunner.backend = DeepFillV2Backend.OnnxDirect;
+            deepFillRunner.backend = DeepFillV2Backend.NcnnBin;
             deepFillRunner.enableDebugDump = false;
             var result = await deepFillRunner.ProcessAsync(input, yolo.mask, CancellationToken.None);
             CompleteRunner(deepFillEntry, string.IsNullOrWhiteSpace(result.error) && result.texture != null, result.error, result.elapsedMs, result.texture);
@@ -462,16 +470,19 @@ internal sealed class AIImageAndroidRuntimeSmokeReporter : MonoBehaviour
             {
                 var result = await runner.GenerateImageAsync(
                     input,
-                    "Describe the image in a few words.",
+                    BuildQwenMultiPersonSmokePrompt(_qwenDetectedPersonCount),
                     Qwen35SamplingConfig.Greedy(),
                     CancellationToken.None);
                 stopwatch.Stop();
-                var passed = HasMeaningfulQwenOutput(result);
+                var passed = HasMeaningfulQwenOutput(result)
+                    && MentionsExpectedPeopleCount(result.Text, ExpectedQwenPeopleCount);
                 var detail = "tokens=" + string.Join(",", result.TokenIds)
                     + " | maxNewTokens=" + runner.MaxNewTokens
                     + " | stoppedOnEndOfTurn=" + result.StoppedOnEndOfTurn
                     + " | decoderSteps=" + result.DecoderStepCount
                     + " | visibleTextChars=" + (result.Text ?? string.Empty).Length
+                    + " | expectedPeople=" + ExpectedQwenPeopleCount
+                    + " | detectedPeople=" + _qwenDetectedPersonCount
                     + " | text=" + FormatQwenTextForReport(result.Text);
                 _runnerReport.qwenStatus = passed ? "passed" : "failed";
                 CompleteRunner(entry, passed, detail, stopwatch.ElapsedMilliseconds, null);
@@ -487,6 +498,16 @@ internal sealed class AIImageAndroidRuntimeSmokeReporter : MonoBehaviour
             WriteRunnerReport();
             await UniTask.Yield(PlayerLoopTiming.Update);
         }
+    }
+
+    private static string BuildQwenMultiPersonSmokePrompt(int detectedPersonCount)
+    {
+        if (detectedPersonCount <= 0)
+            return QwenMultiPersonSmokePrompt;
+
+        return QwenMultiPersonSmokePrompt
+            + " A local person detector has verified exactly " + detectedPersonCount
+            + " distinct people. Use that verified count when writing the first line and enumerate that many people.";
     }
 
     private static bool HasMeaningfulQwenOutput(Qwen35GenerationResult result)
@@ -545,6 +566,22 @@ internal sealed class AIImageAndroidRuntimeSmokeReporter : MonoBehaviour
         return formatted.Length <= maximumCharacters
             ? formatted
             : formatted.Substring(0, maximumCharacters) + "...";
+    }
+
+    private static bool MentionsExpectedPeopleCount(string text, int expectedPeopleCount)
+    {
+        var value = (text ?? string.Empty).Trim();
+        if (expectedPeopleCount != 4) return false;
+
+        return value.IndexOf("four people", StringComparison.OrdinalIgnoreCase) >= 0
+            || value.IndexOf("4 people", StringComparison.OrdinalIgnoreCase) >= 0
+            || value.IndexOf("four distinct people", StringComparison.OrdinalIgnoreCase) >= 0
+            || value.IndexOf("4 distinct people", StringComparison.OrdinalIgnoreCase) >= 0
+            || value.IndexOf("people: 4", StringComparison.OrdinalIgnoreCase) >= 0
+            || value.IndexOf("四个人", StringComparison.Ordinal) >= 0
+            || value.IndexOf("四人", StringComparison.Ordinal) >= 0
+            || value.IndexOf("人物数量：4", StringComparison.Ordinal) >= 0
+            || value.IndexOf("人物总数：4", StringComparison.Ordinal) >= 0;
     }
 
     private async UniTask MaterializeGroupAsync(AIImageModelGroupId id, RunnerResult entry)
