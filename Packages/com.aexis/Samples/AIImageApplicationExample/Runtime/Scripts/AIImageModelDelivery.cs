@@ -6,6 +6,7 @@ using System.Linq;
 using System.Threading;
 using Aexis.Samples;
 using Aexis.Samples.Async;
+using Aexis.Samples.Json.Linq;
 using UnityEngine;
 using UnityEngine.Networking;
 
@@ -17,6 +18,7 @@ public enum AIImageModelGroupId
     GfpganDefault,
     YoloV8PersonSegmentation,
     DeepFillV2Case1Onnx,
+    Qwen35MobileQ4,
     Qwen35MobileQ8,
     DeepFillV2Case1Ncnn,
     DeepFillV2HiFill,
@@ -188,9 +190,34 @@ public static class AIImageModelDelivery
             },
             flatReleaseTag: "DeepFileV2"),
         new AIImageModelGroup(
+            AIImageModelGroupId.Qwen35MobileQ4,
+            "Qwen3.5 0.8B mobile Q4",
+            true,
+            new[]
+            {
+                "QWEN35/qwen3.5_0.8b_mobile_q4/model.json",
+                "QWEN35/qwen3.5_0.8b_mobile_q4/vocab.txt",
+                "QWEN35/qwen3.5_0.8b_mobile_q4/merges.txt",
+                "QWEN35/qwen3.5_0.8b_mobile_q4/qwen3.5_decoder.ncnn.param",
+                "QWEN35/qwen3.5_0.8b_mobile_q4/qwen3.5_embed_token.ncnn.param",
+                "QWEN35/qwen3.5_0.8b_mobile_q4/qwen3.5_proj_out.ncnn.param",
+                "QWEN35/qwen3.5_0.8b_mobile_q4/qwen3.5_vision_embed_patch.ncnn.param",
+                "QWEN35/qwen3.5_0.8b_mobile_q4/qwen3.5_vision_embed_pos.ncnn.param",
+                "QWEN35/qwen3.5_0.8b_mobile_q4/qwen3.5_vision_encoder.ncnn.param",
+                "QWEN35/qwen3.5_0.8b_mobile_q4/qwen3.5_mobile_q4.model.json",
+                "QWEN35/qwen3.5_0.8b_mobile_q4/qwen3.5_mobile_q4_projection.model.json",
+                "QWEN35/qwen3.5_0.8b_mobile_q4/qwen3.5_mobile_q4_assets.json",
+                "QWEN35/qwen3.5_0.8b_mobile_q4/weights/qwen3.5_decoder.ncnn.bin.q4.part000",
+                "QWEN35/qwen3.5_0.8b_mobile_q4/weights/qwen3.5_decoder.ncnn.bin.q4.part001",
+                "QWEN35/qwen3.5_0.8b_mobile_q4/weights/qwen3.5_embed_token.ncnn.bin.q4.part000",
+                "QWEN35/qwen3.5_0.8b_mobile_q4/weights/qwen3.5_vision_embed_patch.ncnn.bin.q4.part000",
+                "QWEN35/qwen3.5_0.8b_mobile_q4/weights/qwen3.5_vision_embed_pos.ncnn.bin.q4.part000",
+                "QWEN35/qwen3.5_0.8b_mobile_q4/weights/qwen3.5_vision_encoder.ncnn.bin.q4.part000"
+            }),
+        new AIImageModelGroup(
             AIImageModelGroupId.Qwen35MobileQ8,
             "Qwen3.5 0.8B mobile Q8",
-            true,
+            false,
             new[]
             {
                 "QWEN35/qwen3.5_0.8b_mobile_q8/model.json",
@@ -203,7 +230,6 @@ public static class AIImageModelDelivery
                 "QWEN35/qwen3.5_0.8b_mobile_q8/qwen3.5_vision_embed_pos.ncnn.param",
                 "QWEN35/qwen3.5_0.8b_mobile_q8/qwen3.5_vision_encoder.ncnn.param",
                 "QWEN35/qwen3.5_0.8b_mobile_q8/qwen3.5_mobile_q8.model.json",
-                "QWEN35/qwen3.5_0.8b_mobile_q8/qwen3.5_mobile_q4gpu.model.json",
                 "QWEN35/qwen3.5_0.8b_mobile_q8/qwen3.5_mobile_q8_assets.json",
                 "QWEN35/qwen3.5_0.8b_mobile_q8/weights/qwen3.5_decoder.ncnn.bin.q8.part000",
                 "QWEN35/qwen3.5_0.8b_mobile_q8/weights/qwen3.5_decoder.ncnn.bin.q8.part001",
@@ -360,13 +386,14 @@ public static class AIImageModelDelivery
         if (group == null)
             return false;
 
-        for (var index = 0; index < group.Files.Count; index++)
+        var files = GetInstalledRequiredFiles(group);
+        for (var index = 0; index < files.Count; index++)
         {
-            if (!File.Exists(GetPersistentPath(group.Files[index])))
+            if (!File.Exists(GetPersistentPath(files[index])))
                 return false;
         }
 
-        return group.Files.Count > 0;
+        return files.Count > 0;
     }
 
     public static bool IsAvailableLocally(AIImageModelGroup group)
@@ -418,10 +445,31 @@ public static class AIImageModelDelivery
         if (!bundled.Contains(group.Id.ToString()))
             throw new FileNotFoundException("The requested model group is not bundled in this Android player.", group.DisplayName);
 
-        for (var index = 0; index < group.Files.Count; index++)
+        // Copy the static manifest first. Qwen's physical shard list is encoded
+        // inside it, so a fixed part000/part001 list cannot be release-safe.
+        await CopyBundledFilesAsync(group, group.Files, onProgress, cancellationToken);
+        await CopyBundledFilesAsync(group, GetInstalledRequiredFiles(group), onProgress, cancellationToken);
+
+        await MaterializeBundledInferenceManifestsAsync(group, onProgress, cancellationToken);
+
+        if (!IsInstalled(group))
+            throw new InvalidDataException("Bundled Android model files are incomplete for " + group.DisplayName + ".");
+        onProgress?.Invoke(new AIImageModelDownloadProgress(group, 1f, "Bundled model files ready"));
+    }
+
+    private static async UniTask CopyBundledFilesAsync(
+        AIImageModelGroup group,
+        IReadOnlyList<string> files,
+        Action<AIImageModelDownloadProgress> onProgress,
+        CancellationToken cancellationToken)
+    {
+        if (files == null)
+            return;
+
+        for (var index = 0; index < files.Count; index++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var relative = group.Files[index];
+            var relative = files[index];
             var destination = GetPersistentPath(relative);
             if (File.Exists(destination))
                 continue;
@@ -439,7 +487,7 @@ public static class AIImageModelDelivery
                     while (!operation.isDone)
                     {
                         cancellationToken.ThrowIfCancellationRequested();
-                        var completed = (index + request.downloadProgress) / Mathf.Max(1, group.Files.Count);
+                        var completed = (index + request.downloadProgress) / Mathf.Max(1, files.Count);
                         onProgress?.Invoke(new AIImageModelDownloadProgress(group, completed, "Preparing bundled model files"));
                         await UniTask.Yield(PlayerLoopTiming.Update, cancellationToken);
                     }
@@ -459,12 +507,47 @@ public static class AIImageModelDelivery
                 Cleanup(staging);
             }
         }
+    }
 
-        await MaterializeBundledInferenceManifestsAsync(group, onProgress, cancellationToken);
+    private static IReadOnlyList<string> GetInstalledRequiredFiles(AIImageModelGroup group)
+    {
+        var files = new List<string>(group?.Files ?? Array.Empty<string>());
+        if (group?.Id == AIImageModelGroupId.Qwen35MobileQ4)
+        {
+            var manifest = GetPersistentPath("QWEN35/qwen3.5_0.8b_mobile_q4/qwen3.5_mobile_q4_assets.json");
+            AppendQwen35ShardFiles(manifest, files);
+        }
+        return files
+            .Select(NormalizeRelativePath)
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
 
-        if (!IsInstalled(group))
-            throw new InvalidDataException("Bundled Android model files are incomplete for " + group.DisplayName + ".");
-        onProgress?.Invoke(new AIImageModelDownloadProgress(group, 1f, "Bundled model files ready"));
+    private static void AppendQwen35ShardFiles(string manifestPath, ICollection<string> files)
+    {
+        if (files == null || string.IsNullOrWhiteSpace(manifestPath) || !File.Exists(manifestPath))
+            return;
+
+        var document = JObject.Parse(File.ReadAllText(manifestPath));
+        var logicalFiles = document["logical_files"] as JObject;
+        if (logicalFiles == null)
+            throw new InvalidDataException("Qwen3.5 mobile asset manifest has no logical_files object.");
+
+        const string prefix = "QWEN35/qwen3.5_0.8b_mobile_q4/";
+        foreach (var logical in logicalFiles.Properties())
+        {
+            var parts = logical.Value["parts"] as JArray;
+            if (parts == null)
+                throw new InvalidDataException("Qwen3.5 mobile logical asset has no parts array: " + logical.Name);
+            foreach (var part in parts)
+            {
+                var path = NormalizeRelativePath((string)part["file"]);
+                if (string.IsNullOrWhiteSpace(path))
+                    throw new InvalidDataException("Qwen3.5 mobile shard path is empty: " + logical.Name);
+                files.Add(prefix + path);
+            }
+        }
     }
 
     private static async UniTask MaterializeBundledInferenceManifestsAsync(

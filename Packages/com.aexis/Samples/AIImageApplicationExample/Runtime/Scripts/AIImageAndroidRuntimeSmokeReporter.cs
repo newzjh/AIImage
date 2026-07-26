@@ -19,6 +19,9 @@ internal sealed class AIImageAndroidRuntimeSmokeReporter : MonoBehaviour
     private const string RunnerInputDirectoryName = "aiimage-smoke";
     private const string FaceInputFileName = "face.png";
     private const string SceneInputFileName = "scene.jpg";
+    // Match Main2's product request. The validated mobile Q4 asset set applies
+    // its runtime cap, so this also proves that the mobile tuning is active.
+    private const int QwenProductRequestedMaxNewTokens = 256;
     private const string LogPrefix = "[AIIMAGE_ANDROID_SMOKE]";
 
     [Serializable]
@@ -418,16 +421,18 @@ internal sealed class AIImageAndroidRuntimeSmokeReporter : MonoBehaviour
 
     private async UniTask RunQwenAsync(Texture2D input, bool deviceQualificationRun)
     {
-        var entry = BeginRunner("qwen35_mobile_q8", AIImageModelGroupId.Qwen35MobileQ8);
+        var entry = BeginRunner("qwen35_mobile_q4", AIImageModelGroupId.Qwen35MobileQ4);
         try
         {
             var compatibility = deviceQualificationRun
                 ? Qwen35DeviceCompatibility.EvaluateCapabilitiesForDeviceQualification(
                     hasValidatedMobileAssets: true,
-                    Qwen35DeviceCapabilities.CaptureCurrent())
+                    Qwen35DeviceCapabilities.CaptureCurrent(),
+                    quantizationBits: 4)
                 : Qwen35DeviceCompatibility.EvaluateCapabilities(
                     hasValidatedMobileAssets: true,
-                    Qwen35DeviceCapabilities.CaptureCurrent());
+                    Qwen35DeviceCapabilities.CaptureCurrent(),
+                    quantizationBits: 4);
             if (!compatibility.Supported)
             {
                 _runnerReport.qwenStatus = "blocked_device_compatibility";
@@ -437,15 +442,23 @@ internal sealed class AIImageAndroidRuntimeSmokeReporter : MonoBehaviour
                 return;
             }
 
-            await MaterializeGroupAsync(AIImageModelGroupId.Qwen35MobileQ8, entry);
+            await MaterializeGroupAsync(AIImageModelGroupId.Qwen35MobileQ4, entry);
             var directory = Path.Combine(
                 AIImageModelDelivery.PersistentRoot,
                 "QWEN35",
-                "qwen3.5_0.8b_mobile_q8");
+                "qwen3.5_0.8b_mobile_q4");
             var stopwatch = Stopwatch.StartNew();
             using (var runner = deviceQualificationRun
-                ? await Qwen35Runner.CreateForDeviceQualificationAsync(directory, 4, true, CancellationToken.None)
-                : await Qwen35Runner.CreateAsync(directory, 4, true, CancellationToken.None))
+                ? await Qwen35Runner.CreateForDeviceQualificationAsync(
+                    directory,
+                    QwenProductRequestedMaxNewTokens,
+                    true,
+                    CancellationToken.None)
+                : await Qwen35Runner.CreateAsync(
+                    directory,
+                    QwenProductRequestedMaxNewTokens,
+                    true,
+                    CancellationToken.None))
             {
                 var result = await runner.GenerateImageAsync(
                     input,
@@ -453,16 +466,13 @@ internal sealed class AIImageAndroidRuntimeSmokeReporter : MonoBehaviour
                     Qwen35SamplingConfig.Greedy(),
                     CancellationToken.None);
                 stopwatch.Stop();
-                // The validated Q8 baseline can legitimately emit an immediate
-                // end-of-turn control token for a short smoke prompt. Validate
-                // the completed decoder path instead of requiring visible prose.
-                var passed = result.TokenIds.Count > 0
-                    && result.DecoderStepCount >= 2
-                    && result.FinalPosition > 0;
+                var passed = HasMeaningfulQwenOutput(result);
                 var detail = "tokens=" + string.Join(",", result.TokenIds)
+                    + " | maxNewTokens=" + runner.MaxNewTokens
                     + " | stoppedOnEndOfTurn=" + result.StoppedOnEndOfTurn
                     + " | decoderSteps=" + result.DecoderStepCount
-                    + " | visibleTextChars=" + (result.Text ?? string.Empty).Length;
+                    + " | visibleTextChars=" + (result.Text ?? string.Empty).Length
+                    + " | text=" + FormatQwenTextForReport(result.Text);
                 _runnerReport.qwenStatus = passed ? "passed" : "failed";
                 CompleteRunner(entry, passed, detail, stopwatch.ElapsedMilliseconds, null);
             }
@@ -477,6 +487,64 @@ internal sealed class AIImageAndroidRuntimeSmokeReporter : MonoBehaviour
             WriteRunnerReport();
             await UniTask.Yield(PlayerLoopTiming.Update);
         }
+    }
+
+    private static bool HasMeaningfulQwenOutput(Qwen35GenerationResult result)
+    {
+        if (result == null || result.TokenIds == null || result.TokenIds.Count < 2
+            || result.DecoderStepCount < 2 || result.FinalPosition <= 0)
+        {
+            return false;
+        }
+
+        var text = (result.Text ?? string.Empty).Trim();
+        if (text.Length < 2 || text.IndexOf("Iterations", StringComparison.OrdinalIgnoreCase) >= 0)
+            return false;
+
+        var meaningfulCharacters = 0;
+        for (var index = 0; index < text.Length; index++)
+        {
+            if (char.IsLetterOrDigit(text[index]))
+                meaningfulCharacters++;
+        }
+
+        if (meaningfulCharacters < 2)
+            return false;
+
+        // A quantization or token-index fault can yield a long run of token
+        // brackets or a repeated alphanumeric character. Do not reject normal
+        // Markdown emphasis, which can legitimately contain consecutive '*'.
+        var consecutiveRepeats = 1;
+        for (var index = 1; index < text.Length; index++)
+        {
+            if (text[index] == text[index - 1])
+            {
+                consecutiveRepeats++;
+                if (consecutiveRepeats >= 4
+                    && (text[index] == '[' || text[index] == ']'
+                        || char.IsLetterOrDigit(text[index])))
+                    return false;
+            }
+            else
+            {
+                consecutiveRepeats = 1;
+            }
+        }
+
+        return true;
+    }
+
+    private static string FormatQwenTextForReport(string text)
+    {
+        const int maximumCharacters = 240;
+        var formatted = (text ?? string.Empty)
+            .Trim()
+            .Replace("\\", "\\\\")
+            .Replace("\r", "\\r")
+            .Replace("\n", "\\n");
+        return formatted.Length <= maximumCharacters
+            ? formatted
+            : formatted.Substring(0, maximumCharacters) + "...";
     }
 
     private async UniTask MaterializeGroupAsync(AIImageModelGroupId id, RunnerResult entry)

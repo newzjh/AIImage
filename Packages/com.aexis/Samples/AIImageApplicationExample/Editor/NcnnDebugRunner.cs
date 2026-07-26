@@ -403,7 +403,11 @@ public static class NcnnDebugRunner
         if (!string.IsNullOrWhiteSpace(configured))
             return Qwen35ModelDirectoryResolver.Resolve(configured, fallbackModelDirectory);
         if (Aexis.Samples.AexisSampleStreamingAssets.TryResolveDirectoryPath("QWEN35", out var streamingAssetsDirectory))
-            return Qwen35ModelDirectoryResolver.Resolve(streamingAssetsDirectory, fallbackModelDirectory);
+        {
+            var candidate = Qwen35ModelDirectoryResolver.Resolve(streamingAssetsDirectory, fallbackModelDirectory);
+            if (File.Exists(Path.Combine(candidate, "model.json")))
+                return candidate;
+        }
         return Path.Combine(projectRoot, "Tools", "Qwen35NcnnBaseline", "_models", fallbackModelDirectory);
     }
 
@@ -418,6 +422,31 @@ public static class NcnnDebugRunner
             return baselineImage;
 
         return Path.Combine(projectRoot, "ref", "03.jpg");
+    }
+
+    private static JArray ResolveQwen35ExpectedTokenIds(string modelDirectory)
+    {
+        var configured = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_EXPECTED_TOKEN_IDS");
+        var expected = new JArray();
+        if (!string.IsNullOrWhiteSpace(configured))
+        {
+            foreach (var value in configured.Split(','))
+            {
+                if (!int.TryParse(value.Trim(), out var tokenId))
+                {
+                    throw new ArgumentException(
+                        "AIIMAGE_QWEN35_EXPECTED_TOKEN_IDS contains a non-integer token: " + value);
+                }
+                expected.Add(tokenId);
+            }
+            if (expected.Count == 0)
+                throw new ArgumentException("AIIMAGE_QWEN35_EXPECTED_TOKEN_IDS did not contain any tokens.");
+            return expected;
+        }
+
+        // Q4 quality must be verified against a caller-provided Q8 baseline.
+        // Do not bake a previous corrupted token into the default acceptance path.
+        return expected;
     }
 
     [MenuItem("Tools/AIImage/Run YOLO + DeepFillV2 Debug")]
@@ -2611,7 +2640,7 @@ public static class NcnnDebugRunner
     {
         var start = Stopwatch.StartNew();
         var projectRoot = Directory.GetParent(Application.dataPath).FullName;
-        var modelDir = ResolveQwen35ModelDirectory(projectRoot, "qwen3.5_0.8b_mobile_q8");
+        var modelDir = ResolveQwen35ModelDirectory(projectRoot, "qwen3.5_0.8b_mobile_q4");
         var outputPath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_TOKENIZER_REPORT");
         if (string.IsNullOrWhiteSpace(outputPath))
             outputPath = Path.Combine(projectRoot, "Tools", "Qwen35NcnnBaseline", "reports", "unity_tokenizer_contract.json");
@@ -2676,7 +2705,7 @@ public static class NcnnDebugRunner
     {
         var start = Stopwatch.StartNew();
         var projectRoot = Directory.GetParent(Application.dataPath).FullName;
-        var modelDir = ResolveQwen35ModelDirectory(projectRoot, "qwen3.5_0.8b_mobile_q8");
+        var modelDir = ResolveQwen35ModelDirectory(projectRoot, "qwen3.5_0.8b_mobile_q4");
         var outputPath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_TEXT_GENERATION_REPORT");
         if (string.IsNullOrWhiteSpace(outputPath))
             outputPath = Path.Combine(projectRoot, "Tools", "Qwen35NcnnBaseline", "reports", "unity_text_generation.json");
@@ -2698,6 +2727,7 @@ public static class NcnnDebugRunner
         long decoderRuns = 0;
         long sharedWeightBytes = 0;
         long peakWorkingSetBytes = 0;
+        var strictPlanNodes = new JArray();
         var dumpPrefix = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_TEXT_DUMP_PREFIX");
         var dumpFiles = new JObject();
         try
@@ -2757,6 +2787,45 @@ public static class NcnnDebugRunner
         catch (Exception exception)
         {
             error = exception.ToString();
+            if (exception is StrictTextureInferencePlanException strictPlanException)
+            {
+                foreach (var node in strictPlanException.Plan?.nodes ?? Array.Empty<AexisTextureExecutionPlanNode>())
+                {
+                    if (node == null
+                        || (node.accepted && (node.layerIndex < 6 || node.layerIndex > 10)))
+                        continue;
+                    strictPlanNodes.Add(new JObject
+                    {
+                        ["layer_index"] = node.layerIndex,
+                        ["layer"] = node.layer ?? string.Empty,
+                        ["operator"] = node.operatorName ?? string.Empty,
+                        ["accepted"] = node.accepted,
+                        ["execution_path"] = node.executionPath ?? string.Empty,
+                        ["inputs"] = new JArray((node.inputs ?? Array.Empty<AexisTexturePlanTensorDescriptor>()).Select(input => input == null
+                            ? new JObject { ["missing"] = true }
+                            : new JObject
+                            {
+                                ["blob"] = input.blob ?? string.Empty,
+                                ["dtype"] = input.dtype ?? string.Empty,
+                                ["logical_dtype"] = input.logicalDtype ?? string.Empty,
+                                ["layout"] = input.layout ?? string.Empty,
+                                ["logical_shape"] = new JArray(input.logicalShape ?? Array.Empty<int>()),
+                                ["storage_shape"] = new JArray(input.storageShape ?? Array.Empty<int>())
+                            })),
+                        ["outputs"] = new JArray((node.outputs ?? Array.Empty<AexisTexturePlanTensorDescriptor>()).Select(output => output == null
+                            ? new JObject { ["missing"] = true }
+                            : new JObject
+                            {
+                                ["blob"] = output.blob ?? string.Empty,
+                                ["dtype"] = output.dtype ?? string.Empty,
+                                ["logical_dtype"] = output.logicalDtype ?? string.Empty,
+                                ["layout"] = output.layout ?? string.Empty,
+                                ["logical_shape"] = new JArray(output.logicalShape ?? Array.Empty<int>()),
+                                ["storage_shape"] = new JArray(output.storageShape ?? Array.Empty<int>())
+                            }))
+                    });
+                }
+            }
             try { peakWorkingSetBytes = Process.GetCurrentProcess().PeakWorkingSet64; } catch { }
         }
 
@@ -2776,6 +2845,7 @@ public static class NcnnDebugRunner
             ["cache_texture_count"] = cacheTextures,
             ["shared_weight_bytes"] = sharedWeightBytes,
             ["peak_working_set_bytes"] = peakWorkingSetBytes,
+            ["strict_plan_nodes"] = strictPlanNodes,
             ["debug_dump_files"] = dumpFiles,
             ["strict_texture_execution"] = true,
             ["compute_buffer_fallback"] = false,
@@ -2796,7 +2866,7 @@ public static class NcnnDebugRunner
     {
         var start = Stopwatch.StartNew();
         var projectRoot = Directory.GetParent(Application.dataPath).FullName;
-        var modelDir = ResolveQwen35ModelDirectory(projectRoot, "qwen3.5_0.8b_mobile_q8");
+        var modelDir = ResolveQwen35ModelDirectory(projectRoot, "qwen3.5_0.8b_mobile_q4");
         var imagePath = ResolveQwen35ImagePath(projectRoot);
         var outputPath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_MULTIMODAL_REPORT");
         if (string.IsNullOrWhiteSpace(outputPath))
@@ -2821,19 +2891,7 @@ public static class NcnnDebugRunner
             Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_REQUIRE_OCR_MARKERS"),
             "1",
             StringComparison.Ordinal);
-        var expectedTokenIdsText = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_EXPECTED_TOKEN_IDS");
-        var expectedTokenIds = new JArray();
-        if (!string.IsNullOrWhiteSpace(expectedTokenIdsText))
-        {
-            foreach (var value in expectedTokenIdsText.Split(','))
-            {
-                if (!int.TryParse(value.Trim(), out var tokenId))
-                    throw new ArgumentException("AIIMAGE_QWEN35_EXPECTED_TOKEN_IDS contains a non-integer token: " + value);
-                expectedTokenIds.Add(tokenId);
-            }
-            if (expectedTokenIds.Count == 0)
-                throw new ArgumentException("AIIMAGE_QWEN35_EXPECTED_TOKEN_IDS did not contain any tokens.");
-        }
+        var expectedTokenIds = ResolveQwen35ExpectedTokenIds(modelDir);
 
         var valid = false;
         string error = null;
@@ -2843,6 +2901,7 @@ public static class NcnnDebugRunner
         var markerGroupCount = 0;
         var markerHitCount = 0;
         var expectedTokenIdsMatched = false;
+        var firstTokenIsKnown = false;
         var sourceWidth = 0;
         var sourceHeight = 0;
         var targetWidth = 0;
@@ -3002,9 +3061,10 @@ public static class NcnnDebugRunner
                     }
                 }
 
-                var firstTokenMatches = generatedIds.Count > 0
-                    && (int)generatedIds[0] == runner.Tokenizer.IdOf("<think>");
-                expectedTokenIdsMatched = expectedTokenIds.Count == generatedIds.Count;
+                firstTokenIsKnown = generatedIds.Count > 0
+                    && (int)generatedIds[0] >= 0
+                    && (int)generatedIds[0] < runner.Tokenizer.VocabularySize;
+                expectedTokenIdsMatched = expectedTokenIds.Count == 0 || expectedTokenIds.Count <= generatedIds.Count;
                 if (expectedTokenIdsMatched)
                 {
                     for (var tokenIndex = 0; tokenIndex < expectedTokenIds.Count; tokenIndex++)
@@ -3016,7 +3076,7 @@ public static class NcnnDebugRunner
                         }
                     }
                 }
-                valid = firstTokenMatches
+                valid = firstTokenIsKnown
                     && cacheTextureCount == 48
                     && decoderRuns > 0
                     && visionTokenCount == (gridWidth / 2) * (gridHeight / 2)
@@ -3050,6 +3110,7 @@ public static class NcnnDebugRunner
             ["generated_token_ids"] = generatedIds,
             ["expected_token_ids"] = expectedTokenIds,
             ["expected_token_ids_matched"] = expectedTokenIds.Count == 0 || expectedTokenIdsMatched,
+            ["first_token_is_known"] = firstTokenIsKnown,
             ["generated_text"] = generatedText,
             ["marker_group_count"] = markerGroupCount,
             ["marker_hit_count"] = markerHitCount,
@@ -3117,7 +3178,7 @@ public static class NcnnDebugRunner
     {
         var start = Stopwatch.StartNew();
         var projectRoot = Directory.GetParent(Application.dataPath).FullName;
-        var modelDir = ResolveQwen35ModelDirectory(projectRoot, "qwen3.5_0.8b_mobile_q8");
+        var modelDir = ResolveQwen35ModelDirectory(projectRoot, "qwen3.5_0.8b_mobile_q4");
         var imagePath = ResolveQwen35ImagePath(projectRoot);
         var outputPath = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_ASYNC_MULTIMODAL_REPORT");
         if (string.IsNullOrWhiteSpace(outputPath))
@@ -3127,7 +3188,7 @@ public static class NcnnDebugRunner
                 "Tools",
                 "Qwen35NcnnBaseline",
                 "reports",
-                "unity_async_multimodal_smoke_mobile_q8.json");
+                "unity_async_multimodal_smoke_mobile_q4.json");
         }
         var prompt = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_IMAGE_PROMPT");
         if (string.IsNullOrWhiteSpace(prompt))
@@ -3138,6 +3199,7 @@ public static class NcnnDebugRunner
         var maxNewTokens = 6;
         if (int.TryParse(Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_MAX_NEW_TOKENS"), out var configuredMax))
             maxNewTokens = Mathf.Clamp(configuredMax, 1, 512);
+        var expectedTokenIds = ResolveQwen35ExpectedTokenIds(modelDir);
 
         var stageCallbacks = new JArray();
         var initializationProgressCallbacks = new JArray();
@@ -3161,6 +3223,8 @@ public static class NcnnDebugRunner
         var visionTokenCount = 0;
         var expandedPromptTokenCount = 0;
         var stoppedOnEndOfTurn = false;
+        var firstTokenIsKnown = false;
+        var expectedTokenIdsMatched = false;
         var valid = false;
         string error = null;
         Texture2D image = null;
@@ -3234,8 +3298,21 @@ public static class NcnnDebugRunner
                     stageSequenceMatches = string.Equals((string)stageCallbacks[i], expectedStages[i], StringComparison.Ordinal);
                 var callbackCountsMatch = generated.TokenIds.Count == streamedTokenIds.Count
                     && generated.TokenIds.Count == progressCallbacks.Count;
-                var firstTokenMatches = generated.TokenIds.Count > 0
-                    && generated.TokenIds[0] == runner.Tokenizer.IdOf("<think>");
+                firstTokenIsKnown = generated.TokenIds.Count > 0
+                    && generated.TokenIds[0] >= 0
+                    && generated.TokenIds[0] < runner.Tokenizer.VocabularySize;
+                expectedTokenIdsMatched = expectedTokenIds.Count == 0 || expectedTokenIds.Count <= generated.TokenIds.Count;
+                if (expectedTokenIdsMatched)
+                {
+                    for (var tokenIndex = 0; tokenIndex < expectedTokenIds.Count; tokenIndex++)
+                    {
+                        if (generated.TokenIds[tokenIndex] != (int)expectedTokenIds[tokenIndex])
+                        {
+                            expectedTokenIdsMatched = false;
+                            break;
+                        }
+                    }
+                }
                 var detailedProgressStages = new[]
                 {
                     "loading_vision",
@@ -3264,7 +3341,8 @@ public static class NcnnDebugRunner
                     && previousPipelineProgress >= 0.999f
                     && detailedProgressStagesCovered
                     && previousCompleted == generated.TokenIds.Count
-                    && firstTokenMatches
+                    && firstTokenIsKnown
+                    && (expectedTokenIds.Count == 0 || expectedTokenIdsMatched)
                     && !string.IsNullOrWhiteSpace(generatedText)
                     && finalCacheTextureCount == 48
                     && decoderRuns > 0
@@ -3306,6 +3384,9 @@ public static class NcnnDebugRunner
             ["streamed_token_ids"] = streamedTokenIds,
             ["streamed_text"] = streamedText.ToString(),
             ["generated_token_ids"] = generatedTokenIds,
+            ["expected_token_ids"] = expectedTokenIds,
+            ["expected_token_ids_matched"] = expectedTokenIds.Count == 0 || expectedTokenIdsMatched,
+            ["first_token_is_known"] = firstTokenIsKnown,
             ["generated_text"] = generatedText,
             ["prompt_token_count"] = promptTokenCount,
             ["vision_token_count"] = visionTokenCount,

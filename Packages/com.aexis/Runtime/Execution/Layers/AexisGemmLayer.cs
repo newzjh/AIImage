@@ -48,16 +48,23 @@ namespace Aexis.Execution
                                             var hasSharedInt8 = owner.SharedTokenEmbeddingWeightsInt8Packed != null
                                                 && owner.SharedTokenEmbeddingWeightsInt8Scales != null
                                                 && owner.UsesInt8WeightOnlyForLayer(layer);
+                                            var hasSharedInt4 = owner.SharedTokenEmbeddingWeightsInt4Packed != null
+                                                && owner.SharedTokenEmbeddingWeightsInt4Scales != null
+                                                && owner.UsesInt4WeightOnlyForLayer(layer);
                                             var useSharedWeights = owner.SharedTokenEmbeddingElementCount == weightCount
-                                                && (hasSharedFp32 || hasSharedInt8);
+                                                && (hasSharedFp32 || hasSharedInt8 || hasSharedInt4);
                                             AexisQuantizedTensor directQ8 = null;
+                                            AexisQuantizedTensor directQ4 = null;
 
                                             phaseSw.Restart();
                                             if (useSharedWeights)
                                                 br.SkipTensor(bw, bh, 0, 0, 0);
-                                            else if (!(owner.UsesInt8WeightOnlyForLayer(layer)
+                                            else if (!(owner.UsesInt4WeightOnlyForLayer(layer)
                                                 && gp.transB
-                                                && br.TryReadQuantizedTensor(weightCount, gp.constantK, out directQ8)))
+                                                && br.TryReadInt4QuantizedTensor(weightCount, gp.constantK, out directQ4))
+                                                && !(owner.UsesInt8WeightOnlyForLayer(layer)
+                                                    && gp.transB
+                                                    && br.TryReadQuantizedTensor(weightCount, gp.constantK, out directQ8)))
                                                 gp.bDataCpu = AexisGraphSession.ReadClipMatAsFloat32(br, bw, bh, 0, 0, 0);
                                             if (gp.constantC && gp.broadcastTypeC != -1)
                                             {
@@ -89,6 +96,13 @@ namespace Aexis.Execution
                                                     gp.bDataInt8Scales = owner.SharedTokenEmbeddingWeightsInt8Scales;
                                                     gp.ownsBDataInt8 = false;
                                                 }
+                                                else if (hasSharedInt4)
+                                                {
+                                                    gp.bDataInt4Packed = owner.SharedTokenEmbeddingWeightsInt4Packed;
+                                                    gp.bDataInt4Scales = owner.SharedTokenEmbeddingWeightsInt4Scales;
+                                                    gp.int4ScaleBlockSize = owner.SharedTokenEmbeddingWeightsInt4ScaleBlockSize;
+                                                    gp.ownsBDataInt4 = false;
+                                                }
                                                 else
                                                 {
                                                     gp.bData = owner.SharedTokenEmbeddingWeights;
@@ -97,14 +111,21 @@ namespace Aexis.Execution
                                             }
                                             else if (owner.UsesInt4WeightOnlyForLayer(layer))
                                             {
-                                                var quantized = AexisGraphSession.NewInt4WeightOnlyUpload(
-                                                    gp.bDataCpu,
-                                                    gp.constantN,
-                                                    gp.constantK,
-                                                    outputChannelsAreContiguous: gp.transB,
-                                                    "AexisGraphSession.GemmInt4WeightOnly:" + layer.name);
+                                                var quantized = directQ4 != null
+                                                    ? AexisGraphSession.NewInt4WeightOnlyUpload(
+                                                        directQ4,
+                                                        gp.constantN,
+                                                        gp.constantK,
+                                                        "AexisGraphSession.GemmInt4WeightOnlyDirect:" + layer.name)
+                                                    : AexisGraphSession.NewInt4WeightOnlyUpload(
+                                                        gp.bDataCpu,
+                                                        gp.constantN,
+                                                        gp.constantK,
+                                                        outputChannelsAreContiguous: gp.transB,
+                                                        "AexisGraphSession.GemmInt4WeightOnly:" + layer.name);
                                                 gp.bDataInt4Packed = quantized.packedWeights;
                                                 gp.bDataInt4Scales = quantized.scales;
+                                                gp.int4ScaleBlockSize = quantized.scaleBlockSize;
                                             }
                                             else if (owner.UsesInt8WeightOnlyForLayer(layer))
                                             {
@@ -298,7 +319,8 @@ namespace Aexis.Execution
                 useInt8WeightOnly && hasPack ? pack.bDataInt8Scales : null);
             owner.Ops.SetInt4GemmWeights(
                 useInt4WeightOnly && hasPack ? pack.bDataInt4Packed : null,
-                useInt4WeightOnly && hasPack ? pack.bDataInt4Scales : null);
+                useInt4WeightOnly && hasPack ? pack.bDataInt4Scales : null,
+                useInt4WeightOnly && hasPack ? pack.int4ScaleBlockSize : 1);
             owner.ConfigureInt8ActivationQuantization(layer);
         }
 

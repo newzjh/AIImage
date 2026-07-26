@@ -159,13 +159,15 @@ public static class Qwen35MobilePlatformBuild
 
         var mobileAssets = Qwen35MobileAssetSet.TryLoad(modelDirectory, verifyHashes: true);
         if (mobileAssets == null || !mobileAssets.WeightOnly)
-            throw new InvalidDataException("Validated q8 mobile assets are required: " + modelDirectory);
+            throw new InvalidDataException("Validated native Q4 mobile assets are required: " + modelDirectory);
+        if (mobileAssets.QuantizationBits != 4)
+            throw new InvalidDataException("The mobile validation default requires native Q4 assets: " + modelDirectory);
         var memoryPolicy = Qwen35MobileMemoryPolicy.Evaluate(contract);
         report["memory_policy"] = memoryPolicy.ToJson();
         if (!memoryPolicy.DeliveryEligible)
             throw new NotSupportedException(string.Join("\n", memoryPolicy.UnsupportedReasons));
 
-        var manifestPath = Path.Combine(modelDirectory, Qwen35MobileAssetSet.ManifestFileName);
+        var manifestPath = mobileAssets.ManifestPath;
         var manifest = JObject.Parse(File.ReadAllText(manifestPath));
         var shardCount = manifest["logical_files"]
             .Children<JProperty>()
@@ -174,7 +176,7 @@ public static class Qwen35MobilePlatformBuild
         {
             ["mode"] = "external-sharded-file-set",
             ["bundled_in_base_player"] = false,
-            ["runtime_destination"] = "persistentDataPath/qwen3.5_0.8b_mobile_q8",
+            ["runtime_destination"] = "persistentDataPath/qwen3.5_0.8b_mobile_q4",
             ["source_directory"] = modelDirectory,
             ["manifest"] = manifestPath,
             ["manifest_sha256"] = ComputeSha256(manifestPath),
@@ -200,6 +202,8 @@ public static class Qwen35MobilePlatformBuild
             ["uses_compute_shader"] = true,
             ["contains_q8_gemm_constants"] = source.Contains("_MatBInt8Packed"),
             ["contains_q8_embed_constants"] = source.Contains("_EmbedWInt8Packed"),
+            ["contains_q4_gemm_constants"] = source.Contains("_MatBInt4Packed"),
+            ["contains_q4_embed_constants"] = source.Contains("_EmbedWInt4Packed"),
             ["contains_short_conv_kernel"] = source.Contains("Qwen35ShortConvPack4"),
             ["contains_gated_delta_rule_kernel"] = source.Contains("Qwen35GatedDeltaRulePack4"),
             ["activation_storage"] = "pack4 RenderTexture/ComputeTexture",
@@ -292,7 +296,7 @@ public static class Qwen35MobilePlatformBuild
     {
         var configured = Environment.GetEnvironmentVariable(ModelDirectoryEnvironmentVariable);
         return Path.GetFullPath(string.IsNullOrWhiteSpace(configured)
-            ? Path.Combine(ProjectRoot, "Tools", "Qwen35NcnnBaseline", "_models", "qwen3.5_0.8b_mobile_q8")
+            ? Path.Combine(ProjectRoot, "Tools", "Qwen35NcnnBaseline", "_models", "qwen3.5_0.8b_mobile_q4")
             : configured);
     }
 

@@ -56,6 +56,7 @@ namespace Aexis.Execution
                                                 "AexisGraphSession.InnerProductInt4WeightOnly:" + layer.name);
                                             ip.wInt4Packed = quantized.packedWeights;
                                             ip.wInt4Scales = quantized.scales;
+                                            ip.int4ScaleBlockSize = quantized.scaleBlockSize;
                                         }
                                         else if (owner.UsesInt8WeightOnlyForLayer(layer))
                                         {
@@ -167,7 +168,8 @@ namespace Aexis.Execution
                 useInt8WeightOnly && hasPack ? pack.wInt8Scales : null);
             owner.Ops.SetInt4GemmWeights(
                 useInt4WeightOnly && hasPack ? pack.wInt4Packed : null,
-                useInt4WeightOnly && hasPack ? pack.wInt4Scales : null);
+                useInt4WeightOnly && hasPack ? pack.wInt4Scales : null,
+                useInt4WeightOnly && hasPack ? pack.int4ScaleBlockSize : 1);
             owner.ConfigureInt8ActivationQuantization(layer);
         }
 

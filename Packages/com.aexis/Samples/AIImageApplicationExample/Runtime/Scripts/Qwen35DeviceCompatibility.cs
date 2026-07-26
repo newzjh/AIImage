@@ -61,13 +61,14 @@ namespace AIImage.Qwen35
 
     public sealed class Qwen35DeviceCompatibility
     {
-        // Desktop Q8 runs peak near 4.7 GiB private memory plus substantial
-        // texture/driver residency. Do not start the mobile pipeline on 6-8 GiB
-        // devices until a lower on-device tier is measured and qualified.
+        // Q8 has a substantially larger immutable token matrix than native Q4.
+        // Q4 remains device-qualified by the Android smoke path before release.
         public const int MinimumSystemMemoryMb = 12288;
+        public const int MinimumQ4SystemMemoryMb = 4096;
         public const int MinimumTextureSize = 4096;
         public const int MinimumTextureArraySlices = 256;
         public const long MinimumGraphicsBufferBytes = 254279680L;
+        public const long MinimumQ4GraphicsBufferBytes = 31784960L;
 
         public readonly List<string> UnsupportedReasons = new List<string>();
         public RuntimePlatform Platform { get; private set; }
@@ -81,6 +82,9 @@ namespace AIImage.Qwen35
         public bool SupportsComputeShaders { get; private set; }
         public bool SupportsRgbaFloat { get; private set; }
         public bool MobileAssetSet { get; private set; }
+        public int QuantizationBits { get; private set; }
+        public int RequiredSystemMemoryMb { get; private set; }
+        public long RequiredGraphicsBufferBytes { get; private set; }
         public bool Supported => UnsupportedReasons.Count == 0;
 
         public static Qwen35DeviceCompatibility Evaluate(Qwen35ModelContract contract)
@@ -88,7 +92,8 @@ namespace AIImage.Qwen35
             if (contract == null) throw new ArgumentNullException(nameof(contract));
             return EvaluateCapabilities(
                 contract.MobileAssets != null && contract.MobileAssets.WeightOnly,
-                Qwen35DeviceCapabilities.CaptureCurrent());
+                Qwen35DeviceCapabilities.CaptureCurrent(),
+                contract.MobileAssets?.QuantizationBits ?? 0);
         }
 
         // This is intentionally internal and reserved for the Android smoke harness.
@@ -99,28 +104,35 @@ namespace AIImage.Qwen35
             if (contract == null) throw new ArgumentNullException(nameof(contract));
             return EvaluateCapabilitiesForDeviceQualification(
                 contract.MobileAssets != null && contract.MobileAssets.WeightOnly,
-                Qwen35DeviceCapabilities.CaptureCurrent());
+                Qwen35DeviceCapabilities.CaptureCurrent(),
+                contract.MobileAssets?.QuantizationBits ?? 0);
         }
 
         internal static Qwen35DeviceCompatibility EvaluateCapabilitiesForDeviceQualification(
             bool hasValidatedMobileAssets,
-            Qwen35DeviceCapabilities capabilities)
+            Qwen35DeviceCapabilities capabilities,
+            int quantizationBits = 8)
         {
-            return EvaluateCapabilities(hasValidatedMobileAssets, capabilities, ignoreSystemMemoryFloor: true);
+            return EvaluateCapabilities(hasValidatedMobileAssets, capabilities, quantizationBits, ignoreSystemMemoryFloor: true);
         }
 
         public static Qwen35DeviceCompatibility EvaluateCapabilities(
             bool hasValidatedMobileAssets,
-            Qwen35DeviceCapabilities capabilities)
+            Qwen35DeviceCapabilities capabilities,
+            int quantizationBits = 8)
         {
-            return EvaluateCapabilities(hasValidatedMobileAssets, capabilities, ignoreSystemMemoryFloor: false);
+            return EvaluateCapabilities(hasValidatedMobileAssets, capabilities, quantizationBits, ignoreSystemMemoryFloor: false);
         }
 
         private static Qwen35DeviceCompatibility EvaluateCapabilities(
             bool hasValidatedMobileAssets,
             Qwen35DeviceCapabilities capabilities,
+            int quantizationBits,
             bool ignoreSystemMemoryFloor)
         {
+            var nativeQ4 = quantizationBits == 4;
+            var requiredSystemMemoryMb = nativeQ4 ? MinimumQ4SystemMemoryMb : MinimumSystemMemoryMb;
+            var requiredGraphicsBufferBytes = nativeQ4 ? MinimumQ4GraphicsBufferBytes : MinimumGraphicsBufferBytes;
             var result = new Qwen35DeviceCompatibility
             {
                 Platform = capabilities.Platform,
@@ -133,16 +145,19 @@ namespace AIImage.Qwen35
                 GraphicsShaderLevel = capabilities.GraphicsShaderLevel,
                 SupportsComputeShaders = capabilities.SupportsComputeShaders,
                 SupportsRgbaFloat = capabilities.SupportsRgbaFloat,
-                MobileAssetSet = hasValidatedMobileAssets
+                MobileAssetSet = hasValidatedMobileAssets,
+                QuantizationBits = quantizationBits,
+                RequiredSystemMemoryMb = requiredSystemMemoryMb,
+                RequiredGraphicsBufferBytes = requiredGraphicsBufferBytes
             };
 
             var mobilePlayer = result.Platform == RuntimePlatform.Android || result.Platform == RuntimePlatform.IPhonePlayer;
             if (mobilePlayer && !result.MobileAssetSet)
-                result.UnsupportedReasons.Add("Qwen3.5 mobile player requires the validated q8 sharded asset set.");
+                result.UnsupportedReasons.Add("Qwen3.5 mobile player requires a validated native Q4 or Q8 sharded asset set.");
             if (!ignoreSystemMemoryFloor
                 && result.SystemMemoryMb > 0
-                && result.SystemMemoryMb < MinimumSystemMemoryMb)
-                result.UnsupportedReasons.Add("system memory is below " + MinimumSystemMemoryMb + " MiB: " + result.SystemMemoryMb + " MiB");
+                && result.SystemMemoryMb < requiredSystemMemoryMb)
+                result.UnsupportedReasons.Add("system memory is below " + requiredSystemMemoryMb + " MiB: " + result.SystemMemoryMb + " MiB");
             if (!result.SupportsComputeShaders)
                 result.UnsupportedReasons.Add("ComputeShader support is unavailable.");
             if (!result.SupportsRgbaFloat)
@@ -154,9 +169,9 @@ namespace AIImage.Qwen35
             if (result.MaxTextureArraySlices < MinimumTextureArraySlices)
                 result.UnsupportedReasons.Add("maxTextureArraySlices is below " + MinimumTextureArraySlices + ": " + result.MaxTextureArraySlices);
             if (result.MaxGraphicsBufferBytes <= 0)
-                result.UnsupportedReasons.Add("maxGraphicsBufferSize is unavailable; shared q8 token matrix capacity cannot be verified.");
-            else if (result.MaxGraphicsBufferBytes < MinimumGraphicsBufferBytes)
-                result.UnsupportedReasons.Add("maxGraphicsBufferSize cannot hold the shared q8 token matrix: " + result.MaxGraphicsBufferBytes);
+                result.UnsupportedReasons.Add("maxGraphicsBufferSize is unavailable; shared token matrix capacity cannot be verified.");
+            else if (result.MaxGraphicsBufferBytes < requiredGraphicsBufferBytes)
+                result.UnsupportedReasons.Add("maxGraphicsBufferSize cannot hold the shared Q" + quantizationBits + " token matrix: " + result.MaxGraphicsBufferBytes);
 
             if (result.Platform == RuntimePlatform.Android && result.GraphicsApi != GraphicsDeviceType.Vulkan)
                 result.UnsupportedReasons.Add("Android Qwen3.5 inference requires Vulkan; active API is " + result.GraphicsApi + ".");
@@ -196,11 +211,12 @@ namespace AIImage.Qwen35
                 ["graphics_shader_level"] = GraphicsShaderLevel,
                 ["supports_compute_shaders"] = SupportsComputeShaders,
                 ["supports_rgba_float"] = SupportsRgbaFloat,
-                ["mobile_q8_assets"] = MobileAssetSet,
-                ["minimum_system_memory_mb"] = MinimumSystemMemoryMb,
+                ["mobile_quantized_assets"] = MobileAssetSet,
+                ["quantization_bits"] = QuantizationBits,
+                ["minimum_system_memory_mb"] = RequiredSystemMemoryMb,
                 ["minimum_texture_size"] = MinimumTextureSize,
                 ["minimum_texture_array_slices"] = MinimumTextureArraySlices,
-                ["minimum_graphics_buffer_bytes"] = MinimumGraphicsBufferBytes,
+                ["minimum_graphics_buffer_bytes"] = RequiredGraphicsBufferBytes,
                 ["unsupported_reasons"] = new JArray(UnsupportedReasons)
             };
         }

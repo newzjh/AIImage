@@ -648,10 +648,14 @@ namespace Aexis.Execution
         private ComputeBuffer _int8GemmWeightScales;
         private ComputeBuffer _int8EmbedWeights;
         private ComputeBuffer _int8EmbedWeightScales;
+        private ComputeBuffer _int4EmbedWeights;
+        private ComputeBuffer _int4EmbedWeightScales;
+        private int _int4EmbedScaleBlockSize = 1;
         private ComputeBuffer _int4ConvWeights;
         private ComputeBuffer _int4ConvWeightScales;
         private ComputeBuffer _int4GemmWeights;
         private ComputeBuffer _int4GemmWeightScales;
+        private int _int4GemmScaleBlockSize = 1;
         private bool _useInt8Activations;
         private float _int8ActivationScale = 1f;
         private int _int8ActivationZeroPoint;
@@ -708,12 +712,15 @@ namespace Aexis.Execution
             _int4ConvWeightScales = perOutputScales;
         }
 
-        public void SetInt4GemmWeights(ComputeBuffer packedWeights, ComputeBuffer perOutputScales)
+        public void SetInt4GemmWeights(ComputeBuffer packedWeights, ComputeBuffer scales, int scaleBlockSize = 1)
         {
-            if ((packedWeights == null) != (perOutputScales == null))
-                throw new ArgumentException("INT4 Gemm weights and per-output scales must be configured together.");
+            if ((packedWeights == null) != (scales == null))
+                throw new ArgumentException("INT4 Gemm weights and scales must be configured together.");
+            if (packedWeights != null && scaleBlockSize < 0)
+                throw new ArgumentOutOfRangeException(nameof(scaleBlockSize));
             _int4GemmWeights = packedWeights;
-            _int4GemmWeightScales = perOutputScales;
+            _int4GemmWeightScales = scales;
+            _int4GemmScaleBlockSize = packedWeights != null ? scaleBlockSize : 1;
         }
 
         public void SetInt8ActivationQuantization(QuantizedNodePlan plan)
@@ -722,6 +729,17 @@ namespace Aexis.Execution
             _int8ActivationScale = _useInt8Activations ? plan.activationScale : 1f;
             _int8ActivationZeroPoint = _useInt8Activations ? plan.activationZeroPoint : 0;
             _int8ActivationUnsigned = false;
+        }
+
+        public void SetInt4EmbedWeights(ComputeBuffer packedWeights, ComputeBuffer scales, int scaleBlockSize = 1)
+        {
+            if ((packedWeights == null) != (scales == null))
+                throw new ArgumentException("INT4 embedding weights and scales must be configured together.");
+            if (packedWeights != null && scaleBlockSize <= 0)
+                throw new ArgumentOutOfRangeException(nameof(scaleBlockSize));
+            _int4EmbedWeights = packedWeights;
+            _int4EmbedWeightScales = scales;
+            _int4EmbedScaleBlockSize = packedWeights != null ? scaleBlockSize : 1;
         }
 
         // Import calibration is an activation contract rather than a transient CPU
@@ -790,6 +808,7 @@ namespace Aexis.Execution
             _cs.SetBuffer(kernel, "_MatBInt4Packed", _int4GemmWeights ?? fp32Weights);
             _cs.SetBuffer(kernel, "_MatBInt4Scales", _int4GemmWeightScales ?? fp32Weights);
             _cs.SetInt("_UseInt4GemmWeights", _int4GemmWeights != null ? 1 : 0);
+            _cs.SetInt("_MatBInt4ScaleBlockSize", _int4GemmScaleBlockSize);
             _cs.SetInt("_UseInt8Activations", _useInt8Activations ? 1 : 0);
             _cs.SetFloat("_Int8ActivationScale", _int8ActivationScale);
             _cs.SetInt("_Int8ActivationZeroPoint", _int8ActivationZeroPoint);
@@ -807,6 +826,7 @@ namespace Aexis.Execution
             cmd.SetComputeBufferParam(_cs, kernel, "_MatBInt4Packed", _int4GemmWeights ?? fp32Weights);
             cmd.SetComputeBufferParam(_cs, kernel, "_MatBInt4Scales", _int4GemmWeightScales ?? fp32Weights);
             cmd.SetComputeIntParam(_cs, "_UseInt4GemmWeights", _int4GemmWeights != null ? 1 : 0);
+            cmd.SetComputeIntParam(_cs, "_MatBInt4ScaleBlockSize", _int4GemmScaleBlockSize);
             cmd.SetComputeIntParam(_cs, "_UseInt8Activations", _useInt8Activations ? 1 : 0);
             cmd.SetComputeFloatParam(_cs, "_Int8ActivationScale", _int8ActivationScale);
             cmd.SetComputeIntParam(_cs, "_Int8ActivationZeroPoint", _int8ActivationZeroPoint);
@@ -10113,6 +10133,10 @@ namespace Aexis.Execution
             _cs.SetBuffer(kernel, "_EmbedWInt8Packed", _int8EmbedWeights ?? fallback);
             _cs.SetBuffer(kernel, "_EmbedWInt8Scales", _int8EmbedWeightScales ?? fallback);
             _cs.SetInt("_UseInt8EmbedWeights", _int8EmbedWeights != null ? 1 : 0);
+            _cs.SetBuffer(kernel, "_EmbedWInt4Packed", _int4EmbedWeights ?? fallback);
+            _cs.SetBuffer(kernel, "_EmbedWInt4Scales", _int4EmbedWeightScales ?? fallback);
+            _cs.SetInt("_UseInt4EmbedWeights", _int4EmbedWeights != null ? 1 : 0);
+            _cs.SetInt("_EmbedWInt4ScaleBlockSize", _int4EmbedScaleBlockSize);
         }
 
         private void SetEmbedWeights(CommandBuffer cmd, int kernel, ComputeBuffer fallback)
@@ -10121,6 +10145,10 @@ namespace Aexis.Execution
             cmd.SetComputeBufferParam(_cs, kernel, "_EmbedWInt8Packed", _int8EmbedWeights ?? fallback);
             cmd.SetComputeBufferParam(_cs, kernel, "_EmbedWInt8Scales", _int8EmbedWeightScales ?? fallback);
             cmd.SetComputeIntParam(_cs, "_UseInt8EmbedWeights", _int8EmbedWeights != null ? 1 : 0);
+            cmd.SetComputeBufferParam(_cs, kernel, "_EmbedWInt4Packed", _int4EmbedWeights ?? fallback);
+            cmd.SetComputeBufferParam(_cs, kernel, "_EmbedWInt4Scales", _int4EmbedWeightScales ?? fallback);
+            cmd.SetComputeIntParam(_cs, "_UseInt4EmbedWeights", _int4EmbedWeights != null ? 1 : 0);
+            cmd.SetComputeIntParam(_cs, "_EmbedWInt4ScaleBlockSize", _int4EmbedScaleBlockSize);
         }
 
         public void EmbedTexture(ComputeBuffer indices, int words, ComputeBuffer weight, ComputeBuffer bias, int numOutput, int inputDim, bool biasTerm, RenderTexture output)

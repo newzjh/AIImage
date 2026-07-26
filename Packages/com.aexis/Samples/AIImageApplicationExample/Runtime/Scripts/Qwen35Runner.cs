@@ -56,7 +56,7 @@ namespace AIImage.Qwen35
             Contract = Qwen35ModelContract.Validate(modelDirectory, requireWeights);
             if (!Contract.IsValid) throw new InvalidOperationException("Qwen3.5 model contract failed:\n" + string.Join("\n", Contract.Errors));
             Tokenizer = LoadTokenizer(modelDirectory);
-            MaxNewTokens = Mathf.Clamp(maxNewTokens, 1, 4096);
+            MaxNewTokens = Qwen35RuntimeTuning.ResolveMaximumNewTokens(modelDirectory, maxNewTokens);
             DeviceCompatibility = Qwen35DeviceCompatibility.Evaluate(Contract);
             DeviceCompatibility.ThrowIfUnsupported();
         }
@@ -70,7 +70,7 @@ namespace AIImage.Qwen35
             Contract = contract ?? throw new ArgumentNullException(nameof(contract));
             if (!Contract.IsValid) throw new InvalidOperationException("Qwen3.5 model contract failed:\n" + string.Join("\n", Contract.Errors));
             Tokenizer = tokenizer ?? throw new ArgumentNullException(nameof(tokenizer));
-            MaxNewTokens = Mathf.Clamp(maxNewTokens, 1, 4096);
+            MaxNewTokens = Qwen35RuntimeTuning.ResolveMaximumNewTokens(contract.ModelDirectory, maxNewTokens);
             DeviceCompatibility = deviceQualificationRun
                 ? Qwen35DeviceCompatibility.EvaluateForDeviceQualification(Contract)
                 : Qwen35DeviceCompatibility.Evaluate(Contract);

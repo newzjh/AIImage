@@ -15,6 +15,15 @@ namespace Aexis.Execution
 
         public abstract bool TryReadQuantizedTensor(int count, int expectedBlockSize, out AexisQuantizedTensor packed);
 
+        // Readers that carry native W4 records override this. Keeping it separate
+        // from the legacy W8 probe prevents a W4 archive from being decoded to FP32
+        // before the immutable GPU upload.
+        public virtual bool TryReadInt4QuantizedTensor(int count, int expectedBlockSize, out AexisQuantizedTensor packed)
+        {
+            packed = null;
+            return false;
+        }
+
         public abstract void Dispose();
     }
 

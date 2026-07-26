@@ -651,7 +651,10 @@ float AexisGemm2DReadB(int col, int kk)
         uint packed = _MatBInt4Packed[index >> 3];
         uint raw = (packed >> ((index & 7) * 4)) & 0xfu;
         int signedValue = raw >= 8u ? (int)raw - 16 : (int)raw;
-        return (float)signedValue * _MatBInt4Scales[col];
+        int scaleIndex = _MatBInt4ScaleBlockSize > 0
+            ? index / _MatBInt4ScaleBlockSize
+            : col;
+        return (float)signedValue * _MatBInt4Scales[scaleIndex];
     }
     if (_UseInt8GemmWeights != 0)
     {

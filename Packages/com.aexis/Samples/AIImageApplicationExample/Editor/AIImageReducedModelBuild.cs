@@ -11,6 +11,8 @@ using UnityEditor.Build;
 using UnityEditor.Build.Reporting;
 using UnityEngine;
 using UnityEngine.Rendering;
+using Aexis.Samples.Json.Linq;
+using AIImage.Qwen35;
 
 public sealed class AIImageReducedModelBuild : IPostprocessBuildWithReport, IPostGenerateGradleAndroidProject
 {
@@ -271,6 +273,19 @@ public sealed class AIImageReducedModelBuild : IPostprocessBuildWithReport, IPos
         if (string.IsNullOrWhiteSpace(normalized))
             return null;
 
+        const string q4Prefix = "QWEN35/qwen3.5_0.8b_mobile_q4/";
+        if (normalized.StartsWith(q4Prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            var q4Source = Qwen35MobileQ4AssetBuilder.ResolveQ4SourceDirectory();
+            if (!string.IsNullOrWhiteSpace(q4Source))
+            {
+                var q4Relative = normalized.Substring(q4Prefix.Length).Replace('/', Path.DirectorySeparatorChar);
+                var candidate = Path.Combine(q4Source, q4Relative);
+                if (File.Exists(candidate))
+                    return candidate;
+            }
+        }
+
         var candidates = new[]
         {
             Path.Combine(ProjectRoot, "Assets", "StreamingAssets", normalized),
@@ -473,11 +488,39 @@ public sealed class AIImageReducedModelBuild : IPostprocessBuildWithReport, IPos
 
     private static IReadOnlyList<string> GetDefaultModelFiles()
     {
-        return AIImageModelDelivery.DefaultGroups
+        var files = AIImageModelDelivery.DefaultGroups
             .SelectMany(group => group.Files)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        AppendQwen35Q4ShardFiles(files);
+        return files
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
             .ToArray();
+    }
+
+    private static void AppendQwen35Q4ShardFiles(ICollection<string> files)
+    {
+        const string q4Prefix = "QWEN35/qwen3.5_0.8b_mobile_q4/";
+        var sourceDirectory = Qwen35MobileQ4AssetBuilder.ResolveQ4SourceDirectory();
+        if (string.IsNullOrWhiteSpace(sourceDirectory))
+            throw new FileNotFoundException("A validated Qwen3.5 mobile Q4 asset set is required for the reduced player build.");
+        var manifestPath = Path.Combine(sourceDirectory, Qwen35MobileAssetSet.Q4ManifestFileName);
+        var manifest = JObject.Parse(File.ReadAllText(manifestPath));
+        var logicalFiles = manifest["logical_files"] as JObject
+            ?? throw new InvalidDataException("Qwen3.5 mobile Q4 manifest has no logical_files object: " + manifestPath);
+        foreach (var logical in logicalFiles.Properties())
+        {
+            var parts = logical.Value["parts"] as JArray
+                ?? throw new InvalidDataException("Qwen3.5 mobile Q4 logical asset has no parts array: " + logical.Name);
+            foreach (var part in parts)
+            {
+                var relative = AIImageModelDelivery.NormalizeRelativePath((string)part["file"]);
+                if (string.IsNullOrWhiteSpace(relative))
+                    throw new InvalidDataException("Qwen3.5 mobile Q4 shard path is empty: " + logical.Name);
+                files.Add(q4Prefix + relative);
+            }
+        }
     }
 
     private static bool IsModelPayloadPath(string relativePath)

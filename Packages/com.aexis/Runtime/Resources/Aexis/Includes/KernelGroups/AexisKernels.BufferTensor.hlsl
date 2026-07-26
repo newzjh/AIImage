@@ -10,7 +10,14 @@ void AexisEmbed_Impl(uint3 id)
     word_index = clamp(word_index, 0, _EmbedInputDim - 1);
     int weightIndex = word_index * _EmbedNumOutput + p;
     float v;
-    if (_UseInt8EmbedWeights != 0)
+    if (_UseInt4EmbedWeights != 0)
+    {
+        uint packed = _EmbedWInt4Packed[weightIndex >> 3];
+        uint raw = (packed >> ((weightIndex & 7) * 4)) & 0xfu;
+        int signedValue = raw >= 8u ? (int)raw - 16 : (int)raw;
+        v = (float)signedValue * _EmbedWInt4Scales[weightIndex / _EmbedWInt4ScaleBlockSize];
+    }
+    else if (_UseInt8EmbedWeights != 0)
     {
         uint packed = _EmbedWInt8Packed[weightIndex >> 2];
         uint raw = (packed >> ((weightIndex & 3) * 8)) & 0xffu;
@@ -31,7 +38,14 @@ float AexisEmbedValue(int wordIndex, int p)
     wordIndex = clamp(wordIndex, 0, _EmbedInputDim - 1);
     int weightIndex = wordIndex * _EmbedNumOutput + p;
     float v;
-    if (_UseInt8EmbedWeights != 0)
+    if (_UseInt4EmbedWeights != 0)
+    {
+        uint packed = _EmbedWInt4Packed[weightIndex >> 3];
+        uint raw = (packed >> ((weightIndex & 7) * 4)) & 0xfu;
+        int signedValue = raw >= 8u ? (int)raw - 16 : (int)raw;
+        v = (float)signedValue * _EmbedWInt4Scales[weightIndex / _EmbedWInt4ScaleBlockSize];
+    }
+    else if (_UseInt8EmbedWeights != 0)
     {
         uint packed = _EmbedWInt8Packed[weightIndex >> 2];
         uint raw = (packed >> ((weightIndex & 3) * 8)) & 0xffu;

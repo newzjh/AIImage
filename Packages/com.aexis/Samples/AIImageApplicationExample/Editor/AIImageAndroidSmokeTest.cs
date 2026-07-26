@@ -220,6 +220,19 @@ public static class AIImageAndroidSmokeTest
                     throw new InvalidOperationException("Android default runner smoke failed: " + runnerReportFile.StandardOutput);
             }
 
+            var memoryInfo = RunAdb(
+                adbPath,
+                "-s " + Quote(serial) + " shell dumpsys meminfo " + Quote(packageInfo.PackageName),
+                TimeSpan.FromSeconds(30));
+            report["memory_info"] = memoryInfo.ToJson();
+            EnsureSuccess(memoryInfo, "Could not collect Android process memory information");
+            var pssMatch = Regex.Match(memoryInfo.StandardOutput, @"(?:TOTAL PSS:|TOTAL:)\s*(?<kb>[0-9,]+)", RegexOptions.IgnoreCase);
+            if (pssMatch.Success
+                && long.TryParse(pssMatch.Groups["kb"].Value.Replace(",", string.Empty), out var pssKb))
+            {
+                report["process_pss_kb"] = pssKb;
+            }
+
             success = true;
         }
         catch (Exception exception)

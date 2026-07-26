@@ -105,6 +105,7 @@ namespace AIImage.Qwen35
         private readonly AexisGraphSession _patch;
         private readonly AexisGraphSession _position;
         private readonly AexisGraphSession _encoder;
+        private readonly int _maximumPatchCount;
         private bool _disposed;
 
         public AexisGraphSession.ModelLoadProfile PatchEmbeddingLoadProfile => _patch.LastLoadProfile;
@@ -124,6 +125,7 @@ namespace AIImage.Qwen35
             _ops = new AexisOps();
             try
             {
+                _maximumPatchCount = Qwen35RuntimeTuning.ResolveMaximumVisionPatchCount(modelDirectory);
                 _patch = CreateRepro(modelDirectory);
                 _position = CreateRepro(modelDirectory);
                 _encoder = CreateRepro(modelDirectory);
@@ -557,7 +559,10 @@ namespace AIImage.Qwen35
                 throw new ArgumentException("Qwen3.5 patch atlas value count mismatch.", nameof(patches));
 
             var texture = _patch.RentTempArray(atlasWidth, atlasHeight, 2, RenderTextureFormat.ARGBFloat);
-            var upload = new Texture2DArray(atlasWidth, atlasHeight, 2, TextureFormat.RGBAFloat, false, true)
+            var uploadFormat = texture.format == RenderTextureFormat.ARGBHalf
+                ? TextureFormat.RGBAHalf
+                : TextureFormat.RGBAFloat;
+            var upload = new Texture2DArray(atlasWidth, atlasHeight, 2, uploadFormat, false, true)
             {
                 filterMode = FilterMode.Point,
                 wrapMode = TextureWrapMode.Clamp,
@@ -615,7 +620,10 @@ namespace AIImage.Qwen35
             if (values == null || values.Length != sourceRowWidth * rows)
                 throw new ArgumentException("Qwen3.5 scalar-row upload value count mismatch.", nameof(values));
             var texture = _encoder.RentTempArray(outputWidth, rows, 1, RenderTextureFormat.ARGBFloat);
-            var upload = new Texture2DArray(outputWidth, rows, 1, TextureFormat.RGBAFloat, false, true)
+            var uploadFormat = texture.format == RenderTextureFormat.ARGBHalf
+                ? TextureFormat.RGBAHalf
+                : TextureFormat.RGBAFloat;
+            var upload = new Texture2DArray(outputWidth, rows, 1, uploadFormat, false, true)
             {
                 filterMode = FilterMode.Point,
                 wrapMode = TextureWrapMode.Clamp,
@@ -709,14 +717,14 @@ namespace AIImage.Qwen35
             else UnityEngine.Object.DestroyImmediate(value);
         }
 
-        private static int ResolveMaximumPatchCount(int maxTextureSize, int maxTextureArraySlices)
+        private int ResolveMaximumPatchCount(int maxTextureSize, int maxTextureArraySlices)
         {
             // The first vision-encoder reshape expands a patch sequence into three scalar
             // channels. Pack4 texture arrays therefore consume ceil(3 * patches / 4) slices.
             var byArraySlices = (int)Math.Min(
                 int.MaxValue,
                 (long)maxTextureArraySlices * PackedTextureChannels / VisionEncoderArraySliceChannelsPerPatch);
-            return Mathf.Min(ModelMaximumPatchCount, maxTextureSize, byArraySlices);
+            return Mathf.Min(ModelMaximumPatchCount, _maximumPatchCount, maxTextureSize, byArraySlices);
         }
 
         private void ThrowIfDisposed()

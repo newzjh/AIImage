@@ -210,11 +210,12 @@ namespace AIImage.Qwen35
             try
             {
                 _embed = CreateRepro(modelDirectory);
+                _embed.StrictTextureInputLogicalDtypes["in0"] = "Int32";
                 _decoder = CreateRepro(modelDirectory);
                 _projection = CreateRepro(modelDirectory);
                 Qwen35ModelAssetResolver.ApplyMobilePrecisionManifest(_embed, modelDirectory);
                 Qwen35ModelAssetResolver.ApplyMobilePrecisionManifest(_decoder, modelDirectory);
-                Qwen35ModelAssetResolver.ApplyMobilePrecisionManifest(_projection, modelDirectory);
+                Qwen35ModelAssetResolver.ApplyMobileProjectionPrecisionManifest(_projection, modelDirectory);
                 _decoder.AttentionKvCacheTextureCapacity = Mathf.Min(4096, Mathf.Max(1, SystemInfo.maxTextureSize));
                 if (loadSynchronously)
                 {
@@ -404,23 +405,25 @@ namespace AIImage.Qwen35
             if (tokenIds == null || tokenIds.Count == 0)
                 throw new ArgumentException("Token ids are empty.", nameof(tokenIds));
 
-            using (var indices = new AexisTensorBuffer(tokenIds.Count, 1))
+            var indices = CreateTokenIndexTexture(tokenIds);
+            try
             {
-                var values = new int[tokenIds.Count];
-                for (var i = 0; i < values.Length; i++)
-                {
-                    if (tokenIds[i] < 0 || tokenIds[i] >= Tokenizer.VocabularySize)
-                        throw new ArgumentOutOfRangeException(nameof(tokenIds), "Token id is outside the tokenizer vocabulary: " + tokenIds[i]);
-                    values[i] = tokenIds[i];
-                }
-                indices.buffer.SetData(values);
                 using (var result = _embed.InferWithMultiInputs(
+                    new Dictionary<string, RenderTexture>(StringComparer.Ordinal) { ["in0"] = indices },
                     null,
-                    new Dictionary<string, AexisTensorBuffer>(StringComparer.Ordinal) { ["in0"] = indices }))
+                    null,
+                    new Dictionary<string, AexisGraphSession.BufferShape>(StringComparer.Ordinal)
+                    {
+                        ["in0"] = new AexisGraphSession.BufferShape(1, tokenIds.Count, 1, 1, 1)
+                    }))
                 {
                     var shape = GetShape(result, "out0");
                     return new Qwen35OwnedTexture(_embed, result.ExtractTexture("out0"), shape);
                 }
+            }
+            finally
+            {
+                ReleaseTokenIndexTexture(indices);
             }
         }
 
@@ -433,25 +436,27 @@ namespace AIImage.Qwen35
                 throw new ArgumentException("Token ids are empty.", nameof(tokenIds));
             cancellationToken.ThrowIfCancellationRequested();
 
-            using (var indices = new AexisTensorBuffer(tokenIds.Count, 1))
+            var indices = CreateTokenIndexTexture(tokenIds);
+            try
             {
-                var values = new int[tokenIds.Count];
-                for (var i = 0; i < values.Length; i++)
-                {
-                    if (tokenIds[i] < 0 || tokenIds[i] >= Tokenizer.VocabularySize)
-                        throw new ArgumentOutOfRangeException(nameof(tokenIds), "Token id is outside the tokenizer vocabulary: " + tokenIds[i]);
-                    values[i] = tokenIds[i];
-                }
-                indices.buffer.SetData(values);
                 using (var result = await _embed.InferWithMultiInputsAsync(
+                    new Dictionary<string, RenderTexture>(StringComparer.Ordinal) { ["in0"] = indices },
                     null,
-                    new Dictionary<string, AexisTensorBuffer>(StringComparer.Ordinal) { ["in0"] = indices },
+                    null,
+                    new Dictionary<string, AexisGraphSession.BufferShape>(StringComparer.Ordinal)
+                    {
+                        ["in0"] = new AexisGraphSession.BufferShape(1, tokenIds.Count, 1, 1, 1)
+                    },
                     cancellationToken: cancellationToken))
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     var shape = GetShape(result, "out0");
                     return new Qwen35OwnedTexture(_embed, result.ExtractTexture("out0"), shape);
                 }
+            }
+            finally
+            {
+                ReleaseTokenIndexTexture(indices);
             }
         }
 
@@ -1577,6 +1582,71 @@ namespace AIImage.Qwen35
             return texture;
         }
 
+        private RenderTexture CreateTokenIndexTexture(IReadOnlyList<int> tokenIds)
+        {
+            if (!SystemInfo.SupportsRenderTextureFormat(RenderTextureFormat.RFloat))
+                throw new NotSupportedException("Qwen3.5 requires RFloat RenderTexture support for exact token indices.");
+
+            var values = new float[tokenIds.Count];
+            for (var index = 0; index < values.Length; index++)
+            {
+                var token = tokenIds[index];
+                if (token < 0 || token >= Tokenizer.VocabularySize)
+                    throw new ArgumentOutOfRangeException(nameof(tokenIds), "Token id is outside the tokenizer vocabulary: " + token);
+                values[index] = token;
+            }
+
+            var descriptor = new RenderTextureDescriptor(values.Length, 1, RenderTextureFormat.RFloat, 0)
+            {
+                dimension = UnityEngine.Rendering.TextureDimension.Tex2D,
+                msaaSamples = 1,
+                enableRandomWrite = true,
+                sRGB = false
+            };
+            var texture = new RenderTexture(descriptor)
+            {
+                name = "Qwen35TokenIndexTexture",
+                filterMode = FilterMode.Point,
+                wrapMode = TextureWrapMode.Clamp,
+                anisoLevel = 0
+            };
+            Texture2D upload = null;
+            try
+            {
+                if (!texture.Create())
+                    throw new InvalidOperationException("Failed to allocate the Qwen3.5 token index texture.");
+                AexisGpuResourceTracker.RegisterTexture(texture, texture.name);
+                upload = new Texture2D(values.Length, 1, TextureFormat.RFloat, false, true)
+                {
+                    name = "Qwen35TokenIndexUpload",
+                    filterMode = FilterMode.Point,
+                    wrapMode = TextureWrapMode.Clamp,
+                    anisoLevel = 0
+                };
+                upload.SetPixelData(values, 0);
+                upload.Apply(false, true);
+                Graphics.CopyTexture(upload, texture);
+                return texture;
+            }
+            catch
+            {
+                ReleaseTokenIndexTexture(texture);
+                throw;
+            }
+            finally
+            {
+                DestroyUnityObject(upload);
+            }
+        }
+
+        private static void ReleaseTokenIndexTexture(RenderTexture texture)
+        {
+            if (texture == null) return;
+            AexisGpuResourceTracker.ReleaseTexture(texture, "Qwen35TokenIndexTexture.Dispose");
+            try { texture.Release(); } catch { }
+            DestroyUnityObject(texture);
+        }
+
         private RenderTexture CreateCausalMaskTexture(int sequenceLength, int pastLength)
         {
             var width = checked(pastLength + sequenceLength);
@@ -1641,7 +1711,13 @@ namespace AIImage.Qwen35
             if (values == null || values.Length != width * height)
                 throw new ArgumentException("Scalar texture upload shape mismatch.", nameof(values));
             var texture = _decoder.RentTempArray(width, height, 1, RenderTextureFormat.ARGBFloat);
-            var upload = new Texture2DArray(width, height, 1, TextureFormat.RGBAFloat, false, true)
+            // The Q4 manifest uses FP16 activations, so RentTempArray can return
+            // ARGBHalf despite the FP32 request above. CopyTexture requires source
+            // and destination texel widths to match.
+            var uploadFormat = texture.format == RenderTextureFormat.ARGBHalf
+                ? TextureFormat.RGBAHalf
+                : TextureFormat.RGBAFloat;
+            var upload = new Texture2DArray(width, height, 1, uploadFormat, false, true)
             {
                 filterMode = FilterMode.Point,
                 wrapMode = TextureWrapMode.Clamp,

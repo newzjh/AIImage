@@ -41,6 +41,7 @@ namespace Aexis.Execution
         {
             public ComputeBuffer packedWeights;
             public ComputeBuffer scales;
+            public int scaleBlockSize;
         }
 
         internal static readonly HashSet<string> CodeFormerSftMulLayers = new HashSet<string>(StringComparer.Ordinal)
@@ -319,6 +320,7 @@ namespace Aexis.Execution
             public ComputeBuffer wInt8Scales;
             public ComputeBuffer wInt4Packed;
             public ComputeBuffer wInt4Scales;
+            public int int4ScaleBlockSize;
             public ComputeBuffer b;
             public ComputeBuffer TextureWeightBinding => w ?? wInt8Packed ?? wInt4Packed;
 
@@ -398,9 +400,11 @@ namespace Aexis.Execution
             public ComputeBuffer bDataInt8Scales;
             public ComputeBuffer bDataInt4Packed;
             public ComputeBuffer bDataInt4Scales;
+            public int int4ScaleBlockSize;
             public ComputeBuffer cData;
             public bool ownsBData = true;
             public bool ownsBDataInt8 = true;
+            public bool ownsBDataInt4 = true;
             public float[] bDataCpu;
             public float[] cDataCpu;
             public ComputeBuffer TextureWeightBinding => bData ?? bDataInt8Packed ?? bDataInt4Packed;
@@ -411,8 +415,8 @@ namespace Aexis.Execution
                 try { AexisGpuResourceTracker.ReleaseBuffer(bDataFp16, "AexisGraphSession.GemmPack.Dispose"); bDataFp16?.Dispose(); } catch { }
                 try { if (ownsBDataInt8) { AexisGpuResourceTracker.ReleaseBuffer(bDataInt8Packed, "AexisGraphSession.GemmPack.Dispose"); bDataInt8Packed?.Dispose(); } } catch { }
                 try { if (ownsBDataInt8) { AexisGpuResourceTracker.ReleaseBuffer(bDataInt8Scales, "AexisGraphSession.GemmPack.Dispose"); bDataInt8Scales?.Dispose(); } } catch { }
-                try { AexisGpuResourceTracker.ReleaseBuffer(bDataInt4Packed, "AexisGraphSession.GemmPack.Dispose"); bDataInt4Packed?.Dispose(); } catch { }
-                try { AexisGpuResourceTracker.ReleaseBuffer(bDataInt4Scales, "AexisGraphSession.GemmPack.Dispose"); bDataInt4Scales?.Dispose(); } catch { }
+                try { if (ownsBDataInt4) { AexisGpuResourceTracker.ReleaseBuffer(bDataInt4Packed, "AexisGraphSession.GemmPack.Dispose"); bDataInt4Packed?.Dispose(); } } catch { }
+                try { if (ownsBDataInt4) { AexisGpuResourceTracker.ReleaseBuffer(bDataInt4Scales, "AexisGraphSession.GemmPack.Dispose"); bDataInt4Scales?.Dispose(); } } catch { }
                 try { AexisGpuResourceTracker.ReleaseBuffer(cData, "AexisGraphSession.GemmPack.Dispose"); cData?.Dispose(); } catch { }
             }
         }
@@ -468,16 +472,22 @@ namespace Aexis.Execution
             public ComputeBuffer w;
             public ComputeBuffer wInt8Packed;
             public ComputeBuffer wInt8Scales;
+            public ComputeBuffer wInt4Packed;
+            public ComputeBuffer wInt4Scales;
+            public int int4ScaleBlockSize;
             public ComputeBuffer b;
             public bool ownsW = true;
             public bool ownsWInt8 = true;
-            public ComputeBuffer WeightBinding => w ?? wInt8Packed;
+            public bool ownsWInt4 = true;
+            public ComputeBuffer WeightBinding => w ?? wInt8Packed ?? wInt4Packed;
 
             public void Dispose()
             {
                 try { if (ownsW) { AexisGpuResourceTracker.ReleaseBuffer(w, "AexisGraphSession.EmbedPack.Dispose"); w?.Dispose(); } } catch { }
                 try { if (ownsWInt8) { AexisGpuResourceTracker.ReleaseBuffer(wInt8Packed, "AexisGraphSession.EmbedPack.Dispose.Int8Packed"); wInt8Packed?.Dispose(); } } catch { }
                 try { if (ownsWInt8) { AexisGpuResourceTracker.ReleaseBuffer(wInt8Scales, "AexisGraphSession.EmbedPack.Dispose.Int8Scales"); wInt8Scales?.Dispose(); } } catch { }
+                try { if (ownsWInt4) { AexisGpuResourceTracker.ReleaseBuffer(wInt4Packed, "AexisGraphSession.EmbedPack.Dispose.Int4Packed"); wInt4Packed?.Dispose(); } } catch { }
+                try { if (ownsWInt4) { AexisGpuResourceTracker.ReleaseBuffer(wInt4Scales, "AexisGraphSession.EmbedPack.Dispose.Int4Scales"); wInt4Scales?.Dispose(); } } catch { }
                 try { AexisGpuResourceTracker.ReleaseBuffer(b, "AexisGraphSession.EmbedPack.Dispose"); b?.Dispose(); } catch { }
             }
         }
@@ -1340,6 +1350,9 @@ namespace Aexis.Execution
         public ComputeBuffer SharedTokenEmbeddingWeights { get; set; }
         public ComputeBuffer SharedTokenEmbeddingWeightsInt8Packed { get; set; }
         public ComputeBuffer SharedTokenEmbeddingWeightsInt8Scales { get; set; }
+        public ComputeBuffer SharedTokenEmbeddingWeightsInt4Packed { get; set; }
+        public ComputeBuffer SharedTokenEmbeddingWeightsInt4Scales { get; set; }
+        public int SharedTokenEmbeddingWeightsInt4ScaleBlockSize { get; set; }
         public int SharedTokenEmbeddingElementCount { get; set; }
         public bool ForceCpuGemmAll { get; set; }
         public bool ForceBufferGeluAll { get; set; }
@@ -7725,6 +7738,7 @@ namespace Aexis.Execution
                         "AexisGraphSession.InnerProductInt4WeightOnly:" + layer.name);
                     ip.wInt4Packed = quantized.packedWeights;
                     ip.wInt4Scales = quantized.scales;
+                    ip.int4ScaleBlockSize = quantized.scaleBlockSize;
                 }
                 else if (UsesInt8WeightOnlyForLayer(layer))
                 {
@@ -7815,6 +7829,7 @@ namespace Aexis.Execution
                         "AexisGraphSession.GemmInt4WeightOnly:" + layer.name);
                     gp.bDataInt4Packed = quantized.packedWeights;
                     gp.bDataInt4Scales = quantized.scales;
+                    gp.int4ScaleBlockSize = quantized.scaleBlockSize;
                 }
                 else if (UsesInt8WeightOnlyForLayer(layer))
                 {
@@ -11429,12 +11444,45 @@ namespace Aexis.Execution
             var upload = new Int4WeightOnlyUpload
             {
                 packedWeights = new ComputeBuffer(packed.Length, sizeof(uint), ComputeBufferType.Structured),
-                scales = new ComputeBuffer(scales.Length, sizeof(float), ComputeBufferType.Structured)
+                scales = new ComputeBuffer(scales.Length, sizeof(float), ComputeBufferType.Structured),
+                scaleBlockSize = outputChannelsAreContiguous ? valuesPerOutputChannel : 0
             };
             AexisGpuResourceTracker.RegisterBuffer(upload.packedWeights, packed.Length, sizeof(uint), (label ?? "AexisGraphSession.Int4WeightOnly") + ".PackedInt4");
             AexisGpuResourceTracker.RegisterBuffer(upload.scales, scales.Length, sizeof(float), (label ?? "AexisGraphSession.Int4WeightOnly") + ".PerOutputScale");
             upload.packedWeights.SetData(packed);
             upload.scales.SetData(scales);
+            return upload;
+        }
+
+        internal static Int4WeightOnlyUpload NewInt4WeightOnlyUpload(
+            AexisQuantizedTensor data,
+            int expectedOutputChannels,
+            int valuesPerOutputChannel,
+            string label)
+        {
+            if (data == null) throw new ArgumentNullException(nameof(data));
+            if (expectedOutputChannels <= 0 || valuesPerOutputChannel <= 0
+                || data.ElementCount != checked(expectedOutputChannels * valuesPerOutputChannel))
+            {
+                throw new ArgumentException("Direct Q4 upload shape does not match Gemm output channels and K.", nameof(data));
+            }
+            if (data.BlockSize <= 0 || valuesPerOutputChannel % data.BlockSize != 0)
+                throw new ArgumentException("Direct Q4 group size must divide the Gemm K dimension.", nameof(data));
+            var expectedScaleCount = checked(data.ElementCount / data.BlockSize);
+            if (data.Scales == null || data.Scales.Length != expectedScaleCount)
+                throw new ArgumentException("Direct Q4 upload scale count does not match its group size.", nameof(data));
+            if (data.PackedValues == null || data.PackedValues.Length != Math.Max(1, (data.ElementCount + 7) / 8))
+                throw new ArgumentException("Direct Q4 packed payload size mismatch.", nameof(data));
+            var upload = new Int4WeightOnlyUpload
+            {
+                packedWeights = new ComputeBuffer(data.PackedValues.Length, sizeof(uint), ComputeBufferType.Structured),
+                scales = new ComputeBuffer(data.Scales.Length, sizeof(float), ComputeBufferType.Structured),
+                scaleBlockSize = data.BlockSize
+            };
+            AexisGpuResourceTracker.RegisterBuffer(upload.packedWeights, data.PackedValues.Length, sizeof(uint), (label ?? "AexisGraphSession.Int4WeightOnly") + ".PackedInt4Direct");
+            AexisGpuResourceTracker.RegisterBuffer(upload.scales, data.Scales.Length, sizeof(float), (label ?? "AexisGraphSession.Int4WeightOnly") + ".PerOutputScaleDirect");
+            upload.packedWeights.SetData(data.PackedValues);
+            upload.scales.SetData(data.Scales);
             return upload;
         }
 

@@ -16,6 +16,10 @@ namespace AIImage.Qwen35
         public const string ManifestSchema = "qwen35.mobile-q8-assets/v1";
         public const string PrecisionManifestFileName = "qwen3.5_mobile_q8.model.json";
         public const string Int4GpuPrecisionManifestFileName = "qwen3.5_mobile_q4gpu.model.json";
+        public const string Q4ManifestFileName = "qwen3.5_mobile_q4_assets.json";
+        public const string Q4ManifestSchema = "qwen35.mobile-q4-assets/v1";
+        public const string Q4PrecisionManifestFileName = "qwen3.5_mobile_q4.model.json";
+        public const string Q4ProjectionPrecisionManifestFileName = "qwen3.5_mobile_q4_projection.model.json";
         public const string RuntimePrecisionEnvironmentVariable = "AIIMAGE_QWEN35_RUNTIME_PRECISION";
         private const string ValidationCacheSchema = "qwen35.mobile-q8-validation-cache/v1";
 
@@ -33,6 +37,7 @@ namespace AIImage.Qwen35
         public string ManifestPath { get; }
         public long StoredWeightBytes { get; private set; }
         public bool WeightOnly { get; private set; }
+        public int QuantizationBits { get; private set; }
         public bool HashesVerifiedFromCache { get; private set; }
 
         public static void ConfigureValidationCacheRoot(string directory)
@@ -49,16 +54,24 @@ namespace AIImage.Qwen35
             CancellationToken cancellationToken = default)
         {
             var root = Path.GetFullPath(modelDirectory ?? string.Empty);
-            var path = Path.Combine(root, ManifestFileName);
+            var q4Path = Path.Combine(root, Q4ManifestFileName);
+            var q8Path = Path.Combine(root, ManifestFileName);
+            var path = File.Exists(q4Path) ? q4Path : q8Path;
             if (!File.Exists(path)) return null;
 
             var document = JObject.Parse(File.ReadAllText(path));
-            if (!string.Equals((string)document["schema"], ManifestSchema, StringComparison.Ordinal))
+            var schema = (string)document["schema"];
+            if (!string.Equals(schema, ManifestSchema, StringComparison.Ordinal)
+                && !string.Equals(schema, Q4ManifestSchema, StringComparison.Ordinal))
                 throw new InvalidDataException("Unsupported Qwen3.5 mobile asset manifest: " + path);
             var result = new Qwen35MobileAssetSet(root, path)
             {
-                WeightOnly = (bool?)document["weight_only"] ?? false
+                WeightOnly = (bool?)document["weight_only"] ?? false,
+                QuantizationBits = (int?)document["quantization_bits"]
+                    ?? (string.Equals(schema, Q4ManifestSchema, StringComparison.Ordinal) ? 4 : 8)
             };
+            if (result.QuantizationBits != 4 && result.QuantizationBits != 8)
+                throw new InvalidDataException("Unsupported Qwen3.5 mobile quantization bit width: " + result.QuantizationBits);
             var logicalFiles = document["logical_files"] as JObject
                 ?? throw new InvalidDataException("Qwen3.5 mobile asset manifest has no logical_files object: " + path);
             var useValidationCache = verifyHashes && IsValidationCacheCurrent(root, path, logicalFiles);
@@ -323,7 +336,18 @@ namespace AIImage.Qwen35
             if (mobile == null) return;
             var requestedPrecision = Environment.GetEnvironmentVariable(Qwen35MobileAssetSet.RuntimePrecisionEnvironmentVariable);
             string manifestName;
-            if (string.IsNullOrWhiteSpace(requestedPrecision)
+            if (mobile.QuantizationBits == 4)
+            {
+                if (!string.IsNullOrWhiteSpace(requestedPrecision)
+                    && !string.Equals(requestedPrecision, "INT4", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new InvalidOperationException(
+                        Qwen35MobileAssetSet.RuntimePrecisionEnvironmentVariable
+                        + " must be INT4 for a native Q4 model, but was " + requestedPrecision + ".");
+                }
+                manifestName = Qwen35MobileAssetSet.Q4PrecisionManifestFileName;
+            }
+            else if (string.IsNullOrWhiteSpace(requestedPrecision)
                 || string.Equals(requestedPrecision, "INT8", StringComparison.OrdinalIgnoreCase))
             {
                 manifestName = Qwen35MobileAssetSet.PrecisionManifestFileName;
@@ -341,6 +365,22 @@ namespace AIImage.Qwen35
             var path = Path.Combine(modelDirectory, manifestName);
             if (!File.Exists(path)) throw new FileNotFoundException("Qwen3.5 mobile precision manifest is missing.", path);
             repro.ApplyModelManifest(AexisModelManifestLoader.LoadFromFile(path));
+        }
+
+        public static void ApplyMobileProjectionPrecisionManifest(AexisGraphSession repro, string modelDirectory)
+        {
+            if (repro == null) throw new ArgumentNullException(nameof(repro));
+            var mobile = Qwen35MobileAssetSet.TryLoad(modelDirectory, verifyHashes: false);
+            var projectionPath = mobile?.QuantizationBits == 4
+                ? Path.Combine(modelDirectory, Qwen35MobileAssetSet.Q4ProjectionPrecisionManifestFileName)
+                : null;
+            if (!string.IsNullOrWhiteSpace(projectionPath) && File.Exists(projectionPath))
+            {
+                repro.ApplyModelManifest(AexisModelManifestLoader.LoadFromFile(projectionPath));
+                return;
+            }
+
+            ApplyMobilePrecisionManifest(repro, modelDirectory);
         }
     }
 
@@ -366,6 +406,13 @@ namespace AIImage.Qwen35
     internal static class Qwen35RuntimeTuning
     {
         private const long DefaultMobileLoadGcIntervalBytes = 0L;
+        // Qwen3.5 emits a short planning prefix before the image description.
+        // Sixteen tokens reaches that prefix but not the answer; 64 is the
+        // smallest validated mobile budget that completes the response.
+        private const int DefaultMobileMaximumNewTokens = 64;
+        // 512 patches preserves the Q4 golden first token while reducing the vision
+        // context, decoder KV textures, and transient Pack4 allocations on mobile.
+        private const int DefaultMobileMaximumVisionPatches = 512;
 
         public static long ResolveManagedLoadGarbageCollectionIntervalBytes(string modelDirectory)
         {
@@ -376,6 +423,38 @@ namespace AIImage.Qwen35
             if (long.TryParse(configured, out var megabytes) && megabytes >= 0)
                 return checked(Math.Min(megabytes, 4096L) * 1024L * 1024L);
             return DefaultMobileLoadGcIntervalBytes;
+        }
+
+        public static int ResolveMaximumNewTokens(string modelDirectory, int requestedTokens)
+        {
+            var requested = Math.Max(1, Math.Min(requestedTokens, 4096));
+            if (Qwen35MobileAssetSet.TryLoad(modelDirectory, verifyHashes: false) == null)
+                return requested;
+
+            var configured = ResolvePositiveEnvironmentValue(
+                "AIIMAGE_QWEN35_MOBILE_MAX_NEW_TOKENS",
+                DefaultMobileMaximumNewTokens,
+                64);
+            return Math.Min(requested, configured);
+        }
+
+        public static int ResolveMaximumVisionPatchCount(string modelDirectory)
+        {
+            if (Qwen35MobileAssetSet.TryLoad(modelDirectory, verifyHashes: false) == null)
+                return int.MaxValue;
+
+            return ResolvePositiveEnvironmentValue(
+                "AIIMAGE_QWEN35_MOBILE_MAX_VISION_PATCHES",
+                DefaultMobileMaximumVisionPatches,
+                49152);
+        }
+
+        private static int ResolvePositiveEnvironmentValue(string name, int fallback, int maximum)
+        {
+            var configured = Environment.GetEnvironmentVariable(name);
+            return int.TryParse(configured, out var value) && value > 0
+                ? Math.Min(value, maximum)
+                : fallback;
         }
     }
 

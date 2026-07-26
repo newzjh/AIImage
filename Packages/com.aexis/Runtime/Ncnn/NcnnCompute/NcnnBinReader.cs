@@ -30,15 +30,21 @@ namespace Aexis.Ncnn
             _stream = stream ?? throw new ArgumentNullException(nameof(stream));
             _br = new BinaryReader(_stream);
             _q8Capture = q8Capture;
-            if (q8Capture == null && ProbeQ8Archive(stream))
+            if (ProbeQ8Archive(stream))
                 _q8Reader = new NcnnQ8ArchiveReader(stream);
         }
 
-        public bool IsQ8Archive => _q8Reader != null;
+        public bool IsQ8Archive => _q8Reader != null && _q8Reader.QuantizationBits == 8;
+        public bool IsQ4Archive => _q8Reader != null && _q8Reader.QuantizationBits == 4;
 
         public int ReadInt32()
         {
-            if (_q8Reader != null) return BitConverter.ToInt32(_q8Reader.ReadRaw(sizeof(int)), 0);
+            if (_q8Reader != null)
+            {
+                var bytes = _q8Reader.ReadRaw(sizeof(int));
+                _q8Capture?.WriteRaw(bytes);
+                return BitConverter.ToInt32(bytes, 0);
+            }
             var value = _br.ReadInt32();
             _q8Capture?.WriteRaw(BitConverter.GetBytes(value));
             return value;
@@ -51,7 +57,12 @@ namespace Aexis.Ncnn
             if (count == 0)
                 return Array.Empty<float>();
 
-            if (_q8Reader != null) return _q8Reader.ReadArray(count, requireRaw: true);
+            if (_q8Reader != null)
+            {
+                var values = _q8Reader.ReadArray(count, requireRaw: true);
+                _q8Capture?.WriteFloat32Array(values);
+                return values;
+            }
             var bytes = ReadBytesChecked(checked(count * sizeof(float)));
             var a = new float[count];
             if (BitConverter.IsLittleEndian)
@@ -71,7 +82,12 @@ namespace Aexis.Ncnn
         {
             if (count < 0)
                 throw new ArgumentOutOfRangeException(nameof(count));
-            if (_q8Reader != null) return _q8Reader.ReadArray(count, requireRaw: false);
+            if (_q8Reader != null)
+            {
+                var values = _q8Reader.ReadArray(count, requireRaw: false);
+                _q8Capture?.WriteNcnnArray(values);
+                return values;
+            }
             var readCount = align4 ? Align4(count * 2) : count * 2;
             var bytes = ReadBytesChecked(readCount);
             var a = new float[count];
@@ -97,7 +113,9 @@ namespace Aexis.Ncnn
             else count = 1;
 
             var values = ReadNcnnArrayAsFloat32(count, loadType);
-            var captureBlockSize = loadType == 0 && h > 0 && d == 0 && c == 0 ? w : 0;
+            var captureBlockSize = loadType == 0 && h > 0 && d == 0 && c == 0
+                ? ResolveCaptureBlockSize(w)
+                : 0;
             _q8Capture?.WriteNcnnArray(values, captureBlockSize, forceFp32: loadType == 1);
             return values;
         }
@@ -124,7 +142,13 @@ namespace Aexis.Ncnn
 
             if (_q8Reader != null)
             {
-                _q8Reader.SkipRecord(count);
+                if (_q8Capture == null)
+                    _q8Reader.SkipRecord(count);
+                else
+                {
+                    var values = _q8Reader.ReadArray(count, requireRaw: loadType == 1);
+                    _q8Capture.WriteNcnnArray(values, forceFp32: loadType == 1);
+                }
                 return;
             }
 
@@ -187,7 +211,12 @@ namespace Aexis.Ncnn
         {
             if (count < 0)
                 throw new ArgumentOutOfRangeException(nameof(count));
-            if (_q8Reader != null) return _q8Reader.ReadRaw(count);
+            if (_q8Reader != null)
+            {
+                var rawBytes = _q8Reader.ReadRaw(count);
+                _q8Capture?.WriteRaw(rawBytes);
+                return rawBytes;
+            }
             var bytes = _br.ReadBytes(count);
             _q8Capture?.WriteRaw(bytes);
             return bytes;
@@ -202,7 +231,10 @@ namespace Aexis.Ncnn
             if (byteCount > int.MaxValue) throw new NotSupportedException("A single Q8 raw record cannot exceed Int32.MaxValue bytes.");
             if (_q8Reader != null)
             {
-                _q8Reader.SkipRecord((int)byteCount);
+                if (_q8Capture == null)
+                    _q8Reader.SkipRecord((int)byteCount);
+                else
+                    _q8Capture.WriteRaw(_q8Reader.ReadRaw((int)byteCount));
                 return;
             }
             if (_q8Capture != null)
@@ -342,7 +374,12 @@ namespace Aexis.Ncnn
 
         public uint ReadUInt32()
         {
-            if (_q8Reader != null) return BitConverter.ToUInt32(_q8Reader.ReadRaw(sizeof(uint)), 0);
+            if (_q8Reader != null)
+            {
+                var bytes = _q8Reader.ReadRaw(sizeof(uint));
+                _q8Capture?.WriteRaw(bytes);
+                return BitConverter.ToUInt32(bytes, 0);
+            }
             var value = _br.ReadUInt32();
             _q8Capture?.WriteRaw(BitConverter.GetBytes(value));
             return value;
@@ -364,6 +401,22 @@ namespace Aexis.Ncnn
             return _q8Reader.TryReadPackedArray(count, expectedBlockSize, out packed);
         }
 
+        public NcnnQ4PackedArray ReadQ4NcnnMatPacked(int count, int expectedBlockSize)
+        {
+            if (_q8Reader == null) throw new InvalidOperationException("Packed Q4 reads require an AIImage Q4 archive.");
+            return _q8Reader.ReadQ4PackedArray(count, expectedBlockSize);
+        }
+
+        public bool TryReadQ4NcnnMatPacked(int count, int expectedBlockSize, out NcnnQ4PackedArray packed)
+        {
+            if (_q8Reader == null)
+            {
+                packed = null;
+                return false;
+            }
+            return _q8Reader.TryReadQ4PackedArray(count, expectedBlockSize, out packed);
+        }
+
         public float[] ReadNcnnMatAsFloat32(int w, int h, int d, int c, int loadType)
         {
             return ReadTensorAsFloat32(w, h, d, c, loadType);
@@ -379,6 +432,34 @@ namespace Aexis.Ncnn
             var result = TryReadQ8NcnnMatPacked(count, expectedBlockSize, out var ncnnPacked);
             packed = ncnnPacked;
             return result;
+        }
+
+        public override bool TryReadInt4QuantizedTensor(int count, int expectedBlockSize, out AexisQuantizedTensor packed)
+        {
+            // Q4 Gemm uses group-wise scales. The caller validates that each group
+            // stays within an output channel after it has resolved K/N dimensions.
+            var result = TryReadQ4NcnnMatPacked(count, 0, out var ncnnPacked);
+            packed = ncnnPacked;
+            return result;
+        }
+
+        private int ResolveCaptureBlockSize(int rowWidth)
+        {
+            if (_q8Capture == null || _q8Capture.QuantizationBits != 4)
+                return rowWidth;
+
+            // Keep quantization groups within a 2D Gemm output row.  The group
+            // width comes from the Q4 archive builder; using a hard-coded 64
+            // here used to produce 64-wide Gemm records while the generated
+            // manifest claimed its requested (for example 16-wide) grouping.
+            var preferredGroupSize = _q8Capture.DefaultBlockSize;
+            for (var groupSize = Math.Min(preferredGroupSize, rowWidth); groupSize >= 4; groupSize >>= 1)
+            {
+                if (rowWidth % groupSize == 0)
+                    return groupSize;
+            }
+
+            return rowWidth;
         }
 
         public void Seek(long position)

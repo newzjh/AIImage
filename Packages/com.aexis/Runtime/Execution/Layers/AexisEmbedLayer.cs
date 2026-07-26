@@ -28,7 +28,9 @@ namespace Aexis.Execution
 
                                         phaseSw.Restart();
                                         var useSharedWeights = owner.SharedTokenEmbeddingElementCount == ep.weightSize
-                                            && (owner.SharedTokenEmbeddingWeights != null || owner.SharedTokenEmbeddingWeightsInt8Packed != null);
+                                            && (owner.SharedTokenEmbeddingWeights != null
+                                                || owner.SharedTokenEmbeddingWeightsInt8Packed != null
+                                                || owner.SharedTokenEmbeddingWeightsInt4Packed != null);
                                         float[] w = null;
                                         if (useSharedWeights)
                                             br.SkipTensor(ep.weightSize, 0, 0, 0, 0);
@@ -46,8 +48,12 @@ namespace Aexis.Execution
                                             ep.w = owner.SharedTokenEmbeddingWeights;
                                             ep.wInt8Packed = owner.SharedTokenEmbeddingWeightsInt8Packed;
                                             ep.wInt8Scales = owner.SharedTokenEmbeddingWeightsInt8Scales;
+                                            ep.wInt4Packed = owner.SharedTokenEmbeddingWeightsInt4Packed;
+                                            ep.wInt4Scales = owner.SharedTokenEmbeddingWeightsInt4Scales;
+                                            ep.int4ScaleBlockSize = owner.SharedTokenEmbeddingWeightsInt4ScaleBlockSize;
                                             ep.ownsW = false;
                                             ep.ownsWInt8 = false;
+                                            ep.ownsWInt4 = false;
                                         }
                                         else
                                         {
@@ -96,6 +102,7 @@ namespace Aexis.Execution
                                                 var words = indicesBuf.count;
                                                 var outTensor = owner.RentTempTensorBuffer(2, ep.numOutput, words);
                                                 owner.Ops.SetInt8EmbedWeights(ep.wInt8Packed, ep.wInt8Scales);
+                                                owner.Ops.SetInt4EmbedWeights(ep.wInt4Packed, ep.wInt4Scales, ep.int4ScaleBlockSize);
                                                 owner.Ops.Embed(indicesBuf, words, ep.WeightBinding, ep.b, ep.numOutput, ep.inputDim, ep.biasTerm != 0, outTensor.buffer);
                                                 owner.PublishTensorBufferOutput(
                                                     layer.topNames[0],
@@ -125,6 +132,7 @@ namespace Aexis.Execution
             if (!owner._embed.TryGetValue(layer.name, out var ep) || ep.WeightBinding == null)
                 throw new InvalidOperationException("Embed not found: " + layer.name);
             owner.Ops.SetInt8EmbedWeights(ep.wInt8Packed, ep.wInt8Scales);
+            owner.Ops.SetInt4EmbedWeights(ep.wInt4Packed, ep.wInt4Scales, ep.int4ScaleBlockSize);
 
             var words = ResolveInputElementCount(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews);
             var logicalShape = new AexisGraphSession.BufferShape(2, Mathf.Max(1, ep.numOutput), words, 1, 1);
@@ -167,6 +175,7 @@ namespace Aexis.Execution
             if (!owner._embed.TryGetValue(layer.name, out var ep) || ep.WeightBinding == null)
                 throw new InvalidOperationException("Embed not found: " + layer.name);
             owner.Ops.SetInt8EmbedWeights(ep.wInt8Packed, ep.wInt8Scales);
+            owner.Ops.SetInt4EmbedWeights(ep.wInt4Packed, ep.wInt4Scales, ep.int4ScaleBlockSize);
 
             var srcShape = AexisGraphSession.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
             var words = Mathf.Max(1, srcShape.w * srcShape.h * srcShape.d * srcShape.c);

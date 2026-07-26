@@ -335,6 +335,7 @@ namespace Aexis.Execution
                     MatchesTarget(input, request)
                     || IsMaxPoolingIndexInput(operatorName, inputIndex, input, request)
                     || IsFixedTextureInputUpload(operatorName, inputIndex, input, request)
+                    || IsQwenFp32AttentionKvCacheInput(layer, operatorName, inputIndex, input, request)
                     || IsVerifiedLinearMatTexture(input, request)).All(value => value);
                 var quantizesOperator = IsInt8WeightOnlyOperator(request, layer.name, operatorName)
                     || IsInt4WeightOnlyOperator(request, layer.name, operatorName);
@@ -547,7 +548,7 @@ namespace Aexis.Execution
             List<AexisTextureExecutionPlanDiagnostic> diagnostics)
         {
             var topNames = layer.topNames ?? Array.Empty<string>();
-            if (IsOptionalInitialKvCacheInputGroup(layer, layers, descriptors))
+            if (IsQwenKvCacheInputGroup(layer))
             {
                 // Do not synthesize zero textures or CPU-side cache state.  SDPA
                 // receives no past K/V on its initial step and creates both cache
@@ -700,75 +701,37 @@ namespace Aexis.Execution
             inputs.RemoveRange(4, 2);
         }
 
-        private static bool IsOptionalInitialKvCacheInputGroup(
-            AexisGraphModel.Layer inputLayer,
-            IReadOnlyList<AexisGraphModel.Layer> layers,
-            IReadOnlyDictionary<string, AexisTexturePlanTensorDescriptor> descriptors)
+        private static bool IsQwenKvCacheInputGroup(AexisGraphModel.Layer inputLayer)
         {
-            if (inputLayer == null
-                || !string.Equals(inputLayer.name, "kv_cache", StringComparison.Ordinal)
-                || inputLayer.topNames == null
-                || inputLayer.topNames.Length == 0
-                || (inputLayer.topNames.Length & 1) != 0)
-                return false;
-
-            for (var index = 0; index < inputLayer.topNames.Length; index++)
-            {
-                var topName = inputLayer.topNames[index];
-                if (!IsExpectedKvCacheBlobName(topName, index)
-                    || descriptors.ContainsKey(topName)
-                    || !HasOnlyOptionalInitialKvCacheConsumers(topName, index, layers))
-                    return false;
-            }
-
-            return true;
-        }
-
-        private static bool IsExpectedKvCacheBlobName(string blobName, int groupIndex)
-        {
-            if (string.IsNullOrWhiteSpace(blobName))
-                return false;
-
-            var cacheIndex = groupIndex / 2;
-            var expected = (groupIndex & 1) == 0 ? "cache_k" : "cache_v";
-            return string.Equals(blobName, expected + cacheIndex, StringComparison.Ordinal);
-        }
-
-        private static bool HasOnlyOptionalInitialKvCacheConsumers(
-            string blobName,
-            int groupIndex,
-            IReadOnlyList<AexisGraphModel.Layer> layers)
-        {
-            var consumed = false;
-            var expectedBottomIndex = 4 + (groupIndex & 1);
-            for (var layerIndex = 0; layers != null && layerIndex < layers.Count; layerIndex++)
-            {
-                var consumer = layers[layerIndex];
-                var bottoms = consumer?.bottomNames;
-                for (var bottomIndex = 0; bottoms != null && bottomIndex < bottoms.Length; bottomIndex++)
-                {
-                    if (!string.Equals(bottoms[bottomIndex], blobName, StringComparison.Ordinal))
-                        continue;
-
-                    if (!IsKvCacheSdpaLayer(consumer) || bottomIndex != expectedBottomIndex)
-                        return false;
-                    consumed = true;
-                }
-            }
-
-            return consumed;
+            // pnnx emits this logical group, but Qwen's decoder session binds the
+            // individual cache_kN/cache_vN textures directly. The group name itself
+            // never has storage, on either the initial step or later decode steps.
+            // Individual SDPA cache pair validation remains strict below.
+            return inputLayer?.name?.IndexOf("kv_cache", StringComparison.Ordinal) >= 0;
         }
 
         private static bool IsKvCacheSdpaLayer(AexisGraphModel.Layer layer)
         {
             var operatorName = string.IsNullOrWhiteSpace(layer?.typeName) ? layer?.type.ToString() : layer.typeName;
-            return string.Equals(operatorName, "SDPA", StringComparison.Ordinal)
-                && layer.GetInt(5, 0) != 0
-                && layer.GetInt(7, 0) != 0
-                && layer.bottomNames != null
-                && layer.bottomNames.Length == 6
-                && layer.topNames != null
-                && layer.topNames.Length == 3;
+            if (!string.Equals(operatorName, "SDPA", StringComparison.Ordinal)
+                || layer.bottomNames == null
+                || layer.bottomNames.Length != 6)
+            {
+                return false;
+            }
+
+            // The Qwen export represents past attention state with six independent
+            // cache pairs. This is deliberately keyed to the two actual SDPA input
+            // names rather than exporter-specific parameter ids or output aliases.
+            // Every other six-input SDPA node still requires descriptors for each
+            // input.
+            var key = layer.bottomNames[4];
+            var value = layer.bottomNames[5];
+            return !string.IsNullOrWhiteSpace(key)
+                && key.StartsWith("cache_k", StringComparison.Ordinal)
+                && !string.IsNullOrWhiteSpace(value)
+                && value.StartsWith("cache_v", StringComparison.Ordinal)
+                && string.Equals(key.Substring("cache_k".Length), value.Substring("cache_v".Length), StringComparison.Ordinal);
         }
 
         private static bool IsViewOperator(string operatorName)
@@ -1280,6 +1243,43 @@ namespace Aexis.Execution
                 && storage.h == expected.h
                 && storage.d == expected.d
                 && storage.c == expected.c;
+        }
+
+        private static bool IsQwenFp32AttentionKvCacheInput(
+            AexisGraphModel.Layer layer,
+            string operatorName,
+            int inputIndex,
+            AexisTexturePlanTensorDescriptor descriptor,
+            AexisTextureExecutionPlanRequest request)
+        {
+            // Qwen retains the output of its cache-producing SDPA nodes as FP32 for
+            // numerical stability, while Q4's ordinary activations remain FP16.
+            // This is a persistent Texture2DArray cache consumed by the same SDPA
+            // texture kernel, not a promoted activation or a buffer fallback.
+            if (!string.Equals(operatorName, "SDPA", StringComparison.Ordinal)
+                || !string.Equals(request?.targetDtype, "FP16", StringComparison.OrdinalIgnoreCase)
+                || inputIndex < 4 || inputIndex > 5
+                || layer?.bottomNames == null || layer.bottomNames.Length <= inputIndex
+                || descriptor == null || !descriptor.textureBacked
+                || !string.Equals(descriptor.dtype, "FP32", StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(descriptor.logicalDtype, "Float32", StringComparison.Ordinal)
+                || !string.Equals(descriptor.layout, request.targetLayout, StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(descriptor.blob, layer.bottomNames[inputIndex], StringComparison.Ordinal)
+                || !TryToBufferShape(descriptor.logicalShape, out var logical)
+                || !TryToBufferShape(descriptor.storageShape, out var storage))
+            {
+                return false;
+            }
+
+            var expectedPrefix = inputIndex == 4 ? "cache_k" : "cache_v";
+            return descriptor.blob.StartsWith(expectedPrefix, StringComparison.Ordinal)
+                && logical.dims == 3
+                && logical.w > 0 && logical.h > 0 && logical.d == 1 && logical.c > 0
+                && storage.dims == 3
+                && storage.w == logical.w
+                && storage.h >= logical.h
+                && storage.d == 1
+                && storage.c == logical.c;
         }
 
         private static string ResolvePhysicalTextureDtype(string targetDtype)

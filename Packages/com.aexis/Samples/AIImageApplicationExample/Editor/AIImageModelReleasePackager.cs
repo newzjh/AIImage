@@ -109,7 +109,9 @@ public static class AIImageModelReleasePackager
         {
             // Package release policy excludes GFPGAN and Qwen payloads. They remain
             // available through the model delivery archives and editor downloader.
-            if (group.Id == AIImageModelGroupId.GfpganDefault || group.Id == AIImageModelGroupId.Qwen35MobileQ8)
+            if (group.Id == AIImageModelGroupId.GfpganDefault
+                || group.Id == AIImageModelGroupId.Qwen35MobileQ4
+                || group.Id == AIImageModelGroupId.Qwen35MobileQ8)
                 continue;
             foreach (var relative in group.Files)
             {

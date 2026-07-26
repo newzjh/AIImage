@@ -499,13 +499,15 @@ public sealed class MainView2 : BasePageView
             return;
         }
 
-        if (!await Host.EnsureModelGroupsAvailableAsync(
+        var modelDirectory = ResolveQwen35ModelDirectory();
+        if (!HasQwen35ModelPayload(modelDirectory)
+            && !await Host.EnsureModelGroupsAvailableAsync(
                 "Qwen3.5 model download",
                 _lifetimeCts.Token,
                 ResolveQwen35ModelGroup()))
             return;
 
-        var modelDirectory = ResolveQwen35ModelDirectory();
+        modelDirectory = ResolveQwen35ModelDirectory();
         if (!HasQwen35ModelPayload(modelDirectory))
         {
             ShowToast("Qwen3.5 模型文件不完整: " + modelDirectory, 5000);
@@ -674,9 +676,12 @@ public sealed class MainView2 : BasePageView
 
     private static string ResolveQwen35ModelDirectory()
     {
-        var modelDirectoryName = ResolveQwen35ModelGroup() == AIImageModelGroupId.Qwen35FullPrecision
+        var group = ResolveQwen35ModelGroup();
+        var modelDirectoryName = group == AIImageModelGroupId.Qwen35FullPrecision
             ? "qwen3.5_0.8b"
-            : "qwen3.5_0.8b_mobile_q8";
+            : group == AIImageModelGroupId.Qwen35MobileQ8
+                ? "qwen3.5_0.8b_mobile_q8"
+                : "qwen3.5_0.8b_mobile_q4";
         var configured = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_MODEL_DIR");
         if (!string.IsNullOrWhiteSpace(configured))
         {
@@ -726,7 +731,12 @@ public sealed class MainView2 : BasePageView
         if (string.IsNullOrWhiteSpace(modelDirectory) || !Directory.Exists(modelDirectory))
             return false;
 
-        if (File.Exists(Path.Combine(modelDirectory, Qwen35MobileAssetSet.ManifestFileName)))
+        // Both mobile precisions are delivered as manifest-backed, sharded
+        // assets.  Do not send Q4 through the legacy loose-.bin check: that
+        // falsely reports its weights missing even after Android has copied
+        // every bundled Q4 shard into persistent storage.
+        if (File.Exists(Path.Combine(modelDirectory, Qwen35MobileAssetSet.Q4ManifestFileName))
+            || File.Exists(Path.Combine(modelDirectory, Qwen35MobileAssetSet.ManifestFileName)))
         {
             try
             {
@@ -1593,7 +1603,7 @@ public sealed class MainView2 : BasePageView
 
     private static AIImageModelGroupId ResolveQwen35ModelGroup()
     {
-        const string mobileModelDirectoryName = "qwen3.5_0.8b_mobile_q8";
+        const string mobileModelDirectoryName = "qwen3.5_0.8b_mobile_q4";
         var configured = Environment.GetEnvironmentVariable("AIIMAGE_QWEN35_MODEL_DIR");
         if (!string.IsNullOrWhiteSpace(configured))
         {
@@ -1601,9 +1611,11 @@ public sealed class MainView2 : BasePageView
             var directoryName = Path.GetFileName(resolved.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
             if (string.Equals(directoryName, "qwen3.5_0.8b", StringComparison.OrdinalIgnoreCase))
                 return AIImageModelGroupId.Qwen35FullPrecision;
+            if (string.Equals(directoryName, "qwen3.5_0.8b_mobile_q8", StringComparison.OrdinalIgnoreCase))
+                return AIImageModelGroupId.Qwen35MobileQ8;
         }
 
-        return AIImageModelGroupId.Qwen35MobileQ8;
+        return AIImageModelGroupId.Qwen35MobileQ4;
     }
 
     private static AIImageModelGroupId ResolveDeepFillV2ModelGroup(
