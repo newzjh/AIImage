@@ -154,8 +154,8 @@ Aexis 源码使用 MIT，不自动改变模型权重许可证。每一个发布�
 
 Use `Aexis/Release/Build Reduced` for Main2 Player output. The release pipeline never stages,
 moves, or modifies `Assets/StreamingAssets` or package sample `StreamingAssets`; it rewrites only
-generated Player output. Its bundled groups are MobileCLIP S0, CodeFormer, Matting, Real-ESRGAN x4plus anime,
-GFPGAN, YOLOv8 person segmentation, DeepFillV2 case1 ONNX, and Qwen3.5 mobile Q8. MONAI and
+generated Player output. Its bundled groups are MobileCLIP S0, CodeFormer, Matting, Real-ESRGAN AnimeVideo v3 x4,
+GFPGAN, YOLOv8 person segmentation, DeepFillV2 case1 NCNN, and Qwen3.5 mobile Q8. MONAI and
 VISTA are excluded. The reduced `.unitypackage` excludes GFPGAN and Qwen model weights.
 
 `Aexis/Release/Build Reduced/Prepare Model Release Assets` creates named model ZIP archives and a
