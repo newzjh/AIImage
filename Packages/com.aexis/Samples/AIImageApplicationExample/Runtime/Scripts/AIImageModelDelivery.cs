@@ -118,6 +118,7 @@ public static class AIImageModelDelivery
 
     private const string ReleaseTagEnvironmentVariable = "AIIMAGE_MODEL_RELEASE_TAG";
     private const string ReleaseBaseUrlEnvironmentVariable = "AIIMAGE_MODEL_RELEASE_BASE_URL";
+    private const string InferenceManifestDirectoryName = "InferenceManifests";
 
     private static readonly AIImageModelGroup[] Groups =
     {
@@ -405,8 +406,13 @@ public static class AIImageModelDelivery
     {
         if (group == null)
             throw new ArgumentNullException(nameof(group));
-        if (Application.platform != RuntimePlatform.Android || IsInstalled(group))
+        if (Application.platform != RuntimePlatform.Android)
             return;
+        if (IsInstalled(group))
+        {
+            await MaterializeBundledInferenceManifestsAsync(group, onProgress, cancellationToken);
+            return;
+        }
 
         var bundled = await LoadAndroidBundledGroupIdsAsync(cancellationToken);
         if (!bundled.Contains(group.Id.ToString()))
@@ -454,9 +460,79 @@ public static class AIImageModelDelivery
             }
         }
 
+        await MaterializeBundledInferenceManifestsAsync(group, onProgress, cancellationToken);
+
         if (!IsInstalled(group))
             throw new InvalidDataException("Bundled Android model files are incomplete for " + group.DisplayName + ".");
         onProgress?.Invoke(new AIImageModelDownloadProgress(group, 1f, "Bundled model files ready"));
+    }
+
+    private static async UniTask MaterializeBundledInferenceManifestsAsync(
+        AIImageModelGroup group,
+        Action<AIImageModelDownloadProgress> onProgress,
+        CancellationToken cancellationToken)
+    {
+        var manifestFileNames = GetBundledInferenceManifestFileNames(group.Id);
+        for (var index = 0; index < manifestFileNames.Length; index++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var relative = InferenceManifestDirectoryName + "/" + manifestFileNames[index];
+            var destination = GetPersistentPath(relative);
+            if (File.Exists(destination))
+                continue;
+
+            Directory.CreateDirectory(Path.GetDirectoryName(destination));
+            var staging = destination + ".part";
+            Cleanup(staging);
+            try
+            {
+                var source = Application.streamingAssetsPath.TrimEnd('/', '\\') + "/" + NormalizeRelativePath(relative);
+                using (var request = new UnityWebRequest(source, UnityWebRequest.kHttpVerbGET))
+                {
+                    request.downloadHandler = new DownloadHandlerFile(staging, false);
+                    var operation = request.SendWebRequest();
+                    while (!operation.isDone)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        var completed = (index + request.downloadProgress) / Mathf.Max(1, manifestFileNames.Length);
+                        onProgress?.Invoke(new AIImageModelDownloadProgress(
+                            group,
+                            Mathf.Lerp(0.94f, 0.99f, completed),
+                            "Preparing inference contract"));
+                        await UniTask.Yield(PlayerLoopTiming.Update, cancellationToken);
+                    }
+
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (request.result != UnityWebRequest.Result.Success)
+                    {
+                        throw new IOException(
+                            "Failed to read bundled inference manifest '" + relative + "': " + request.error);
+                    }
+                }
+
+                File.Move(staging, destination);
+            }
+            finally
+            {
+                Cleanup(staging);
+            }
+        }
+    }
+
+    private static string[] GetBundledInferenceManifestFileNames(AIImageModelGroupId groupId)
+    {
+        switch (groupId)
+        {
+            case AIImageModelGroupId.ClipMobileClipS0:
+                return new[] { "clip-mobileclip-s0.fp16.model.json" };
+            case AIImageModelGroupId.RealEsrganX4PlusAnime:
+            case AIImageModelGroupId.RealEsrganOptionalModels:
+                return new[] { "esrgan-realesrgan-x4plus.fp16.model.json" };
+            case AIImageModelGroupId.Matting:
+                return new[] { "matting.fp32.model.json" };
+            default:
+                return Array.Empty<string>();
+        }
     }
 
     public static async UniTask DownloadGroupAsync(
@@ -468,6 +544,8 @@ public static class AIImageModelDelivery
             throw new ArgumentNullException(nameof(group));
         if (IsInstalled(group))
         {
+            if (Application.platform == RuntimePlatform.Android)
+                await MaterializeBundledInferenceManifestsAsync(group, onProgress, cancellationToken);
             onProgress?.Invoke(new AIImageModelDownloadProgress(group, 1f, "Already installed"));
             return;
         }
@@ -492,6 +570,8 @@ public static class AIImageModelDelivery
 
             if (!IsInstalled(group))
                 throw new InvalidDataException("Downloaded files do not contain every required file for " + group.DisplayName + ".");
+            if (Application.platform == RuntimePlatform.Android)
+                await MaterializeBundledInferenceManifestsAsync(group, onProgress, cancellationToken);
             onProgress?.Invoke(new AIImageModelDownloadProgress(group, 1f, "Installed"));
         }
         finally

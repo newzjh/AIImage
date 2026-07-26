@@ -64,13 +64,16 @@ namespace AIImage.Qwen35
         private Qwen35Runner(
             Qwen35ModelContract contract,
             Qwen35ByteLevelBpeTokenizer tokenizer,
-            int maxNewTokens)
+            int maxNewTokens,
+            bool deviceQualificationRun = false)
         {
             Contract = contract ?? throw new ArgumentNullException(nameof(contract));
             if (!Contract.IsValid) throw new InvalidOperationException("Qwen3.5 model contract failed:\n" + string.Join("\n", Contract.Errors));
             Tokenizer = tokenizer ?? throw new ArgumentNullException(nameof(tokenizer));
             MaxNewTokens = Mathf.Clamp(maxNewTokens, 1, 4096);
-            DeviceCompatibility = Qwen35DeviceCompatibility.Evaluate(Contract);
+            DeviceCompatibility = deviceQualificationRun
+                ? Qwen35DeviceCompatibility.EvaluateForDeviceQualification(Contract)
+                : Qwen35DeviceCompatibility.Evaluate(Contract);
             DeviceCompatibility.ThrowIfUnsupported();
         }
 
@@ -80,6 +83,41 @@ namespace AIImage.Qwen35
             bool requireWeights = true,
             CancellationToken cancellationToken = default,
             Action<Qwen35Progress> onProgress = null)
+        {
+            return await CreateAsyncCore(
+                modelDirectory,
+                maxNewTokens,
+                requireWeights,
+                cancellationToken,
+                onProgress,
+                deviceQualificationRun: false);
+        }
+
+        // The caller must be an explicit test harness. Product entry points retain
+        // the regular memory compatibility floor through CreateAsync above.
+        internal static async UniTask<Qwen35Runner> CreateForDeviceQualificationAsync(
+            string modelDirectory,
+            int maxNewTokens,
+            bool requireWeights,
+            CancellationToken cancellationToken = default,
+            Action<Qwen35Progress> onProgress = null)
+        {
+            return await CreateAsyncCore(
+                modelDirectory,
+                maxNewTokens,
+                requireWeights,
+                cancellationToken,
+                onProgress,
+                deviceQualificationRun: true);
+        }
+
+        private static async UniTask<Qwen35Runner> CreateAsyncCore(
+            string modelDirectory,
+            int maxNewTokens,
+            bool requireWeights,
+            CancellationToken cancellationToken,
+            Action<Qwen35Progress> onProgress,
+            bool deviceQualificationRun)
         {
             ConfigureAssetValidationCache();
             cancellationToken.ThrowIfCancellationRequested();
@@ -110,7 +148,7 @@ namespace AIImage.Qwen35
                 cancellationToken: cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
             onProgress?.Invoke(new Qwen35Progress("initialization_complete", "Qwen3.5 runtime ready", 1f));
-            return new Qwen35Runner(contract, tokenizer, maxNewTokens);
+            return new Qwen35Runner(contract, tokenizer, maxNewTokens, deviceQualificationRun);
         }
 
         private static Qwen35ByteLevelBpeTokenizer LoadTokenizer(string modelDirectory)

@@ -700,6 +700,11 @@ public sealed class LibraryView : BasePageView
             TryAddMountedRoots(roots, "/mnt", "\u6302\u8F7D");
             TryAddMountedRoots(roots, "/media", "\u5916\u63A5");
 #elif UNITY_ANDROID
+            // Android blocks traversal into Android/data from a public storage root.
+            // Keep the app-owned external-files location as its own root so images
+            // copied there for normal use or runner validation remain browseable.
+            AddStorageRoot(roots, Application.persistentDataPath, "\u5E94\u7528\u6587\u4EF6");
+            AddStorageRoot(roots, "/storage/emulated/0/Pictures", "\u56FE\u7247");
             AddStorageRoot(roots, "/storage/emulated/0", "\u672C\u5730");
             TryAddMountedRoots(roots, "/storage", "\u5916\u63A5");
 #elif UNITY_IOS

@@ -4,11 +4,13 @@ using System.Collections.Generic;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
+using System.Reflection;
 using UnityEditor;
 using UnityEditor.Android;
 using UnityEditor.Build;
 using UnityEditor.Build.Reporting;
 using UnityEngine;
+using UnityEngine.Rendering;
 
 public sealed class AIImageReducedModelBuild : IPostprocessBuildWithReport, IPostGenerateGradleAndroidProject
 {
@@ -51,7 +53,7 @@ public sealed class AIImageReducedModelBuild : IPostprocessBuildWithReport, IPos
 
         Debug.Log("Applying reduced Main2 model policy to the Build window Player output: "
             + buildPlayerOptions.locationPathName);
-        BuildReducedMain2(buildPlayerOptions);
+        BuildReducedMain2(buildPlayerOptions, configureAndroidVulkan: true);
     }
 
     [MenuItem("Aexis/Release/Build Reduced/Main2 Windows x64")]
@@ -165,10 +167,21 @@ public sealed class AIImageReducedModelBuild : IPostprocessBuildWithReport, IPos
             locationPathName = output,
             target = target,
             options = options
-        });
+        }, configureAndroidVulkan: true);
     }
 
-    private static BuildReport BuildReducedMain2(BuildPlayerOptions buildPlayerOptions)
+    internal static BuildReport BuildMain2WithCurrentAndroidSettings(BuildTarget target, string output, BuildOptions options)
+    {
+        return BuildReducedMain2(new BuildPlayerOptions
+        {
+            scenes = new[] { AexisApplicationExamplePaths.Main2SceneAssetPath },
+            locationPathName = output,
+            target = target,
+            options = options
+        }, configureAndroidVulkan: false);
+    }
+
+    private static BuildReport BuildReducedMain2(BuildPlayerOptions buildPlayerOptions, bool configureAndroidVulkan)
     {
         var target = buildPlayerOptions.target;
         var group = BuildPipeline.GetBuildTargetGroup(target);
@@ -183,8 +196,15 @@ public sealed class AIImageReducedModelBuild : IPostprocessBuildWithReport, IPos
         var session = new BuildSession(target, output);
         ActiveSession = session;
         BuildReport report = null;
+        AndroidVulkanBuildSettingsOverride androidSettings = null;
         try
         {
+            if (target == BuildTarget.Android && configureAndroidVulkan)
+            {
+                androidSettings = new AndroidVulkanBuildSettingsOverride();
+                androidSettings.Apply();
+            }
+
             buildPlayerOptions.locationPathName = output;
             buildPlayerOptions.options |= BuildOptions.CompressWithLz4;
             report = BuildPipeline.BuildPlayer(buildPlayerOptions);
@@ -209,6 +229,7 @@ public sealed class AIImageReducedModelBuild : IPostprocessBuildWithReport, IPos
         }
         finally
         {
+            androidSettings?.Dispose();
             ActiveSession = null;
         }
     }
@@ -578,6 +599,68 @@ public sealed class AIImageReducedModelBuild : IPostprocessBuildWithReport, IPos
         public string OutputPath { get; }
         public bool AndroidAssetsWereRewritten { get; set; }
         public bool OutputWasRewritten { get; set; }
+    }
+
+    private sealed class AndroidVulkanBuildSettingsOverride : IDisposable
+    {
+        private readonly bool _useDefaultGraphicsApis;
+        private readonly GraphicsDeviceType[] _graphicsApis;
+        private readonly AndroidArchitecture _architectures;
+        private readonly AndroidSdkVersions _minimumSdk;
+        private PropertyInfo _applicationEntryProperty;
+        private object _applicationEntry;
+        private bool _applied;
+
+        public AndroidVulkanBuildSettingsOverride()
+        {
+            _useDefaultGraphicsApis = PlayerSettings.GetUseDefaultGraphicsAPIs(BuildTarget.Android);
+            _graphicsApis = PlayerSettings.GetGraphicsAPIs(BuildTarget.Android);
+            _architectures = PlayerSettings.Android.targetArchitectures;
+            _minimumSdk = PlayerSettings.Android.minSdkVersion;
+        }
+
+        public void Apply()
+        {
+            _applicationEntryProperty = typeof(PlayerSettings.Android).GetProperty(
+                "applicationEntry",
+                BindingFlags.Public | BindingFlags.Static);
+            if (_applicationEntryProperty == null || !_applicationEntryProperty.PropertyType.IsEnum)
+                throw new NotSupportedException(
+                    "Android GameActivity is required for the ARM64 Vulkan release, but this Unity editor does not expose PlayerSettings.Android.applicationEntry.");
+
+            _applicationEntry = _applicationEntryProperty.GetValue(null);
+            var gameActivity = Enum.Parse(_applicationEntryProperty.PropertyType, "GameActivity", ignoreCase: false);
+            PlayerSettings.SetUseDefaultGraphicsAPIs(BuildTarget.Android, false);
+            PlayerSettings.SetGraphicsAPIs(BuildTarget.Android, new[] { GraphicsDeviceType.Vulkan });
+            PlayerSettings.Android.targetArchitectures = AndroidArchitecture.ARM64;
+            PlayerSettings.Android.minSdkVersion = AndroidSdkVersions.AndroidApiLevel24;
+            _applicationEntryProperty.SetValue(null, gameActivity);
+            _applied = true;
+        }
+
+        public void Dispose()
+        {
+            if (!_applied)
+                return;
+
+            try
+            {
+                if (_graphicsApis != null && _graphicsApis.Length > 0)
+                {
+                    PlayerSettings.SetUseDefaultGraphicsAPIs(BuildTarget.Android, false);
+                    PlayerSettings.SetGraphicsAPIs(BuildTarget.Android, _graphicsApis);
+                }
+                PlayerSettings.SetUseDefaultGraphicsAPIs(BuildTarget.Android, _useDefaultGraphicsApis);
+                PlayerSettings.Android.targetArchitectures = _architectures;
+                PlayerSettings.Android.minSdkVersion = _minimumSdk;
+                _applicationEntryProperty?.SetValue(null, _applicationEntry);
+                AssetDatabase.SaveAssets();
+            }
+            finally
+            {
+                _applied = false;
+            }
+        }
     }
 
     [Serializable]

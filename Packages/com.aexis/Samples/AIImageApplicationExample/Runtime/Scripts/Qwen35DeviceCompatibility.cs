@@ -91,9 +91,35 @@ namespace AIImage.Qwen35
                 Qwen35DeviceCapabilities.CaptureCurrent());
         }
 
+        // This is intentionally internal and reserved for the Android smoke harness.
+        // It permits an on-device qualification run below the shipping memory floor
+        // without changing the normal player compatibility decision.
+        internal static Qwen35DeviceCompatibility EvaluateForDeviceQualification(Qwen35ModelContract contract)
+        {
+            if (contract == null) throw new ArgumentNullException(nameof(contract));
+            return EvaluateCapabilitiesForDeviceQualification(
+                contract.MobileAssets != null && contract.MobileAssets.WeightOnly,
+                Qwen35DeviceCapabilities.CaptureCurrent());
+        }
+
+        internal static Qwen35DeviceCompatibility EvaluateCapabilitiesForDeviceQualification(
+            bool hasValidatedMobileAssets,
+            Qwen35DeviceCapabilities capabilities)
+        {
+            return EvaluateCapabilities(hasValidatedMobileAssets, capabilities, ignoreSystemMemoryFloor: true);
+        }
+
         public static Qwen35DeviceCompatibility EvaluateCapabilities(
             bool hasValidatedMobileAssets,
             Qwen35DeviceCapabilities capabilities)
+        {
+            return EvaluateCapabilities(hasValidatedMobileAssets, capabilities, ignoreSystemMemoryFloor: false);
+        }
+
+        private static Qwen35DeviceCompatibility EvaluateCapabilities(
+            bool hasValidatedMobileAssets,
+            Qwen35DeviceCapabilities capabilities,
+            bool ignoreSystemMemoryFloor)
         {
             var result = new Qwen35DeviceCompatibility
             {
@@ -113,7 +139,9 @@ namespace AIImage.Qwen35
             var mobilePlayer = result.Platform == RuntimePlatform.Android || result.Platform == RuntimePlatform.IPhonePlayer;
             if (mobilePlayer && !result.MobileAssetSet)
                 result.UnsupportedReasons.Add("Qwen3.5 mobile player requires the validated q8 sharded asset set.");
-            if (result.SystemMemoryMb > 0 && result.SystemMemoryMb < MinimumSystemMemoryMb)
+            if (!ignoreSystemMemoryFloor
+                && result.SystemMemoryMb > 0
+                && result.SystemMemoryMb < MinimumSystemMemoryMb)
                 result.UnsupportedReasons.Add("system memory is below " + MinimumSystemMemoryMb + " MiB: " + result.SystemMemoryMb + " MiB");
             if (!result.SupportsComputeShaders)
                 result.UnsupportedReasons.Add("ComputeShader support is unavailable.");
