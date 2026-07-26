@@ -29,15 +29,18 @@ function Get-Sha256WithRetry([string]$Path, [int]$Attempts = 80, [int]$DelayMill
 
 $toolDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 if ([string]::IsNullOrWhiteSpace($ModelDir)) {
+    $streamingQ8Model = Join-Path $ProjectPath 'Assets\StreamingAssets\QWEN35\qwen3.5_0.8b_mobile_q8'
+    $baselineQ8Model = Join-Path $toolDir '_models\qwen3.5_0.8b_mobile_q8'
     $baselineModel = Join-Path $toolDir '_models\qwen3.5_0.8b'
     $streamingFp32Model = Join-Path $ProjectPath 'Assets\StreamingAssets\QWEN35\qwen3.5_0.8b'
-    $streamingQ8Model = Join-Path $ProjectPath 'Assets\StreamingAssets\QWEN35\qwen3.5_0.8b_mobile_q8'
-    $ModelDir = if (Test-Path -LiteralPath $baselineModel) {
-        $baselineModel
-    } elseif (Test-Path -LiteralPath $streamingFp32Model) {
-        $streamingFp32Model
-    } else {
+    $ModelDir = if (Test-Path -LiteralPath $baselineQ8Model) {
+        $baselineQ8Model
+    } elseif (Test-Path -LiteralPath $streamingQ8Model) {
         $streamingQ8Model
+    } elseif (Test-Path -LiteralPath $baselineModel) {
+        $baselineModel
+    } else {
+        $streamingFp32Model
     }
 }
 if ([string]::IsNullOrWhiteSpace($ImagePath)) {
