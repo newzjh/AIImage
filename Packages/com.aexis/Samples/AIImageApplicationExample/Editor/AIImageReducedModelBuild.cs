@@ -5,8 +5,8 @@ using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Reflection;
-using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 using UnityEditor;
 using UnityEditor.Android;
 using UnityEditor.Build;
@@ -369,71 +369,6 @@ public sealed class AIImageReducedModelBuild : IPostprocessBuildWithReport, IPos
         catch (Exception exception)
         {
             return "<could not read editor console log: " + exception.Message + ">";
-        }
-    }
-
-    [DllImport("libc", EntryPoint = "symlink", SetLastError = true)]
-    private static extern int CreateMacOsSymbolicLink(string target, string linkPath);
-
-    private static void PrepareMacOsBeeCache()
-    {
-        var beeDirectory = Path.Combine(ProjectRoot, "Library", "Bee");
-        var ownershipMarker = Path.Combine(beeDirectory, ".aexis-macos-bee-cache");
-        if (File.Exists(ownershipMarker))
-            return;
-
-        try
-        {
-            if (Directory.Exists(beeDirectory))
-                Directory.Delete(beeDirectory, true);
-            else if (File.Exists(beeDirectory))
-                File.Delete(beeDirectory);
-
-            var localApplicationData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-            if (string.IsNullOrWhiteSpace(localApplicationData))
-                throw new DirectoryNotFoundException("macOS local application-data directory is unavailable.");
-
-            var cacheDirectory = Path.Combine(
-                localApplicationData,
-                "Aexis",
-                "ReducedMain2Bee",
-                Path.GetFileName(ProjectRoot) + "-" + GetStablePathToken(ProjectRoot));
-            Directory.CreateDirectory(cacheDirectory);
-            File.WriteAllText(
-                Path.Combine(cacheDirectory, ".aexis-macos-bee-cache"),
-                ProjectRoot,
-                new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-
-            if (CreateMacOsSymbolicLink(cacheDirectory, beeDirectory) != 0)
-            {
-                var error = Marshal.GetLastWin32Error();
-                throw new IOException("symlink failed with errno " + error + ".");
-            }
-
-            Debug.Log(
-                "[Aexis.Editor] Redirected generated macOS Bee cache to local storage before the reduced Main2 build: "
-                + cacheDirectory);
-        }
-        catch (Exception exception)
-        {
-            throw new InvalidOperationException(
-                "Could not redirect the generated macOS Bee cache at " + beeDirectory
-                + " to local macOS storage. Close other Unity processes using this project and retry.",
-                exception);
-        }
-    }
-
-    private static string GetStablePathToken(string value)
-    {
-        unchecked
-        {
-            uint hash = 2166136261;
-            foreach (var character in value ?? string.Empty)
-            {
-                hash ^= character;
-                hash *= 16777619;
-            }
-            return hash.ToString("x8");
         }
     }
 
@@ -1019,6 +954,7 @@ public sealed class AIImageReducedModelBuild : IPostprocessBuildWithReport, IPos
     {
         private const string CopyFileDisableEnvironmentVariable = "COPYFILE_DISABLE";
         private readonly string _previousValue;
+        private MacOsBeeAppleDoubleCleaner _cleaner;
         private bool _applied;
 
         public MacOsAppleDoubleBuildGuard()
@@ -1032,7 +968,8 @@ public sealed class AIImageReducedModelBuild : IPostprocessBuildWithReport, IPos
             // Unity's Bee/IL2CPP pipeline mistakes those sidecars for managed assemblies.
             Environment.SetEnvironmentVariable(CopyFileDisableEnvironmentVariable, "1");
             _applied = true;
-            PrepareMacOsBeeCache();
+            _cleaner = new MacOsBeeAppleDoubleCleaner(Path.Combine(ProjectRoot, "Library", "Bee"));
+            _cleaner.Start();
         }
 
         public void Dispose()
@@ -1040,8 +977,104 @@ public sealed class AIImageReducedModelBuild : IPostprocessBuildWithReport, IPos
             if (!_applied)
                 return;
 
-            Environment.SetEnvironmentVariable(CopyFileDisableEnvironmentVariable, _previousValue);
-            _applied = false;
+            try
+            {
+                _cleaner?.Dispose();
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable(CopyFileDisableEnvironmentVariable, _previousValue);
+                _applied = false;
+            }
+        }
+    }
+
+    private sealed class MacOsBeeAppleDoubleCleaner : IDisposable
+    {
+        private static readonly string[] GeneratedDirectoryRelativePaths =
+        {
+            "PlayerScriptAssemblies",
+            "artifacts/csharpactions",
+            "artifacts/MacStandalonePlayerBuildProgram/ManagedStripped"
+        };
+
+        private readonly string _beeDirectory;
+        private Thread _worker;
+        private volatile bool _stopping;
+        private int _removedFiles;
+
+        public MacOsBeeAppleDoubleCleaner(string beeDirectory)
+        {
+            _beeDirectory = beeDirectory;
+        }
+
+        public void Start()
+        {
+            RemoveSidecars();
+            _worker = new Thread(RemoveLoop)
+            {
+                IsBackground = true,
+                Name = "Aexis macOS AppleDouble cleanup"
+            };
+            _worker.Start();
+        }
+
+        public void Dispose()
+        {
+            _stopping = true;
+            _worker?.Join(2000);
+            RemoveSidecars();
+
+            if (_removedFiles > 0)
+            {
+                Debug.Log(
+                    "[Aexis.Editor] Removed " + _removedFiles
+                    + " AppleDouble files generated under Library/Bee during the macOS reduced Main2 build.");
+            }
+        }
+
+        private void RemoveLoop()
+        {
+            while (!_stopping)
+            {
+                RemoveSidecars();
+                Thread.Sleep(5);
+            }
+        }
+
+        private void RemoveSidecars()
+        {
+            for (var index = 0; index < GeneratedDirectoryRelativePaths.Length; index++)
+            {
+                var directory = Path.Combine(
+                    _beeDirectory,
+                    GeneratedDirectoryRelativePaths[index].Replace('/', Path.DirectorySeparatorChar));
+                if (!Directory.Exists(directory))
+                    continue;
+
+                string[] sidecars;
+                try
+                {
+                    sidecars = Directory.GetFiles(directory, "._*", SearchOption.AllDirectories);
+                }
+                catch (Exception)
+                {
+                    continue;
+                }
+
+                for (var sidecarIndex = 0; sidecarIndex < sidecars.Length; sidecarIndex++)
+                {
+                    try
+                    {
+                        File.Delete(sidecars[sidecarIndex]);
+                        Interlocked.Increment(ref _removedFiles);
+                    }
+                    catch (Exception)
+                    {
+                        // Bee can create or remove the sidecar between enumeration and deletion.
+                    }
+                }
+            }
         }
     }
 
