@@ -320,7 +320,7 @@ public sealed class AIImageReducedModelBuild : IPostprocessBuildWithReport, IPos
                     .Append(" depth=").Append(step.depth)
                     .Append(" duration_ms=").Append(step.duration.TotalMilliseconds)
                     .AppendLine();
-                if (step.messages == null || step.messages.Count == 0)
+                if (step.messages == null || !step.messages.Any())
                 {
                     text.AppendLine("  <no messages>");
                     continue;
