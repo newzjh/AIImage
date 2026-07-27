@@ -126,6 +126,13 @@ public sealed class LibraryView : BasePageView
     private const float PortraitCardHeight = 330f;
     private const float PortraitImageHeight = 246f;
 
+    private sealed class FilterTogglePresentation
+    {
+        public string label;
+        public string icon;
+        public string tooltip;
+    }
+
     public override AppPageId PageId => AppPageId.LibraryView;
 
     private PopupField<string> _drivePopup;
@@ -143,6 +150,9 @@ public sealed class LibraryView : BasePageView
     private Label _selectionTipsTitle;
     private Label _selectionTipsDetail;
     private VisualElement _selectionTipsMeta;
+    private VisualElement _leftPane;
+    private VisualElement _rightPane;
+    private Button _selectionTipsToggleButton;
     private Button _mappedOriginalLinkButton;
 
     private readonly List<ThumbnailEntry> _thumbnailEntries = new List<ThumbnailEntry>();
@@ -173,6 +183,9 @@ public sealed class LibraryView : BasePageView
     private int _thumbnailLoadGeneration;
     private int _directoryScanGeneration;
     private bool _storagePermissionRequestInFlight;
+    private bool _selectionTipsCollapsed;
+    private bool _hasAppliedLayout;
+    private bool _lastLayoutWasPortrait;
 
     private sealed class StorageAccessSnapshot
     {
@@ -191,6 +204,7 @@ public sealed class LibraryView : BasePageView
 
     protected override void BuildPage(VisualElement contentRoot)
     {
+        _hasAppliedLayout = false;
         contentRoot.style.flexDirection = FlexDirection.Column;
         contentRoot.style.flexGrow = 1;
         contentRoot.style.minHeight = 0;
@@ -200,7 +214,7 @@ public sealed class LibraryView : BasePageView
         var body = new VisualElement();
         body.style.flexGrow = 1;
         body.style.minHeight = 0;
-        body.style.flexDirection = FlexDirection.Row;
+        body.style.flexDirection = IsPortraitLayout ? FlexDirection.Column : FlexDirection.Row;
         body.style.paddingLeft = 12;
         body.style.paddingRight = 12;
         body.style.paddingTop = 8;
@@ -210,6 +224,7 @@ public sealed class LibraryView : BasePageView
         body.Add(BuildRightPane());
 
         BuildStandardOverlays();
+        ApplyLibraryLayout(IsPortraitLayout);
     }
 
     protected override void OnShown()
@@ -238,8 +253,7 @@ public sealed class LibraryView : BasePageView
         if (ContentRoot == null || ContentRoot.childCount < 2)
             return;
 
-        var body = ContentRoot[1];
-        body.style.flexDirection = isPortrait ? FlexDirection.Column : FlexDirection.Row;
+        ApplyLibraryLayout(isPortrait);
         ApplyFilters();
     }
 
@@ -315,19 +329,20 @@ public sealed class LibraryView : BasePageView
         title.style.marginRight = 14;
         bar.Add(title);
 
-        bar.Add(CreateFilterToggle("\u540D\u79F0", true, out _sortTimeToggle, OnSortToggleChanged));
-        bar.Add(CreateFilterToggle("\u4EBA\u8138", false, out _sortFaceToggle, OnSortToggleChanged));
-        bar.Add(CreateFilterToggle("\u5730\u70B9", false, out _sortLocationToggle, OnSortToggleChanged));
-        bar.Add(CreateFilterToggle("\u539F\u56FE", true, out _showOriginalToggle, ApplyFilters));
-        bar.Add(CreateFilterToggle("\u4FEE\u56FE", true, out _showEditedToggle, ApplyFilters));
-        bar.Add(CreateFilterToggle("\u672A\u77E5", true, out _showUnknownToggle, ApplyFilters));
-        bar.Add(CreateFilterToggle("\u6536\u85CF", false, out _favoritesOnlyToggle, ApplyFilters));
+        bar.Add(CreateFilterToggle("\u540D\u79F0", "\u21F5", "\u6309\u540D\u79F0\u6392\u5E8F", true, out _sortTimeToggle, OnSortToggleChanged));
+        bar.Add(CreateFilterToggle("\u4EBA\u8138", "\u263A", "\u6309\u4EBA\u8138\u6392\u5E8F", false, out _sortFaceToggle, OnSortToggleChanged));
+        bar.Add(CreateFilterToggle("\u5730\u70B9", "\u2316", "\u6309\u5730\u70B9\u6392\u5E8F", false, out _sortLocationToggle, OnSortToggleChanged));
+        bar.Add(CreateFilterToggle("\u539F\u56FE", "\u25C9", "\u663E\u793A\u539F\u56FE", true, out _showOriginalToggle, ApplyFilters));
+        bar.Add(CreateFilterToggle("\u4FEE\u56FE", "\u270E", "\u663E\u793A\u4FEE\u56FE", true, out _showEditedToggle, ApplyFilters));
+        bar.Add(CreateFilterToggle("\u672A\u77E5", "?", "\u663E\u793A\u672A\u77E5\u7C7B\u578B", true, out _showUnknownToggle, ApplyFilters));
+        bar.Add(CreateFilterToggle("\u6536\u85CF", "\u2605", "\u4EC5\u663E\u793A\u6536\u85CF", false, out _favoritesOnlyToggle, ApplyFilters));
         return bar;
     }
 
     private VisualElement BuildLeftPane()
     {
         var pane = CreatePaneContainer();
+        _leftPane = pane;
         pane.style.width = 310;
         pane.style.minWidth = 260;
         pane.style.maxWidth = 360;
@@ -381,6 +396,7 @@ public sealed class LibraryView : BasePageView
     private VisualElement BuildRightPane()
     {
         var pane = CreatePaneContainer();
+        _rightPane = pane;
         pane.style.flexGrow = 1;
 
         var selectionTips = new VisualElement();
@@ -397,10 +413,30 @@ public sealed class LibraryView : BasePageView
         selectionTips.style.marginBottom = 10;
         pane.Add(selectionTips);
 
+        var selectionTipsHeader = new VisualElement();
+        selectionTipsHeader.style.flexDirection = FlexDirection.Row;
+        selectionTipsHeader.style.alignItems = Align.Center;
+        selectionTips.Add(selectionTipsHeader);
+
         _selectionTipsTitle = new Label("\u7F29\u7565\u56FE\u4FE1\u606F");
+        _selectionTipsTitle.style.flexGrow = 1;
         _selectionTipsTitle.style.color = Color.white;
         _selectionTipsTitle.style.unityFontStyleAndWeight = FontStyle.Bold;
-        selectionTips.Add(_selectionTipsTitle);
+        selectionTipsHeader.Add(_selectionTipsTitle);
+
+        _selectionTipsToggleButton = new Button(() => SetSelectionTipsCollapsed(!_selectionTipsCollapsed));
+        _selectionTipsToggleButton.style.width = 28;
+        _selectionTipsToggleButton.style.height = 28;
+        _selectionTipsToggleButton.style.paddingLeft = 0;
+        _selectionTipsToggleButton.style.paddingRight = 0;
+        _selectionTipsToggleButton.style.paddingTop = 0;
+        _selectionTipsToggleButton.style.paddingBottom = 0;
+        _selectionTipsToggleButton.style.marginLeft = 8;
+        _selectionTipsToggleButton.style.borderTopLeftRadius = 14;
+        _selectionTipsToggleButton.style.borderTopRightRadius = 14;
+        _selectionTipsToggleButton.style.borderBottomLeftRadius = 14;
+        _selectionTipsToggleButton.style.borderBottomRightRadius = 14;
+        selectionTipsHeader.Add(_selectionTipsToggleButton);
 
         _selectionTipsDetail = new Label("\u5355\u51FB\u7F29\u7565\u56FE\u67E5\u770B\u4FE1\u606F\uFF0C\u53CC\u51FB\u76F4\u63A5\u8FDB\u5165\u4E3B\u7F16\u8F91\u9875\u3002");
         _selectionTipsDetail.style.color = new Color(0.82f, 0.86f, 0.92f, 1f);
@@ -469,10 +505,17 @@ public sealed class LibraryView : BasePageView
         return pane;
     }
 
-    private VisualElement CreateFilterToggle(string text, bool defaultValue, out Toggle toggle, Action onChanged)
+    private VisualElement CreateFilterToggle(string text, string icon, string tooltip, bool defaultValue, out Toggle toggle, Action onChanged)
     {
         toggle = new Toggle(text);
         var localToggle = toggle;
+        localToggle.userData = new FilterTogglePresentation
+        {
+            label = text,
+            icon = icon,
+            tooltip = tooltip
+        };
+        localToggle.tooltip = tooltip;
         localToggle.value = defaultValue;
         localToggle.style.height = 34;
         localToggle.style.marginRight = 8;
@@ -510,6 +553,110 @@ public sealed class LibraryView : BasePageView
             onChanged?.Invoke();
         });
         return localToggle;
+    }
+
+    private void ApplyLibraryLayout(bool isPortrait)
+    {
+        if (ContentRoot == null || ContentRoot.childCount < 2 || _leftPane == null || _rightPane == null)
+            return;
+
+        var body = ContentRoot[1];
+        body.style.flexDirection = isPortrait ? FlexDirection.Column : FlexDirection.Row;
+        ApplyFilterToggleLayout(isPortrait);
+
+        if (isPortrait)
+        {
+            _leftPane.style.width = Length.Percent(100);
+            _leftPane.style.minWidth = new StyleLength(StyleKeyword.Auto);
+            _leftPane.style.maxWidth = new StyleLength(StyleKeyword.Auto);
+            _leftPane.style.height = Length.Percent(50);
+            _leftPane.style.flexGrow = 0;
+            _leftPane.style.flexShrink = 0;
+            _leftPane.style.marginRight = 0;
+            _leftPane.style.marginBottom = 10;
+        }
+        else
+        {
+            _leftPane.style.width = 310;
+            _leftPane.style.minWidth = 260;
+            _leftPane.style.maxWidth = 360;
+            _leftPane.style.height = new StyleLength(StyleKeyword.Auto);
+            _leftPane.style.flexGrow = 0;
+            _leftPane.style.flexShrink = 0;
+            _leftPane.style.marginRight = 12;
+            _leftPane.style.marginBottom = 0;
+        }
+
+        _rightPane.style.flexGrow = 1;
+        _rightPane.style.minHeight = 0;
+
+        var orientationChanged = !_hasAppliedLayout || _lastLayoutWasPortrait != isPortrait;
+        if (orientationChanged)
+            SetSelectionTipsCollapsed(isPortrait);
+
+        _lastLayoutWasPortrait = isPortrait;
+        _hasAppliedLayout = true;
+    }
+
+    private void ApplyFilterToggleLayout(bool isPortrait)
+    {
+        var toggles = new[]
+        {
+            _sortTimeToggle,
+            _sortFaceToggle,
+            _sortLocationToggle,
+            _showOriginalToggle,
+            _showEditedToggle,
+            _showUnknownToggle,
+            _favoritesOnlyToggle
+        };
+
+        for (var i = 0; i < toggles.Length; i++)
+        {
+            var toggle = toggles[i];
+            if (toggle == null || toggle.userData is not FilterTogglePresentation presentation)
+                continue;
+
+            toggle.text = isPortrait ? presentation.icon : presentation.label;
+            toggle.tooltip = presentation.tooltip;
+            if (isPortrait)
+            {
+                toggle.style.width = 34;
+                toggle.style.minWidth = 34;
+            }
+            else
+            {
+                toggle.style.width = new StyleLength(StyleKeyword.Auto);
+                toggle.style.minWidth = new StyleLength(StyleKeyword.Auto);
+            }
+
+            toggle.style.height = 34;
+            toggle.style.marginRight = isPortrait ? 4 : 8;
+            toggle.style.marginBottom = 6;
+            toggle.style.paddingLeft = isPortrait ? 0 : 10;
+            toggle.style.paddingRight = isPortrait ? 0 : 10;
+            toggle.style.paddingTop = isPortrait ? 0 : 6;
+            toggle.style.paddingBottom = isPortrait ? 0 : 6;
+            var radius = isPortrait ? 17 : 16;
+            toggle.style.borderTopLeftRadius = radius;
+            toggle.style.borderTopRightRadius = radius;
+            toggle.style.borderBottomLeftRadius = radius;
+            toggle.style.borderBottomRightRadius = radius;
+        }
+    }
+
+    private void SetSelectionTipsCollapsed(bool collapsed)
+    {
+        _selectionTipsCollapsed = collapsed;
+        if (_selectionTipsDetail != null)
+            _selectionTipsDetail.style.display = collapsed ? DisplayStyle.None : DisplayStyle.Flex;
+        if (_selectionTipsMeta != null)
+            _selectionTipsMeta.style.display = collapsed ? DisplayStyle.None : DisplayStyle.Flex;
+        if (_selectionTipsToggleButton != null)
+        {
+            _selectionTipsToggleButton.text = collapsed ? "\u25BE" : "\u25B4";
+            _selectionTipsToggleButton.tooltip = collapsed ? "\u5C55\u5F00\u56FE\u7247\u8BE6\u60C5" : "\u6536\u8D77\u56FE\u7247\u8BE6\u60C5";
+        }
     }
 
     private static void ApplyToggleVisual(Toggle toggle)

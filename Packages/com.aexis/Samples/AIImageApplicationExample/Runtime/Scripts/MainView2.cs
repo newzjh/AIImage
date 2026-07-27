@@ -343,7 +343,7 @@ public sealed class MainView2 : BasePageView
         }
 
         AddTool("Fit", "⌖", () => CompareView?.FitToView());
-        AddTool("重置", "↺", () => CompareView?.ResetView());
+        //AddTool("重置", "↺", () => CompareView?.ResetView());
         AddTool("保存", "⇩", OnSaveCurrentImage, new Color(0.37f, 0.78f, 1f));
         //AddTool("浏览", "▣", OnBrowseOriginalImage);
         AddTool("CLIP", "◎", OnClipClassify, new Color(0.73f, 0.56f, 1f));
@@ -361,8 +361,8 @@ public sealed class MainView2 : BasePageView
         AddTool("ESR", "⤢", OnRealEsrganRepro);
         AddTool("YOLO", "▤", OnYoloAndInpaintingRepro);
         AddTool("抠图", "⌗", OnMattingRepro);
-        AddTool("GFP", "◍", OnGfpganRepro);
         AddTool("CF", "◎", OnCodeFormerRepro);
+        AddTool("GFP", "◍", OnGfpganRepro);
         return shell;
     }
 

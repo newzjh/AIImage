@@ -145,6 +145,7 @@ public abstract class BasePageView : MonoBehaviour
         public string label;
         public Texture2D texture;
         public bool owned;
+        public bool isOriginal;
         public string sourcePath;
         public long opSeq;
     }
@@ -221,11 +222,14 @@ public abstract class BasePageView : MonoBehaviour
         if (parent == null)
             return;
 
+        var layoutRect = ResolveLayoutRect(parent);
+        _isPortraitLayout = layoutRect.height > layoutRect.width;
+
         BuildRoot();
         parent.Add(_pageRoot);
         _pageRoot.BringToFront();
         OnShown();
-        OnLayoutChanged(_isPortraitLayout, _pageRoot.contentRect);
+        OnLayoutChanged(_isPortraitLayout, layoutRect);
     }
 
     internal void Detach()
@@ -518,6 +522,7 @@ public abstract class BasePageView : MonoBehaviour
                 label = "原图: " + (label ?? originalTexture.name),
                 texture = originalTexture,
                 owned = false,
+                isOriginal = true,
                 sourcePath = fullPath,
                 opSeq = 0
             });
@@ -558,6 +563,7 @@ public abstract class BasePageView : MonoBehaviour
             label = "原图: " + (label ?? originalTexture.name),
             texture = originalTexture,
             owned = false,
+            isOriginal = true,
             sourcePath = fullPath,
             opSeq = 0
         });
@@ -681,6 +687,12 @@ public abstract class BasePageView : MonoBehaviour
             return;
 
         var entry = _historyEntries[index];
+        if (entry.isOriginal)
+        {
+            ShowToast("原始图像不能删除", 1800);
+            return;
+        }
+
         _historyEntries.RemoveAt(index);
         if (entry.owned && entry.texture != null)
             Destroy(entry.texture);
@@ -1170,6 +1182,20 @@ public abstract class BasePageView : MonoBehaviour
 
         BuildPage(_contentRoot);
         BuildSwitchZone(_pageRoot);
+    }
+
+    private static Rect ResolveLayoutRect(VisualElement element)
+    {
+        var contentRect = element.contentRect;
+        if (contentRect.width > 0f && contentRect.height > 0f)
+            return contentRect;
+
+        var width = element.resolvedStyle.width;
+        var height = element.resolvedStyle.height;
+        if (width > 0f && height > 0f)
+            return new Rect(0f, 0f, width, height);
+
+        return new Rect(0f, 0f, Screen.width, Screen.height);
     }
 
     private void BuildSwitchZone(VisualElement root)

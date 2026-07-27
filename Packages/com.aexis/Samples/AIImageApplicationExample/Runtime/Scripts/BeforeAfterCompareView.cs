@@ -475,12 +475,12 @@ public sealed class BeforeAfterCompareView : VisualElement
     {
         if (!nearSplit)
         {
-            _beforeTag.style.left = imageRect.xMin + 18f;
-            _beforeTag.style.top = imageRect.yMin + 18f;
-            _afterTag.style.left = Mathf.Max(imageRect.xMin + 18f, imageRect.xMax - 90f);
+            _afterTag.style.left = imageRect.xMin + 18f;
             _afterTag.style.top = imageRect.yMin + 18f;
-            _beforeTag.style.rotate = new Rotate(new Angle(0f, AngleUnit.Degree));
+            _beforeTag.style.left = Mathf.Max(imageRect.xMin + 18f, imageRect.xMax - 90f);
+            _beforeTag.style.top = imageRect.yMin + 18f;
             _afterTag.style.rotate = new Rotate(new Angle(0f, AngleUnit.Degree));
+            _beforeTag.style.rotate = new Rotate(new Angle(0f, AngleUnit.Degree));
             _leftHint.style.rotate = new Rotate(new Angle(0f, AngleUnit.Degree));
             _rightHint.style.rotate = new Rotate(new Angle(0f, AngleUnit.Degree));
             return;
@@ -491,8 +491,8 @@ public sealed class BeforeAfterCompareView : VisualElement
         else
             splitNormal.Normalize();
 
-        PositionTag(_beforeTag, new Vector2(splitX, splitY) - splitNormal * 54f, rotationDeg, imageRect);
-        PositionTag(_afterTag, new Vector2(splitX, splitY) + splitNormal * 54f, rotationDeg, imageRect);
+        PositionTag(_afterTag, new Vector2(splitX, splitY) - splitNormal * 64f, rotationDeg, imageRect);
+        PositionTag(_beforeTag, new Vector2(splitX, splitY) + splitNormal * 84f, rotationDeg, imageRect);
     }
 
     private static void PositionTag(VisualElement tag, Vector2 center, float rotationDeg, Rect imageRect)
