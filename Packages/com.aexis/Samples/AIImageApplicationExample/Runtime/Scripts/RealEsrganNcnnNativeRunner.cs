@@ -314,6 +314,10 @@ public sealed class RealEsrganNcnnNativeRunner : MonoBehaviour
         if (_ctx != IntPtr.Zero)
             return;
 
+#if UNITY_IOS && !UNITY_EDITOR
+        throw new PlatformNotSupportedException(
+            "iOS release packages do not include the optional Real-ESRGAN native NCNN bridge.");
+#else
 #if !UNITY_EDITOR
         allowCpuFallback = false;
 #endif
@@ -365,6 +369,7 @@ public sealed class RealEsrganNcnnNativeRunner : MonoBehaviour
             ReleaseProgressHandle();
             throw new InvalidOperationException("创建Real-ESRGAN(原生)上下文失败");
         }
+#endif
     }
 
     private string TryCreate(string modelDir, int modelFactor, int createGpuId, IntPtr user, out IntPtr ctx)
@@ -683,14 +688,11 @@ public sealed class RealEsrganNcnnNativeRunner : MonoBehaviour
 
 internal static class RealEsrganNcnnNative
 {
-#if UNITY_IOS && !UNITY_EDITOR
-    private const string DllName = "__Internal";
-#else
-    private const string DllName = "realesrgan_unity";
-#endif
-
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     public delegate void ProgressCallback(IntPtr user, float progress01, IntPtr utf8Message);
+
+#if !(UNITY_IOS && !UNITY_EDITOR)
+    private const string DllName = "realesrgan_unity";
 
     [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
     public static extern IntPtr Realesrgan_Create(
@@ -718,6 +720,40 @@ internal static class RealEsrganNcnnNative
         int outH,
         int tileSize,
         int scale);
+#else
+    public static IntPtr Realesrgan_Create(
+        string modelDir,
+        string modelName,
+        int modelFactor,
+        int gpuId,
+        int prepadding,
+        int ttaMode,
+        IntPtr user,
+        ProgressCallback progress,
+        out IntPtr ctx)
+    {
+        ctx = IntPtr.Zero;
+        return IntPtr.Zero;
+    }
+
+    public static void Realesrgan_Destroy(IntPtr ctx)
+    {
+    }
+
+    public static IntPtr Realesrgan_ProcessRgba(
+        IntPtr ctx,
+        byte[] rgba,
+        int w,
+        int h,
+        byte[] outRgba,
+        int outW,
+        int outH,
+        int tileSize,
+        int scale)
+    {
+        return IntPtr.Zero;
+    }
+#endif
 
     public static string Utf8ToString(IntPtr utf8)
     {

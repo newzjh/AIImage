@@ -4045,23 +4045,8 @@ public class MainView : MonoBehaviour
 #endif
 
 #if UNITY_IOS && !UNITY_EDITOR
-    [System.Runtime.InteropServices.DllImport("__Internal")]
-    private static extern void AIImageClipboardCopyPNG(System.IntPtr data, int length);
-
     private static void TrySetImageToIOSClipboard(byte[] pngBytes)
     {
-        var handle = System.Runtime.InteropServices.GCHandle.Alloc(pngBytes, System.Runtime.InteropServices.GCHandleType.Pinned);
-        try
-        {
-            AIImageClipboardCopyPNG(handle.AddrOfPinnedObject(), pngBytes.Length);
-        }
-        catch
-        {
-        }
-        finally
-        {
-            handle.Free();
-        }
     }
 #endif
 

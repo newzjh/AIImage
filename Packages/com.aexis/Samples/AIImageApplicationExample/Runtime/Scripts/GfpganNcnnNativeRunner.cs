@@ -193,6 +193,10 @@ public sealed class GfpganNcnnNativeRunner : MonoBehaviour
         if (_ctx != IntPtr.Zero)
             return;
 
+#if UNITY_IOS && !UNITY_EDITOR
+        throw new PlatformNotSupportedException(
+            "iOS release packages do not include the optional GFPGAN native NCNN bridge.");
+#else
         try
         {
             var errPtr = GfpganNcnnNative.Gfpgan_Create(modelDir, modelName, gpuId, out _ctx);
@@ -210,6 +214,7 @@ public sealed class GfpganNcnnNativeRunner : MonoBehaviour
         {
             throw new InvalidOperationException("GFPGAN(原生) 导出函数缺失: " + e.Message);
         }
+#endif
     }
 
     private void OnDestroy()
@@ -570,11 +575,8 @@ public struct GfpganResult
 
 internal static class GfpganNcnnNative
 {
-#if UNITY_IOS && !UNITY_EDITOR
-    private const string DllName = "__Internal";
-#else
+#if !(UNITY_IOS && !UNITY_EDITOR)
     private const string DllName = "realesrgan_unity";
-#endif
 
     [DllImport(DllName, CallingConvention = CallingConvention.Cdecl)]
     public static extern IntPtr Gfpgan_Create(
@@ -595,6 +597,29 @@ internal static class GfpganNcnnNative
         byte[] outRgba,
         int outW,
         int outH);
+#else
+    public static IntPtr Gfpgan_Create(string modelDir, string modelName, int gpuId, out IntPtr ctx)
+    {
+        ctx = IntPtr.Zero;
+        return IntPtr.Zero;
+    }
+
+    public static void Gfpgan_Destroy(IntPtr ctx)
+    {
+    }
+
+    public static IntPtr Gfpgan_ProcessRgba(
+        IntPtr ctx,
+        byte[] rgba,
+        int w,
+        int h,
+        byte[] outRgba,
+        int outW,
+        int outH)
+    {
+        return IntPtr.Zero;
+    }
+#endif
 
     public static string Utf8ToString(IntPtr utf8)
     {
