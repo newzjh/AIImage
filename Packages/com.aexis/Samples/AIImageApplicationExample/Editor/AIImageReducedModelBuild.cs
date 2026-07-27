@@ -391,9 +391,11 @@ public sealed class AIImageReducedModelBuild : IPostprocessBuildWithReport, IPos
             var relative = files[index];
             var source = ResolveModelSourceFile(relative);
             if (source == null)
-                throw new FileNotFoundException(
-                    "The default reduced release model is unavailable. Download or provide it before building.",
-                    relative);
+            {
+                Debug.LogWarning(
+                    "Reduced Main2 build skipped model file that became unavailable during staging: " + relative);
+                continue;
+            }
             var destination = Path.Combine(directory, relative.Replace('/', Path.DirectorySeparatorChar));
             Directory.CreateDirectory(Path.GetDirectoryName(destination));
             File.Copy(source, destination, true);
@@ -406,17 +408,29 @@ public sealed class AIImageReducedModelBuild : IPostprocessBuildWithReport, IPos
 
     private static void ValidateDefaultModelSources()
     {
-        var files = GetDefaultModelFiles();
-        for (var index = 0; index < files.Count; index++)
+        GetBundledModelGroups(reportExcludedGroups: true);
+    }
+
+    private static IReadOnlyList<AIImageModelGroup> GetBundledModelGroups(bool reportExcludedGroups = false)
+    {
+        var result = new List<AIImageModelGroup>();
+        foreach (var group in AIImageModelDelivery.DefaultGroups)
         {
-            var relative = files[index];
-            if (ResolveModelSourceFile(relative) == null)
+            if (TryGetBundledGroupFiles(group, out _, out var reason))
             {
-                throw new FileNotFoundException(
-                    "The default reduced release model is unavailable. Download or provide it before building.",
-                    relative);
+                result.Add(group);
+                continue;
+            }
+
+            if (reportExcludedGroups)
+            {
+                Debug.LogWarning(
+                    "Reduced Main2 build omits default model group '" + group.DisplayName + "': " + reason
+                    + ". The Player will offer this group for download when it is selected at runtime.");
             }
         }
+
+        return result;
     }
 
     private static void CopyRuntimeMetadata(string outputDirectory)
@@ -504,15 +518,94 @@ public sealed class AIImageReducedModelBuild : IPostprocessBuildWithReport, IPos
 
     private static IReadOnlyList<string> GetDefaultModelFiles()
     {
-        var files = AIImageModelDelivery.DefaultGroups
-            .SelectMany(group => group.Files)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-        AppendQwen35Q4ShardFiles(files);
+        var files = new List<string>();
+        foreach (var group in GetBundledModelGroups())
+        {
+            if (TryGetBundledGroupFiles(group, out var groupFiles, out _))
+                files.AddRange(groupFiles);
+        }
         return files
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
             .ToArray();
+    }
+
+    private static bool TryGetBundledGroupFiles(
+        AIImageModelGroup group,
+        out IReadOnlyList<string> files,
+        out string reason)
+    {
+        var result = new List<string>(group?.Files ?? Array.Empty<string>());
+        files = Array.Empty<string>();
+        reason = null;
+        if (group == null || result.Count == 0)
+        {
+            reason = "the group has no model files";
+            return false;
+        }
+
+        if (group.Id == AIImageModelGroupId.Qwen35MobileQ4
+            && !TryAppendQwen35Q4ShardFiles(result, out reason))
+        {
+            return false;
+        }
+
+        for (var index = 0; index < result.Count; index++)
+        {
+            var relative = result[index];
+            if (ResolveModelSourceFile(relative) != null)
+                continue;
+
+            reason = "required file is unavailable: " + relative;
+            return false;
+        }
+
+        files = result
+            .Select(AIImageModelDelivery.NormalizeRelativePath)
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        return true;
+    }
+
+    private static bool TryAppendQwen35Q4ShardFiles(ICollection<string> files, out string reason)
+    {
+        reason = null;
+        const string q4Prefix = "QWEN35/qwen3.5_0.8b_mobile_q4/";
+        var sourceDirectory = Qwen35MobileQ4AssetBuilder.ResolveQ4SourceDirectory();
+        if (string.IsNullOrWhiteSpace(sourceDirectory))
+        {
+            reason = "a complete, validated Qwen3.5 mobile Q4 asset set is unavailable";
+            return false;
+        }
+
+        try
+        {
+            var manifestPath = Path.Combine(sourceDirectory, Qwen35MobileAssetSet.Q4ManifestFileName);
+            var manifest = JObject.Parse(File.ReadAllText(manifestPath));
+            var logicalFiles = manifest["logical_files"] as JObject
+                ?? throw new InvalidDataException("Qwen3.5 mobile Q4 manifest has no logical_files object: " + manifestPath);
+            foreach (var logical in logicalFiles.Properties())
+            {
+                var parts = logical.Value["parts"] as JArray
+                    ?? throw new InvalidDataException("Qwen3.5 mobile Q4 logical asset has no parts array: " + logical.Name);
+                foreach (var part in parts)
+                {
+                    var relative = AIImageModelDelivery.NormalizeRelativePath((string)part["file"]);
+                    if (string.IsNullOrWhiteSpace(relative))
+                        throw new InvalidDataException("Qwen3.5 mobile shard path is empty: " + logical.Name);
+                    files.Add(q4Prefix + relative);
+                }
+            }
+
+            return true;
+        }
+        catch (Exception exception)
+        {
+            reason = "the Qwen3.5 mobile Q4 manifest is invalid: " + exception.Message;
+            return false;
+        }
     }
 
     private static void AppendQwen35Q4ShardFiles(ICollection<string> files)
@@ -520,7 +613,7 @@ public sealed class AIImageReducedModelBuild : IPostprocessBuildWithReport, IPos
         const string q4Prefix = "QWEN35/qwen3.5_0.8b_mobile_q4/";
         var sourceDirectory = Qwen35MobileQ4AssetBuilder.ResolveQ4SourceDirectory();
         if (string.IsNullOrWhiteSpace(sourceDirectory))
-            throw new FileNotFoundException("A validated Qwen3.5 mobile Q4 asset set is required for the reduced player build.");
+            return;
         var manifestPath = Path.Combine(sourceDirectory, Qwen35MobileAssetSet.Q4ManifestFileName);
         var manifest = JObject.Parse(File.ReadAllText(manifestPath));
         var logicalFiles = manifest["logical_files"] as JObject
@@ -557,7 +650,7 @@ public sealed class AIImageReducedModelBuild : IPostprocessBuildWithReport, IPos
     {
         var manifest = new BundledModelManifest
         {
-            groups = AIImageModelDelivery.DefaultGroups.Select(group => group.Id.ToString()).ToArray()
+            groups = GetBundledModelGroups().Select(group => group.Id.ToString()).ToArray()
         };
         File.WriteAllText(
             Path.Combine(directory, AIImageModelDelivery.BundledManifestFileName),

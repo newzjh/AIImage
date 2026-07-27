@@ -92,8 +92,16 @@ public static class Qwen35MobileQ4AssetBuilder
                 continue;
 
             var fullPath = Path.GetFullPath(candidate);
-            if (Qwen35MobileAssetSet.TryLoad(fullPath, verifyHashes: false)?.QuantizationBits == 4)
-                return fullPath;
+            try
+            {
+                if (Qwen35MobileAssetSet.TryLoad(fullPath, verifyHashes: false)?.QuantizationBits == 4)
+                    return fullPath;
+            }
+            catch (Exception)
+            {
+                // A partial Q4 download must not stop a Player build that can
+                // still ship every other complete default model group.
+            }
         }
 
         return null;
