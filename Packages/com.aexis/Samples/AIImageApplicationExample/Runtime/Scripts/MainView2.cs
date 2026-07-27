@@ -304,16 +304,17 @@ public sealed class MainView2 : BasePageView
         var row = new VisualElement();
         row.style.flexDirection = FlexDirection.Row;
         row.style.alignItems = Align.Center;
-        row.style.height = 52;
+        row.style.left = -5;
+        row.style.height = 56;
         _toolbarScroll.Add(row);
 
         Button AddTool(string title, string icon, Action onClick, Color? tint = null)
         {
             var button = new Button(onClick);
             button.tooltip = title;
-            button.style.width = 54;
-            button.style.height = 54;
-            button.style.marginRight = 8;
+            button.style.width = 50;
+            button.style.height = 50;
+            button.style.marginRight = 2;
             button.style.paddingLeft = 0;
             button.style.paddingRight = 0;
             button.style.paddingTop = 4;
@@ -328,13 +329,15 @@ public sealed class MainView2 : BasePageView
             button.style.borderBottomRightRadius = 16;
 
             var iconLabel = new Label(icon);
-            iconLabel.style.fontSize = 16;
+            iconLabel.style.fontSize = 28;
+            iconLabel.style.bottom = -7;
             iconLabel.style.color = tint ?? Color.white;
             iconLabel.style.unityTextAlign = TextAnchor.MiddleCenter;
             button.Add(iconLabel);
 
             var textLabel = new Label(title);
-            textLabel.style.fontSize = 10;
+            textLabel.style.top = -7;
+            textLabel.style.fontSize = 16;
             textLabel.style.color = new Color(0.83f, 0.86f, 0.92f, 1f);
             textLabel.style.unityTextAlign = TextAnchor.MiddleCenter;
             button.Add(textLabel);
@@ -342,11 +345,11 @@ public sealed class MainView2 : BasePageView
             return button;
         }
 
-        AddTool("Fit", "⌖", () => CompareView?.FitToView());
+        AddTool("Fit", "♻️", () => CompareView?.FitToView());
         //AddTool("重置", "↺", () => CompareView?.ResetView());
-        AddTool("保存", "⇩", OnSaveCurrentImage, new Color(0.37f, 0.78f, 1f));
+        AddTool("保存", "💾", OnSaveCurrentImage, new Color(0.37f, 0.78f, 1f));
         //AddTool("浏览", "▣", OnBrowseOriginalImage);
-        AddTool("CLIP", "◎", OnClipClassify, new Color(0.73f, 0.56f, 1f));
+        AddTool("CLIP", "✨", OnClipClassify, new Color(0.73f, 0.56f, 1f));
         _qwenAnalysisButton = AddTool("Qwen", "◉", OnQwenAnalyze, new Color(0.33f, 0.86f, 0.72f));
         _qwenAnalysisButton.tooltip = "使用 Qwen3.5 分析当前历史图像";
         //AddTool("换脸", "☺", OnFaceSwap, new Color(0.99f, 0.74f, 0.35f));
@@ -357,12 +360,12 @@ public sealed class MainView2 : BasePageView
         //AddTool("去雾", "≋", OnDehaze);
         //AddTool("调色", "◐", OnColorGrade);
         //AddTool("去雾调", "◑", OnDehazeColorGrade);
-        AddTool("清晰", "⚙", OnGpuSharpen);
-        AddTool("ESR", "⤢", OnRealEsrganRepro);
-        AddTool("YOLO", "▤", OnYoloAndInpaintingRepro);
-        AddTool("抠图", "⌗", OnMattingRepro);
-        AddTool("CF", "◎", OnCodeFormerRepro);
-        AddTool("GFP", "◍", OnGfpganRepro);
+        AddTool("清晰", "👀", OnGpuSharpen);
+        AddTool("ESR", "⚙", OnRealEsrganRepro);
+        AddTool("YOLO", "🎉", OnYoloAndInpaintingRepro);
+        AddTool("抠图", "🖼", OnMattingRepro);
+        AddTool("CF", "🤦‍", OnCodeFormerRepro);
+        AddTool("GFP", "🤦‍", OnGfpganRepro);
         return shell;
     }
 

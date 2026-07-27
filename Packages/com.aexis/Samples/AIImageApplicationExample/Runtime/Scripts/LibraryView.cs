@@ -125,6 +125,7 @@ public sealed class LibraryView : BasePageView
     private const float PortraitCardWidth = 246f;
     private const float PortraitCardHeight = 330f;
     private const float PortraitImageHeight = 246f;
+    private const float PortraitThumbnailScale = 0.8f;
 
     private sealed class FilterTogglePresentation
     {
@@ -329,13 +330,13 @@ public sealed class LibraryView : BasePageView
         title.style.marginRight = 14;
         bar.Add(title);
 
-        bar.Add(CreateFilterToggle("\u540D\u79F0", "\u21F5", "\u6309\u540D\u79F0\u6392\u5E8F", true, out _sortTimeToggle, OnSortToggleChanged));
-        bar.Add(CreateFilterToggle("\u4EBA\u8138", "\u263A", "\u6309\u4EBA\u8138\u6392\u5E8F", false, out _sortFaceToggle, OnSortToggleChanged));
-        bar.Add(CreateFilterToggle("\u5730\u70B9", "\u2316", "\u6309\u5730\u70B9\u6392\u5E8F", false, out _sortLocationToggle, OnSortToggleChanged));
-        bar.Add(CreateFilterToggle("\u539F\u56FE", "\u25C9", "\u663E\u793A\u539F\u56FE", true, out _showOriginalToggle, ApplyFilters));
-        bar.Add(CreateFilterToggle("\u4FEE\u56FE", "\u270E", "\u663E\u793A\u4FEE\u56FE", true, out _showEditedToggle, ApplyFilters));
-        bar.Add(CreateFilterToggle("\u672A\u77E5", "?", "\u663E\u793A\u672A\u77E5\u7C7B\u578B", true, out _showUnknownToggle, ApplyFilters));
-        bar.Add(CreateFilterToggle("\u6536\u85CF", "\u2605", "\u4EC5\u663E\u793A\u6536\u85CF", false, out _favoritesOnlyToggle, ApplyFilters));
+        bar.Add(CreateFilterToggle("\u540D\u79F0", "\u540D", "\u6309\u540D\u79F0\u6392\u5E8F", true, out _sortTimeToggle, OnSortToggleChanged));
+        bar.Add(CreateFilterToggle("\u4EBA\u8138", "\u4EBA", "\u6309\u4EBA\u8138\u6392\u5E8F", false, out _sortFaceToggle, OnSortToggleChanged));
+        bar.Add(CreateFilterToggle("\u5730\u70B9", "\u5730", "\u6309\u5730\u70B9\u6392\u5E8F", false, out _sortLocationToggle, OnSortToggleChanged));
+        bar.Add(CreateFilterToggle("\u539F\u56FE", "\u539F", "\u663E\u793A\u539F\u56FE", true, out _showOriginalToggle, ApplyFilters));
+        bar.Add(CreateFilterToggle("\u4FEE\u56FE", "\u4FEE", "\u663E\u793A\u4FEE\u56FE", true, out _showEditedToggle, ApplyFilters));
+        bar.Add(CreateFilterToggle("\u672A\u77E5", "\u672A", "\u663E\u793A\u672A\u77E5\u7C7B\u578B", true, out _showUnknownToggle, ApplyFilters));
+        bar.Add(CreateFilterToggle("\u6536\u85CF", "\u85CF", "\u4EC5\u663E\u793A\u6536\u85CF", false, out _favoritesOnlyToggle, ApplyFilters));
         return bar;
     }
 
@@ -1421,8 +1422,8 @@ public sealed class LibraryView : BasePageView
     private VisualElement BuildThumbnailCard(ThumbnailEntry entry)
     {
         var card = new VisualElement();
-        card.style.width = IsPortraitLayout ? PortraitCardWidth : LandscapeCardWidth;
-        card.style.height = IsPortraitLayout ? PortraitCardHeight : LandscapeCardHeight;
+        card.style.width = IsPortraitLayout ? PortraitCardWidth * PortraitThumbnailScale : LandscapeCardWidth;
+        card.style.height = IsPortraitLayout ? PortraitCardHeight * PortraitThumbnailScale : LandscapeCardHeight;
         card.style.marginRight = 10;
         card.style.marginBottom = 10;
         card.style.backgroundColor = new StyleColor(new Color(0.14f, 0.15f, 0.18f, 1f));
@@ -1437,7 +1438,7 @@ public sealed class LibraryView : BasePageView
         _cardByPath[entry.fullPath] = card;
 
         var imageHost = new VisualElement();
-        imageHost.style.height = IsPortraitLayout ? PortraitImageHeight : LandscapeImageHeight;
+        imageHost.style.height = IsPortraitLayout ? PortraitImageHeight * PortraitThumbnailScale : LandscapeImageHeight;
         imageHost.style.width = Length.Percent(100);
         imageHost.style.backgroundColor = new StyleColor(new Color(1f, 1f, 1f, 0.06f));
         imageHost.style.borderTopLeftRadius = 14;
