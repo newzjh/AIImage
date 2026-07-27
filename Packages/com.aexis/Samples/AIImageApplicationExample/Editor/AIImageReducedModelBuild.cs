@@ -5,6 +5,7 @@ using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Reflection;
+using System.Text;
 using UnityEditor;
 using UnityEditor.Android;
 using UnityEditor.Build;
@@ -216,11 +217,15 @@ public sealed class AIImageReducedModelBuild : IPostprocessBuildWithReport, IPos
             if (report.summary.result != BuildResult.Succeeded || report.summary.totalErrors != 0)
             {
                 var buildErrors = report.SummarizeErrors();
+                var diagnosticPath = WriteBuildFailureDiagnostic(report, target, output);
                 throw new InvalidOperationException(
                     "Reduced Main2 build failed: result=" + report.summary.result
                     + " errors=" + report.summary.totalErrors
                     + " output=" + output
-                    + (string.IsNullOrWhiteSpace(buildErrors) ? string.Empty : "\nBuild errors:\n" + buildErrors));
+                    + (string.IsNullOrWhiteSpace(buildErrors) ? string.Empty : "\nBuild errors:\n" + buildErrors)
+                    + (string.IsNullOrWhiteSpace(diagnosticPath)
+                        ? string.Empty
+                        : "\nBuild failure diagnostic: " + diagnosticPath));
             }
 
             // Unity invokes post-build callbacks during BuildPlayer, but apply the
@@ -241,6 +246,121 @@ public sealed class AIImageReducedModelBuild : IPostprocessBuildWithReport, IPos
             androidSettings?.Dispose();
             SessionState.EraseBool(ReducedMain2BuildSessionStateKey);
             ActiveSession = null;
+        }
+    }
+
+    private static string WriteBuildFailureDiagnostic(BuildReport report, BuildTarget target, string output)
+    {
+        try
+        {
+            var outputDirectory = Path.GetDirectoryName(output);
+            if (string.IsNullOrWhiteSpace(outputDirectory))
+                outputDirectory = ProjectRoot;
+
+            var outputName = Path.GetFileNameWithoutExtension(output);
+            if (string.IsNullOrWhiteSpace(outputName))
+                outputName = "AIImage_Main2";
+
+            var diagnosticPath = Path.Combine(outputDirectory, outputName + ".build-failure.txt");
+            Directory.CreateDirectory(outputDirectory);
+            File.WriteAllText(
+                diagnosticPath,
+                CreateBuildFailureDiagnostic(report, target, output),
+                new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            Debug.LogError("[Aexis.Editor] Reduced Main2 build failure diagnostic: " + diagnosticPath);
+            return diagnosticPath;
+        }
+        catch (Exception exception)
+        {
+            // The original BuildReport failure remains the authoritative exception.
+            Debug.LogWarning("[Aexis.Editor] Could not write reduced Main2 build failure diagnostic: " + exception.Message);
+            return null;
+        }
+    }
+
+    private static string CreateBuildFailureDiagnostic(BuildReport report, BuildTarget target, string output)
+    {
+        var text = new StringBuilder(4096);
+        text.AppendLine("AIImage Reduced Main2 build failure diagnostic");
+        text.AppendLine("generated_utc=" + DateTime.UtcNow.ToString("O"));
+        text.AppendLine("unity_version=" + Application.unityVersion);
+        text.AppendLine("host_operating_system=" + SystemInfo.operatingSystem);
+        text.AppendLine("requested_target=" + target);
+        text.AppendLine("requested_output=" + output);
+        text.AppendLine("editor_console_log=" + Application.consoleLogPath);
+        text.AppendLine();
+
+        if (report == null)
+        {
+            text.AppendLine("BuildReport was not returned by BuildPipeline.BuildPlayer.");
+        }
+        else
+        {
+            var summary = report.summary;
+            text.AppendLine("BuildReport summary");
+            text.AppendLine("result=" + summary.result);
+            text.AppendLine("platform=" + summary.platform);
+            text.AppendLine("platform_group=" + summary.platformGroup);
+            text.AppendLine("output_path=" + summary.outputPath);
+            text.AppendLine("total_errors=" + summary.totalErrors);
+            text.AppendLine("total_warnings=" + summary.totalWarnings);
+            text.AppendLine("total_bytes=" + summary.totalSize);
+            text.AppendLine("total_time_ms=" + summary.totalTime.TotalMilliseconds);
+            text.AppendLine();
+            text.AppendLine("BuildReport.SummarizeErrors()");
+            var summarizedErrors = report.SummarizeErrors();
+            text.AppendLine(string.IsNullOrWhiteSpace(summarizedErrors) ? "<empty>" : summarizedErrors);
+            text.AppendLine();
+            text.AppendLine("BuildReport steps and messages");
+
+            var stepIndex = 0;
+            foreach (var step in report.steps)
+            {
+                text.Append('[').Append(stepIndex++).Append("] ").Append(step.name)
+                    .Append(" depth=").Append(step.depth)
+                    .Append(" duration_ms=").Append(step.duration.TotalMilliseconds)
+                    .AppendLine();
+                if (step.messages == null || step.messages.Count == 0)
+                {
+                    text.AppendLine("  <no messages>");
+                    continue;
+                }
+
+                foreach (var message in step.messages)
+                {
+                    text.Append("  [").Append(message.type).Append("] ")
+                        .AppendLine(message.content ?? string.Empty);
+                }
+            }
+        }
+
+        text.AppendLine();
+        text.AppendLine("Editor console log tail (up to 512 KiB)");
+        text.AppendLine(ReadConsoleLogTail(Application.consoleLogPath));
+        return text.ToString();
+    }
+
+    private static string ReadConsoleLogTail(string consoleLogPath)
+    {
+        const int maxBytes = 512 * 1024;
+        if (string.IsNullOrWhiteSpace(consoleLogPath))
+            return "<Unity did not provide Application.consoleLogPath>";
+        if (!File.Exists(consoleLogPath))
+            return "<console log does not exist>";
+
+        try
+        {
+            using (var stream = new FileStream(consoleLogPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+            {
+                if (stream.Length > maxBytes)
+                    stream.Seek(-maxBytes, SeekOrigin.End);
+                using (var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true))
+                    return reader.ReadToEnd();
+            }
+        }
+        catch (Exception exception)
+        {
+            return "<could not read editor console log: " + exception.Message + ">";
         }
     }
 
