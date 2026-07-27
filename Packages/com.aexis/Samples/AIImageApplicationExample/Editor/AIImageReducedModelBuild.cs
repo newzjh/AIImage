@@ -202,9 +202,15 @@ public sealed class AIImageReducedModelBuild : IPostprocessBuildWithReport, IPos
         SessionState.SetBool(ReducedMain2BuildSessionStateKey, true);
         BuildReport report = null;
         AndroidVulkanBuildSettingsOverride androidSettings = null;
+        MacOsAppleDoubleBuildGuard macOsBuildGuard = null;
         try
         {
             ValidateDefaultModelSources();
+            if (target == BuildTarget.StandaloneOSX)
+            {
+                macOsBuildGuard = new MacOsAppleDoubleBuildGuard();
+                macOsBuildGuard.Apply();
+            }
             if (target == BuildTarget.Android && configureAndroidVulkan)
             {
                 androidSettings = new AndroidVulkanBuildSettingsOverride();
@@ -244,6 +250,7 @@ public sealed class AIImageReducedModelBuild : IPostprocessBuildWithReport, IPos
         finally
         {
             androidSettings?.Dispose();
+            macOsBuildGuard?.Dispose();
             SessionState.EraseBool(ReducedMain2BuildSessionStateKey);
             ActiveSession = null;
         }
@@ -361,6 +368,26 @@ public sealed class AIImageReducedModelBuild : IPostprocessBuildWithReport, IPos
         catch (Exception exception)
         {
             return "<could not read editor console log: " + exception.Message + ">";
+        }
+    }
+
+    private static void ResetMacOsBeeCache()
+    {
+        var beeDirectory = Path.Combine(ProjectRoot, "Library", "Bee");
+        if (!Directory.Exists(beeDirectory))
+            return;
+
+        try
+        {
+            Directory.Delete(beeDirectory, true);
+            Debug.Log("[Aexis.Editor] Cleared generated macOS Bee cache before the reduced Main2 build: " + beeDirectory);
+        }
+        catch (Exception exception)
+        {
+            throw new InvalidOperationException(
+                "Could not clear the generated macOS Bee cache at " + beeDirectory
+                + ". Close other Unity processes using this project and retry.",
+                exception);
         }
     }
 
@@ -939,6 +966,36 @@ public sealed class AIImageReducedModelBuild : IPostprocessBuildWithReport, IPos
             {
                 _applied = false;
             }
+        }
+    }
+
+    private sealed class MacOsAppleDoubleBuildGuard : IDisposable
+    {
+        private const string CopyFileDisableEnvironmentVariable = "COPYFILE_DISABLE";
+        private readonly string _previousValue;
+        private bool _applied;
+
+        public MacOsAppleDoubleBuildGuard()
+        {
+            _previousValue = Environment.GetEnvironmentVariable(CopyFileDisableEnvironmentVariable);
+        }
+
+        public void Apply()
+        {
+            // On non-APFS volumes macOS otherwise emits ._ sidecars for copied DLLs.
+            // Unity's Bee/IL2CPP pipeline mistakes those sidecars for managed assemblies.
+            Environment.SetEnvironmentVariable(CopyFileDisableEnvironmentVariable, "1");
+            _applied = true;
+            ResetMacOsBeeCache();
+        }
+
+        public void Dispose()
+        {
+            if (!_applied)
+                return;
+
+            Environment.SetEnvironmentVariable(CopyFileDisableEnvironmentVariable, _previousValue);
+            _applied = false;
         }
     }
 
