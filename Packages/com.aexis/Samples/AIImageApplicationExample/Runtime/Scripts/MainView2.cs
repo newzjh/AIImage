@@ -345,19 +345,19 @@ public sealed class MainView2 : BasePageView
         AddTool("Fit", "⌖", () => CompareView?.FitToView());
         AddTool("重置", "↺", () => CompareView?.ResetView());
         AddTool("保存", "⇩", OnSaveCurrentImage, new Color(0.37f, 0.78f, 1f));
-        AddTool("浏览", "▣", OnBrowseOriginalImage);
+        //AddTool("浏览", "▣", OnBrowseOriginalImage);
         AddTool("CLIP", "◎", OnClipClassify, new Color(0.73f, 0.56f, 1f));
         _qwenAnalysisButton = AddTool("Qwen", "◉", OnQwenAnalyze, new Color(0.33f, 0.86f, 0.72f));
         _qwenAnalysisButton.tooltip = "使用 Qwen3.5 分析当前历史图像";
-        AddTool("换脸", "☺", OnFaceSwap, new Color(0.99f, 0.74f, 0.35f));
-        AddTool("清晰", "✦", OnSharpen);
-        AddTool("美白", "◌", OnWhiten);
-        AddTool("清白", "✧", OnSharpenWhiten);
-        AddTool("背景", "▥", OnChangeBackground);
-        AddTool("去雾", "≋", OnDehaze);
-        AddTool("调色", "◐", OnColorGrade);
-        AddTool("去雾调", "◑", OnDehazeColorGrade);
-        AddTool("GPU", "⚙", OnGpuSharpen);
+        //AddTool("换脸", "☺", OnFaceSwap, new Color(0.99f, 0.74f, 0.35f));
+        //AddTool("清晰", "✦", OnSharpen);
+        //AddTool("美白", "◌", OnWhiten);
+        //AddTool("清白", "✧", OnSharpenWhiten);
+        //AddTool("背景", "▥", OnChangeBackground);
+        //AddTool("去雾", "≋", OnDehaze);
+        //AddTool("调色", "◐", OnColorGrade);
+        //AddTool("去雾调", "◑", OnDehazeColorGrade);
+        AddTool("清晰", "⚙", OnGpuSharpen);
         AddTool("ESR", "⤢", OnRealEsrganRepro);
         AddTool("YOLO", "▤", OnYoloAndInpaintingRepro);
         AddTool("抠图", "⌗", OnMattingRepro);
@@ -944,7 +944,7 @@ public sealed class MainView2 : BasePageView
         header.style.marginBottom = 8;
         panel.Add(header);
 
-        var title = new Label("调节与参考");
+        var title = new Label("调节");
         title.style.flexGrow = 1;
         title.style.color = Color.white;
         title.style.unityFontStyleAndWeight = FontStyle.Bold;
@@ -972,8 +972,8 @@ public sealed class MainView2 : BasePageView
         panel.Add(scroll);
         _adjustBody = scroll;
 
-        scroll.Add(BuildReferenceButtons());
-        scroll.Add(BuildProviderEditor());
+        //scroll.Add(BuildReferenceButtons());
+        //scroll.Add(BuildProviderEditor());
         scroll.Add(BuildToggleRow("去反光", value => _appendDeGlarePrompt = value, false));
         scroll.Add(BuildToggleRow("去背景人物", value => _appendRemoveBgPeoplePrompt = value, true));
         scroll.Add(BuildToggleRow("调试输出", value => _gpuSharpenDumpStages = value, false));
