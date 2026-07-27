@@ -5,6 +5,7 @@ using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text;
 using UnityEditor;
 using UnityEditor.Android;
@@ -371,23 +372,68 @@ public sealed class AIImageReducedModelBuild : IPostprocessBuildWithReport, IPos
         }
     }
 
-    private static void ResetMacOsBeeCache()
+    [DllImport("libc", EntryPoint = "symlink", SetLastError = true)]
+    private static extern int CreateMacOsSymbolicLink(string target, string linkPath);
+
+    private static void PrepareMacOsBeeCache()
     {
         var beeDirectory = Path.Combine(ProjectRoot, "Library", "Bee");
-        if (!Directory.Exists(beeDirectory))
+        var ownershipMarker = Path.Combine(beeDirectory, ".aexis-macos-bee-cache");
+        if (File.Exists(ownershipMarker))
             return;
 
         try
         {
-            Directory.Delete(beeDirectory, true);
-            Debug.Log("[Aexis.Editor] Cleared generated macOS Bee cache before the reduced Main2 build: " + beeDirectory);
+            if (Directory.Exists(beeDirectory))
+                Directory.Delete(beeDirectory, true);
+            else if (File.Exists(beeDirectory))
+                File.Delete(beeDirectory);
+
+            var localApplicationData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            if (string.IsNullOrWhiteSpace(localApplicationData))
+                throw new DirectoryNotFoundException("macOS local application-data directory is unavailable.");
+
+            var cacheDirectory = Path.Combine(
+                localApplicationData,
+                "Aexis",
+                "ReducedMain2Bee",
+                Path.GetFileName(ProjectRoot) + "-" + GetStablePathToken(ProjectRoot));
+            Directory.CreateDirectory(cacheDirectory);
+            File.WriteAllText(
+                Path.Combine(cacheDirectory, ".aexis-macos-bee-cache"),
+                ProjectRoot,
+                new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+
+            if (CreateMacOsSymbolicLink(cacheDirectory, beeDirectory) != 0)
+            {
+                var error = Marshal.GetLastWin32Error();
+                throw new IOException("symlink failed with errno " + error + ".");
+            }
+
+            Debug.Log(
+                "[Aexis.Editor] Redirected generated macOS Bee cache to local storage before the reduced Main2 build: "
+                + cacheDirectory);
         }
         catch (Exception exception)
         {
             throw new InvalidOperationException(
-                "Could not clear the generated macOS Bee cache at " + beeDirectory
-                + ". Close other Unity processes using this project and retry.",
+                "Could not redirect the generated macOS Bee cache at " + beeDirectory
+                + " to local macOS storage. Close other Unity processes using this project and retry.",
                 exception);
+        }
+    }
+
+    private static string GetStablePathToken(string value)
+    {
+        unchecked
+        {
+            uint hash = 2166136261;
+            foreach (var character in value ?? string.Empty)
+            {
+                hash ^= character;
+                hash *= 16777619;
+            }
+            return hash.ToString("x8");
         }
     }
 
@@ -986,7 +1032,7 @@ public sealed class AIImageReducedModelBuild : IPostprocessBuildWithReport, IPos
             // Unity's Bee/IL2CPP pipeline mistakes those sidecars for managed assemblies.
             Environment.SetEnvironmentVariable(CopyFileDisableEnvironmentVariable, "1");
             _applied = true;
-            ResetMacOsBeeCache();
+            PrepareMacOsBeeCache();
         }
 
         public void Dispose()
