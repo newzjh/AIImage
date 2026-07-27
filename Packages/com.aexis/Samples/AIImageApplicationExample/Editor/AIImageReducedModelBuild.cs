@@ -16,6 +16,7 @@ using AIImage.Qwen35;
 
 public sealed class AIImageReducedModelBuild : IPostprocessBuildWithReport, IPostGenerateGradleAndroidProject
 {
+    internal const string ReducedMain2BuildSessionStateKey = "Aexis.ReducedMain2Build.Active";
     private const string OutputEnvironmentVariable = "AEXIS_REDUCED_RELEASE_OUTPUT";
     private const string WindowsOutputPathEnvironmentVariable = "AEXIS_REDUCED_WINDOWS_OUTPUT_PATH";
     private static BuildSession ActiveSession;
@@ -197,6 +198,7 @@ public sealed class AIImageReducedModelBuild : IPostprocessBuildWithReport, IPos
 
         var session = new BuildSession(target, output);
         ActiveSession = session;
+        SessionState.SetBool(ReducedMain2BuildSessionStateKey, true);
         BuildReport report = null;
         AndroidVulkanBuildSettingsOverride androidSettings = null;
         try
@@ -237,6 +239,7 @@ public sealed class AIImageReducedModelBuild : IPostprocessBuildWithReport, IPos
         finally
         {
             androidSettings?.Dispose();
+            SessionState.EraseBool(ReducedMain2BuildSessionStateKey);
             ActiveSession = null;
         }
     }

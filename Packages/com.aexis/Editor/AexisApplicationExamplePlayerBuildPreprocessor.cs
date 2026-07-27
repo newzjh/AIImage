@@ -1,6 +1,7 @@
 #if UNITY_EDITOR
 using System;
 using System.IO;
+using System.Linq;
 using UnityEditor;
 using UnityEditor.Build;
 using UnityEditor.Build.Reporting;
@@ -15,12 +16,16 @@ namespace Aexis.Editor
 
         private const string PackageName = "com.aexis";
         private const string SampleStreamingAssetsRelativePath = "Samples/AIImageApplicationExample/StreamingAssets";
+        private static readonly string[] NonStreamingAssetExtensions =
+        {
+            ".dll", ".exe", ".pdb", ".mdb", ".so", ".dylib", ".bundle"
+        };
 
         public int callbackOrder => -1000;
 
         public void OnPreprocessBuild(BuildReport report)
         {
-            if (IsStagingDisabled())
+            if (IsStagingDisabled() || IsReducedMain2BuildInProgress())
                 return;
 
             var source = ResolveSampleStreamingAssetsPath();
@@ -34,6 +39,11 @@ namespace Aexis.Editor
 
             AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
             Debug.Log("[Aexis.Editor] Staged " + copiedFiles + " Main2 StreamingAssets files for " + report.summary.platform + ".");
+        }
+
+        private static bool IsReducedMain2BuildInProgress()
+        {
+            return SessionState.GetBool("Aexis.ReducedMain2Build.Active", false);
         }
 
         private static bool IsStagingDisabled()
@@ -63,11 +73,18 @@ namespace Aexis.Editor
         private static int CopyMissingFiles(string source, string destination)
         {
             var copiedFiles = 0;
+            var skippedFiles = 0;
             Directory.CreateDirectory(destination);
             foreach (var sourceFile in Directory.GetFiles(source, "*", SearchOption.AllDirectories))
             {
                 if (string.Equals(Path.GetExtension(sourceFile), ".meta", StringComparison.OrdinalIgnoreCase))
                     continue;
+
+                if (NonStreamingAssetExtensions.Contains(Path.GetExtension(sourceFile), StringComparer.OrdinalIgnoreCase))
+                {
+                    skippedFiles++;
+                    continue;
+                }
 
                 var relativePath = sourceFile.Substring(source.Length + 1);
                 var destinationFile = Path.Combine(destination, relativePath);
@@ -77,6 +94,13 @@ namespace Aexis.Editor
                 Directory.CreateDirectory(Path.GetDirectoryName(destinationFile));
                 File.Copy(sourceFile, destinationFile, false);
                 copiedFiles++;
+            }
+
+            if (skippedFiles > 0)
+            {
+                Debug.LogWarning(
+                    "[Aexis.Editor] Skipped " + skippedFiles
+                    + " executable or native-library files while staging StreamingAssets.");
             }
 
             return copiedFiles;
