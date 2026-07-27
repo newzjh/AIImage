@@ -212,10 +212,14 @@ public sealed class AIImageReducedModelBuild : IPostprocessBuildWithReport, IPos
             buildPlayerOptions.options |= BuildOptions.CompressWithLz4;
             report = BuildPipeline.BuildPlayer(buildPlayerOptions);
             if (report.summary.result != BuildResult.Succeeded || report.summary.totalErrors != 0)
+            {
+                var buildErrors = report.SummarizeErrors();
                 throw new InvalidOperationException(
                     "Reduced Main2 build failed: result=" + report.summary.result
                     + " errors=" + report.summary.totalErrors
-                    + " output=" + output);
+                    + " output=" + output
+                    + (string.IsNullOrWhiteSpace(buildErrors) ? string.Empty : "\nBuild errors:\n" + buildErrors));
+            }
 
             // Unity invokes post-build callbacks during BuildPlayer, but apply the
             // file policy again after the Player writer has closed every output.
