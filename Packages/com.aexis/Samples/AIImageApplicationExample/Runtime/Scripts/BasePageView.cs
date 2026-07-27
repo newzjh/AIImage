@@ -791,55 +791,90 @@ public abstract class BasePageView : MonoBehaviour
         {
             value = defaultValue
         };
+        var sliderDragging = false;
+        var sliderPointerId = -1;
+        var sliderStartValue = defaultValue;
+        IVisualElementScheduledItem pendingCommit = null;
         slider.style.marginTop = 8;
         slider.RegisterValueChangedCallback(evt =>
         {
             valueLabel.text = evt.newValue.ToString("0.00");
             if (_previewRunning && ReferenceEquals(_previewCaptureElement, slider))
                 _previewValue = evt.newValue;
+            if (sliderDragging)
+                QueueSliderCommit();
         });
         slider.RegisterCallback<PointerDownEvent>(evt =>
         {
             if (evt.button != 0)
                 return;
+
+            sliderDragging = true;
+            sliderPointerId = evt.pointerId;
+            sliderStartValue = slider.value;
             StartPreview(slider, evt.pointerId, kernelName, paramSetter, slider.value);
+            QueueSliderCommit();
         }, TrickleDown.TrickleDown);
-        slider.RegisterCallback<PointerUpEvent>(evt =>
-        {
-            if (_previewRunning && ReferenceEquals(_previewCaptureElement, slider) && _previewPointerId == evt.pointerId)
-                StopPreview();
-        }, TrickleDown.TrickleDown);
-        slider.RegisterCallback<PointerCancelEvent>(evt =>
-        {
-            if (_previewRunning && ReferenceEquals(_previewCaptureElement, slider) && _previewPointerId == evt.pointerId)
-                StopPreview();
-        }, TrickleDown.TrickleDown);
-        card.Add(slider);
 
-        var actionRow = new VisualElement();
-        actionRow.style.flexDirection = FlexDirection.Row;
-        actionRow.style.justifyContent = Justify.FlexEnd;
-        actionRow.style.marginTop = 8;
-        card.Add(actionRow);
-
-        var applyButton = new Button(() =>
+        void StopPendingCommit()
         {
-            StopPreview();
+            pendingCommit?.Pause();
+            pendingCommit = null;
+        }
+
+        void CommitSliderDrag(int pointerId)
+        {
+            if (!sliderDragging || sliderPointerId != pointerId)
+                return;
+
+            StopPendingCommit();
+            sliderDragging = false;
+            sliderPointerId = -1;
             var value = slider.value;
+            if (_previewRunning && ReferenceEquals(_previewCaptureElement, slider) && _previewPointerId == pointerId)
+                StopPreview();
+
+            if (Mathf.Approximately(value, sliderStartValue))
+                return;
+
             ApplyComputeAdjustmentAsync(
                 kernelName,
                 cs => paramSetter?.Invoke(cs, value),
                 historyLabelFactory != null ? historyLabelFactory(value) : name).Forget();
-        })
+        }
+
+        void QueueSliderCommit()
         {
-            text = "应用"
-        };
-        applyButton.style.height = 30;
-        applyButton.style.paddingLeft = 16;
-        applyButton.style.paddingRight = 16;
-        applyButton.style.backgroundColor = new StyleColor(new Color(0.22f, 0.58f, 0.96f, 1f));
-        applyButton.style.color = Color.white;
-        actionRow.Add(applyButton);
+            if (pendingCommit != null)
+                return;
+
+            pendingCommit = slider.schedule.Execute(() =>
+            {
+                if (!sliderDragging)
+                {
+                    StopPendingCommit();
+                    return;
+                }
+
+                if (IsPrimaryPointerPressed())
+                    return;
+
+                CommitSliderDrag(sliderPointerId);
+            }).Every(16);
+        }
+
+        void CancelSliderDrag(int pointerId)
+        {
+            if (sliderDragging && sliderPointerId == pointerId)
+            {
+                StopPendingCommit();
+                sliderDragging = false;
+                sliderPointerId = -1;
+            }
+        }
+
+        slider.RegisterCallback<PointerCancelEvent>(evt => CancelSliderDrag(evt.pointerId), TrickleDown.TrickleDown);
+        card.Add(slider);
 
         return card;
     }
@@ -1498,6 +1533,11 @@ public abstract class BasePageView : MonoBehaviour
             StopPreview();
     }
 
+    private static bool IsPrimaryPointerPressed()
+    {
+        return Input.GetMouseButton(0) || Input.touchCount > 0;
+    }
+
     private void OnRootKeyDown(KeyDownEvent evt)
     {
         if (_pageRoot == null)
@@ -1563,7 +1603,7 @@ public abstract class BasePageView : MonoBehaviour
     {
         if (!_previewRunning || _previewRt == null || _previewSource == null || Host == null)
             return;
-        if (!Input.GetMouseButton(0))
+        if (!IsPrimaryPointerPressed())
         {
             StopPreview();
             return;

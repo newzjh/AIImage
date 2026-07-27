@@ -974,9 +974,9 @@ public sealed class MainView2 : BasePageView
 
         //scroll.Add(BuildReferenceButtons());
         //scroll.Add(BuildProviderEditor());
-        scroll.Add(BuildToggleRow("去反光", value => _appendDeGlarePrompt = value, false));
-        scroll.Add(BuildToggleRow("去背景人物", value => _appendRemoveBgPeoplePrompt = value, true));
-        scroll.Add(BuildToggleRow("调试输出", value => _gpuSharpenDumpStages = value, false));
+        //scroll.Add(BuildToggleRow("去反光", value => _appendDeGlarePrompt = value, false));
+        //scroll.Add(BuildToggleRow("去背景人物", value => _appendRemoveBgPeoplePrompt = value, true));
+        //scroll.Add(BuildToggleRow("调试输出", value => _gpuSharpenDumpStages = value, false));
 
         scroll.Add(CreateAdjustRow("对比度", -0.5f, 0.5f, 0f, "AdjustContrast", (cs, v) => cs.SetFloat("_Contrast", v), v => $"对比度 {v:0.00}"));
         scroll.Add(CreateAdjustRow("亮度", -0.5f, 0.5f, 0f, "AdjustBrightness", (cs, v) => cs.SetFloat("_Brightness", v), v => $"亮度 {v:0.00}"));
