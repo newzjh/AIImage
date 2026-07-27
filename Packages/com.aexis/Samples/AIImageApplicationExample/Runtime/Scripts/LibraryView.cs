@@ -536,16 +536,20 @@ public sealed class LibraryView : BasePageView
         localToggle.style.color = Color.white;
         ApplyToggleVisual(localToggle);
 
-        var checkmark = localToggle.Q(className: "unity-checkmark");
-        if (checkmark != null)
-            checkmark.style.display = DisplayStyle.None;
+        var input = localToggle.Q(className: "unity-toggle__input");
+        if (input != null)
+            input.style.display = DisplayStyle.None;
 
-        var label = localToggle.Q<Label>();
+        var label = localToggle.Q<Label>(className: "unity-toggle__label");
         if (label != null)
         {
             label.style.flexGrow = 1;
+            label.style.minWidth = 0;
             label.style.unityTextAlign = TextAnchor.MiddleCenter;
             label.style.marginLeft = 0;
+            label.style.marginRight = 0;
+            label.style.color = Color.white;
+            label.style.fontSize = 14;
         }
 
         localToggle.RegisterValueChangedCallback(_ =>
@@ -618,17 +622,62 @@ public sealed class LibraryView : BasePageView
             if (toggle == null || toggle.userData is not FilterTogglePresentation presentation)
                 continue;
 
-            toggle.text = isPortrait ? presentation.icon : presentation.label;
+            var displayText = isPortrait ? presentation.icon : presentation.label;
+            toggle.label = displayText;
+            toggle.text = displayText;
             toggle.tooltip = presentation.tooltip;
+            var input = toggle.Q(className: "unity-toggle__input");
+            if (input != null)
+                input.style.display = DisplayStyle.None;
+
+            var label = toggle.Q<Label>(className: "unity-toggle__label");
+            if (label != null)
+            {
+                label.text = displayText;
+                label.style.display = DisplayStyle.Flex;
+                label.style.color = Color.white;
+                label.style.unityTextAlign = TextAnchor.MiddleCenter;
+                label.style.whiteSpace = WhiteSpace.NoWrap;
+                label.style.marginLeft = 0;
+                label.style.marginRight = 0;
+            }
+
             if (isPortrait)
             {
                 toggle.style.width = 34;
                 toggle.style.minWidth = 34;
+                toggle.style.alignItems = Align.Center;
+                toggle.style.justifyContent = Justify.Center;
+                if (label != null)
+                {
+                    label.style.fontSize = 20;
+                    //label.style.unityFontStyleAndWeight = FontStyle.Bold;
+                    label.style.position = Position.Absolute;
+                    label.style.left = 0;
+                    label.style.right = 0;
+                    label.style.top = 0;
+                    label.style.bottom = 0;
+                    label.style.minWidth = 0;
+                }
             }
             else
             {
+                
                 toggle.style.width = new StyleLength(StyleKeyword.Auto);
                 toggle.style.minWidth = new StyleLength(StyleKeyword.Auto);
+                toggle.style.alignItems = Align.Center;
+                toggle.style.justifyContent = Justify.Center;
+                if (label != null)
+                {
+                    label.style.fontSize = 20;
+                    //label.style.unityFontStyleAndWeight = FontStyle.Normal;
+                    label.style.position = Position.Relative;
+                    label.style.left = new StyleLength(StyleKeyword.Auto);
+                    label.style.right = new StyleLength(StyleKeyword.Auto);
+                    label.style.top = new StyleLength(StyleKeyword.Auto);
+                    label.style.bottom = new StyleLength(StyleKeyword.Auto);
+                    label.style.flexGrow = 1;
+                }
             }
 
             toggle.style.height = 34;

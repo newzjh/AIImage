@@ -46,7 +46,9 @@ public sealed class DesignView : BasePageView
     private readonly List<VisualElement> _layerElements = new List<VisualElement>();
     private VisualElement _canvasOverlay;
     private VisualElement _tipsPanel;
+    private VisualElement _tipsBody;
     private Label _tipsLabel;
+    private Button _tipsToggleButton;
     private Button _applyButton;
     private Button _detectButton;
     private RenderTexture _maskedBackgroundPreview;
@@ -54,6 +56,9 @@ public sealed class DesignView : BasePageView
     private int _edgeCloseRadius = DefaultEdgeCloseRadius;
     private int _edgeFeatherRadius = DefaultEdgeFeatherRadius;
     private float _edgePreserve = DefaultEdgePreserve;
+    private bool _tipsPanelCollapsed;
+    private bool _hasAppliedTipsLayout;
+    private bool _lastTipsLayoutWasPortrait;
     public bool _exportCompositeDebug = false;
 
     protected override AppPageId? ResolveSwipeTarget(SwipeDirection direction)
@@ -102,6 +107,7 @@ public sealed class DesignView : BasePageView
 
     protected override void BuildPage(VisualElement contentRoot)
     {
+        _hasAppliedTipsLayout = false;
         contentRoot.style.flexDirection = FlexDirection.Column;
         contentRoot.style.flexGrow = 1;
         contentRoot.style.minHeight = 0;
@@ -159,25 +165,55 @@ public sealed class DesignView : BasePageView
         canvasHost.Add(_tipsPanel);
         EnableFloatingPanelDrag(_tipsPanel, _tipsPanel);
 
+        var tipsHeader = new VisualElement();
+        tipsHeader.style.flexDirection = FlexDirection.Row;
+        tipsHeader.style.alignItems = Align.Center;
+        _tipsPanel.Add(tipsHeader);
+
         var tipsTitle = new Label("设计说明");
         tipsTitle.style.color = Color.white;
         tipsTitle.style.unityFontStyleAndWeight = FontStyle.Bold;
-        _tipsPanel.Add(tipsTitle);
+        tipsTitle.style.flexGrow = 1;
+        tipsHeader.Add(tipsTitle);
+
+        _tipsToggleButton = new Button(() => SetTipsPanelCollapsed(!_tipsPanelCollapsed));
+        _tipsToggleButton.style.width = 28;
+        _tipsToggleButton.style.minWidth = 28;
+        _tipsToggleButton.style.height = 28;
+        _tipsToggleButton.style.paddingLeft = 0;
+        _tipsToggleButton.style.paddingRight = 0;
+        _tipsToggleButton.style.paddingTop = 0;
+        _tipsToggleButton.style.paddingBottom = 0;
+        _tipsToggleButton.style.marginLeft = 8;
+        _tipsToggleButton.style.borderTopLeftRadius = 14;
+        _tipsToggleButton.style.borderTopRightRadius = 14;
+        _tipsToggleButton.style.borderBottomLeftRadius = 14;
+        _tipsToggleButton.style.borderBottomRightRadius = 14;
+        tipsHeader.Add(_tipsToggleButton);
+
+        _tipsBody = new VisualElement();
+        _tipsPanel.Add(_tipsBody);
 
         _tipsLabel = new Label("点击“识别图层”后，会基于 YOLO Seg 结果生成可拖动、可缩放的图层。识别出的人物或对象会放进图层框里，被切走的背景区域会变黑。");
         _tipsLabel.style.color = new Color(0.82f, 0.86f, 0.92f, 1f);
         _tipsLabel.style.whiteSpace = WhiteSpace.Normal;
         _tipsLabel.style.marginTop = 4;
-        _tipsPanel.Add(_tipsLabel);
+        _tipsBody.Add(_tipsLabel);
 
-        _tipsPanel.Add(BuildBlendControls());
+        _tipsBody.Add(BuildBlendControls());
 
         BuildStandardOverlays();
+        ApplyTipsPanelLayout(IsPortraitLayout);
     }
 
     protected override void OnLayoutChanged(bool isPortrait, Rect layoutRect)
     {
         RebuildLayerBoxes();
+        ApplyTipsPanelLayout(isPortrait);
+    }
+
+    private void ApplyTipsPanelLayout(bool isPortrait)
+    {
         if (_tipsPanel == null)
             return;
 
@@ -194,6 +230,25 @@ public sealed class DesignView : BasePageView
             _tipsPanel.style.right = 18;
             _tipsPanel.style.top = 18;
             _tipsPanel.style.width = 280;
+        }
+
+        var orientationChanged = !_hasAppliedTipsLayout || _lastTipsLayoutWasPortrait != isPortrait;
+        if (orientationChanged)
+            SetTipsPanelCollapsed(isPortrait);
+
+        _lastTipsLayoutWasPortrait = isPortrait;
+        _hasAppliedTipsLayout = true;
+    }
+
+    private void SetTipsPanelCollapsed(bool collapsed)
+    {
+        _tipsPanelCollapsed = collapsed;
+        if (_tipsBody != null)
+            _tipsBody.style.display = collapsed ? DisplayStyle.None : DisplayStyle.Flex;
+        if (_tipsToggleButton != null)
+        {
+            _tipsToggleButton.text = collapsed ? "\u25BE" : "\u25B4";
+            _tipsToggleButton.tooltip = collapsed ? "\u5C55\u5F00\u8BBE\u8BA1\u8BF4\u660E" : "\u6536\u8D77\u8BBE\u8BA1\u8BF4\u660E";
         }
     }
 
