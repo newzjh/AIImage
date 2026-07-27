@@ -350,10 +350,6 @@ public sealed class AIImagePageHost : MonoBehaviour
 
     private void EnsurePageComponents()
     {
-        var legacy = GetComponent<MainView>();
-        if (legacy != null)
-            legacy.enabled = false;
-
         _mainView2 = GetComponent<MainView2>();
         if (_mainView2 == null)
             _mainView2 = gameObject.AddComponent<MainView2>();
