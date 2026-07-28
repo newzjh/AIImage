@@ -1,16 +1,18 @@
-# Aexis 端侧推理引擎接入手册
+# Aexis Engine Integration Manual
 
-## 1. 定位与发布边界
+## 1. Purpose and scope
 
-Aexis 的 UPM 包名和根命名空间为 `com.aexis` / `Aexis`。AIImage 是使用 Aexis 的例子工程，不能成为引擎 Runtime 的程序集、命名空间或资源路径依赖。发布时只分发一个 Unity Package：`Packages/com.aexis`。
+Aexis is the Unity on-device inference engine delivered as the single `com.aexis` UPM package. AIImage is the full application example that uses Aexis; it is not a Runtime dependency, Runtime namespace, or required host-project folder.
 
-当前实现自带 ONNX 解析、NCNN `.param/.bin` 读取、模型图加载、Pack4 纹理 GPU 推理、计算着色器和形状/索引执行模块。Runtime 不引用 Unity Sentis、ncnn、ONNX Runtime、MNN、UniTask 或原生推理插件。样例和 Editor 的动态 JSON 工具使用命名空间隔离的 `Aexis.Samples.Json` 源码副本；它们包含嵌套 token 遍历和诊断报告，不能以 Unity `JsonUtility` 等价替换。该副本源自 MIT 许可的 Json.NET 13.0.2，来源、固定提交、归档校验值和改写记录位于 `Samples~/AIImageApplicationExample/ThirdParty/AexisSampleJson/UPSTREAM.md`，不会与宿主工程的 Json.NET 冲突。MNN 未来增加时应落在 `Aexis.Mnn` asmdef 内，仍然由同一个 `com.aexis` 包交付。
+The package owns its ONNX reader/lowering path, NCNN `.param`/`.bin` reader, model graph loaders, Pack4 texture-native GPU execution, compute shaders, and ONNX shape/index execution. Runtime does not reference Unity Sentis, Tencent ncnn, ONNX Runtime, MNN, UniTask, or a native inference plug-in.
 
-兼容范围为 Unity `2022.3` 至 `6000.3`；发布验证分别使用 2022.3.9f1、2023.2.20f1c1 和 6000.3.2f1。最低 Package Manager 声明版本为 Unity `2022.3`。
+Use this manual together with the [root README](../README.md), [package README](../Packages/com.aexis/README.md), [runner guide](../Packages/com.aexis/Documentation~/runner-samples.md), and [model-distribution policy](../Packages/com.aexis/Documentation~/model-distribution.md).
 
-## 2. 安装
+## 2. Install Aexis
 
-嵌入式安装在宿主工程的 `Packages/manifest.json` 中添加：
+### 2.1 Embedded UPM package
+
+Add a `file:` reference to the host project's `Packages/manifest.json`:
 
 ```json
 {
@@ -20,153 +22,163 @@ Aexis 的 UPM 包名和根命名空间为 `com.aexis` / `Aexis`。AIImage 是使
 }
 ```
 
-正式发布可改为 registry 或 Git URL。不要把 `Runtime` 目录拷贝进 `Assets`，否则计算 shader、asmdef 和包路径约束会失效。
+For a registry or Git distribution, install `com.aexis` through Unity Package Manager instead. Do not copy `Runtime` into `Assets`; package-local resources and assembly definitions are required at runtime.
 
-## 3. 目录与程序集
+### 2.2 Complete `.unitypackage`
 
-| 路径/程序集 | 责任 |
-| --- | --- |
-| `Runtime/Core` / `Aexis` | 公共推理会话、张量、精度、量化契约 |
-| `Runtime/Async` / `Aexis.Async` | BCL `Task` 逐帧调度 |
-| `Runtime/Onnx` / `Aexis.Onnx` | ONNX protobuf 图读取与执行规划 |
-| `Runtime/Ncnn` / `Aexis.Ncnn` | NCNN 图、权重、算子和 Pack4 纹理执行 |
-| `Runtime/Execution` / `Aexis.Execution` | ONNX 形状/索引类 GPU 执行 |
-| `Runtime/Resources/Aexis` | 由包自身加载的 compute shaders |
-| `Editor` / `Aexis.Editor` | 仅 Editor 工具 |
-| `Samples~` | 可选导入的脚本、示例模型和安装器 |
-| `Tests/Editor` | Package 边界和规划测试 |
+From an Aexis project, choose:
 
-Runtime 下允许多个 asmdef，Unity 2022.3 至 Unity 6.3 都支持一个 UPM 包内的多程序集。它们是编译边界，不是多个 Package；用户只导入 `com.aexis`。
-
-## 4. 核心接口
-
-### 4.1 `Aexis`
-
-- `IInferenceSession`：公共会话身份、后端类型、状态和 `Dispose` 契约。
-- `IInferenceTensor`：公开 `TensorDescriptor` 和后端资源 ID；不直接暴露 ComputeBuffer。
-- `TensorDescriptor`：保存逻辑 shape、物理 storage shape、layout、数据类型和调试名。shape 必须为正数。
-- `ModelManifest`：模型精度、INT8/INT4 权重量化及校准契约。
-- `InferenceContractException`：模型或执行契约无效时抛出。
-
-### 4.2 `Aexis.Async`
-
-`AexisAsync.YieldFrame()` 返回 BCL `Task`。Aexis 公共 API 不出现 UniTask；宿主可以自行用 UniTask、Task 或协程封装它。这样不会与宿主项目已有的 UniTask 包、GUID 或 asmdef 发生冲突。
-
-### 4.3 `Aexis.Onnx`
-
-```csharp
-var model = OnnxModelReader.Read(onnxBytes);
-Debug.Log($"{model.graph.name}: {model.graph.nodes.Count} nodes");
+```text
+Aexis/Release/Export Complete UnityPackage
 ```
 
-- `OnnxModelReader.Read(string|byte[])`：读取 ONNX `ModelProto`、图节点、输入/输出、initializer 和属性。
-- `OnnxD3Importer.Import(...)`：生成 D3 导入元数据。
-- `OnnxExecutionAdapter.TryAdapt(...)`：将受支持的 Shape/Size/NonZero/Compress/GatherND/Scatter/TopK/OneHot 类节点转换为执行节点。
-- `OnnxExecutionShapePlanner.Validate(...)`：验证动态长度、容量和冲突策略。
+Import the exported archive into the target Unity project. Its editor bootstrap restores `Packages/com.aexis` and registers the package with Package Manager.
 
-ONNX reader 是图读取和 lowering 的入口，并不等同于“无条件执行任意 ONNX op”。应用须在模型导入阶段验证实际算子覆盖范围。
+### 2.3 AIImage Main2 Application Example
 
-### 4.4 `Aexis.Ncnn`
+After importing **AIImage Main2 Application Example** in Package Manager, run:
+
+```text
+Aexis/Examples/Install Main2 Application StreamingAssets
+```
+
+The installer copies the sample's permitted `StreamingAssets` payload into `Assets/StreamingAssets`, the location included by a Unity Player. Open `Scenes/Main2.unity`, or choose `Aexis/Examples/Open Main2 Application Scene`.
+
+## 3. Package architecture
+
+| Package path | Assembly or responsibility |
+| --- | --- |
+| `Runtime/Core` | `Aexis`: contracts, tensor descriptors, precision and quantization manifests |
+| `Runtime/Async` | `Aexis.Async`: BCL `Task` frame-yield helpers |
+| `Runtime/Onnx` | `Aexis.Onnx`: ONNX protobuf reading and execution planning |
+| `Runtime/Ncnn` | `Aexis.Ncnn`: NCNN graph/weight readers and Pack4 operator implementation |
+| `Runtime/Execution` | `Aexis.Execution`: ONNX shape/index texture execution |
+| `Runtime/Resources/Aexis` | Package-owned compute shaders loaded through `Resources` |
+| `Editor` | Editor import, packaging, and validation tools |
+| `Samples` | Importable samples and the AIImage application example |
+| `Documentation~` | Package Manager documentation and documented runner artifacts |
+| `Tests/Editor` | Package-boundary and execution-planning tests |
+
+The multiple Runtime asmdefs are compilation boundaries inside one UPM package, not separate packages. `Aexis.Async` exposes BCL `Task`; it does not ship or reference UniTask. Sample-only code may use `Aexis.Samples.Async`, which is namespace-isolated from the engine.
+
+### 3.1 Production GPU contract
+
+The NCNN production path uses Pack4 RenderTextures and CommandBuffer-compatible texture flows. Logical and physical storage shapes are recorded independently. `ForwardPack4WithFixedInputs(...)` uploads a fixed input into a GPU texture before the first layer; it cannot become a persistent ComputeBuffer activation.
+
+Do not add a generic ComputeBuffer fallback to make an unsupported layer appear to work. Strict preflight must reject an unsupported profile with a diagnostic that identifies the layer, allocation, or shape that needs a texture-native implementation or plan declaration.
+
+## 4. Model import, operators, and precision
+
+Unity imports `.onnx`, NCNN `.param`, and versioned `.aexis` archives as `AexisModelAsset`. An import preserves source bytes, produces the versioned graph representation, associates an NCNN `.bin` when present, and records lower/preflight diagnostics. `AexisModelPackager`, `AexisNcnnBinaryParam`, and `AexisModelArchive` are the corresponding offline/prepack forms.
+
+The generated capability snapshot at `output/operator-capabilities/operator-capabilities.json` currently records:
+
+| Import family | Import entries | Entries flagged for RenderTexture + CommandBuffer | FP32-flagged entries |
+| --- | ---: | ---: | ---: |
+| NCNN | 96 | 56 | 90 |
+| Sentis/ONNX dialect | 19 | 13 | 13 |
+
+The snapshot status breakdown is 56 `partial`, 29 `debug-only`, 5 `alias-only`, and 6 `unsupported`. A flag shows an implementation branch, not guaranteed compatibility for arbitrary models. The concrete import plus strict preflight result is authoritative. The Sentis/ONNX count means Aexis recognizes and lowers selected source dialects; it does not introduce a Sentis or ONNX Runtime backend dependency.
+
+`ModelManifest` supports FP32, FP16, BF16 storage, INT8/INT4 weight-only metadata, calibrated W8A8 plans, per-layer mixed precision, and precision gates. Existing manifests provide model-specific MobileCLIP/Matting INT8 and INT4 profiles. The same snapshot has zero universal per-operator FP16/INT8 flags, so do not advertise generic INT8 or FP16 operator coverage. Qwen Q4/Q8 are mobile model variants, not an engine-wide quantization guarantee. BF16 is stored in FP32 textures because Unity has no portable BF16 RenderTexture format; Pack4 cast supplies deterministic rounding.
+
+## 5. Basic integration
+
+The following is the low-level NCNN pattern. An application must provide the model's expected Pack4 input and should own preprocessing, postprocessing, UI, and output lifetime.
 
 ```csharp
 using System.IO;
 using Aexis.Ncnn;
 
-var session = NcnnInferenceSessionFactory.Create(new NcnnOps());
+var ops = new NcnnOps();
+var session = NcnnInferenceSessionFactory.Create(ops);
 using var weights = new NcnnBinReader(new MemoryStream(binBytes, writable: false));
+
 await session.LoadModelAsync(paramText, weights, progress =>
     Debug.Log($"{progress.stage} {progress.progress01:P0}"));
 
-// input 必须是匹配模型输入的 Pack4 RenderTexture。
+// Build the model-specific Pack4 RenderTexture input, then execute it.
 var output = session.ForwardPack4(input, inputPacks, "data");
-// 使用 output 后，在组件销毁或切换模型时释放。
+
+// Release GPU resources when the component is disabled or changes model.
 session.Release();
 ```
 
-| API | 作用 |
-| --- | --- |
-| `NcnnOps` | 创建 package-owned compute 操作门面，加载包内 compute shader |
-| `NcnnInferenceSessionFactory.Create` | 创建图会话，可自动/显式应用 manifest |
-| `NcnnParamParser.Parse` | 解析 `.param` 文本用于检查或合并 |
-| `NcnnBinReader` | 从 `Stream` 读取 `.bin`，模型加载完成后释放 |
-| `NcnnGraphSession.LoadModel` | 同步加载 |
-| `NcnnGraphSession.LoadModelAsync` | 可取消、逐帧让出的异步加载，返回 `Task` |
-| `NcnnGraphSession.ForwardPack4` | 执行 Pack4 RenderTexture 推理 |
-| `NcnnGraphSession.Release` | 释放会话持有的 GPU 资源，允许重复调用 |
+For ONNX inspection and lowering, use `OnnxModelReader.Read(...)`, `OnnxD3Importer.Import(...)`, `OnnxExecutionAdapter.TryAdapt(...)`, and `OnnxExecutionShapePlanner.Validate(...)`. Reading an ONNX graph does not mean every ONNX operator can execute.
 
-生产路径必须保持 Pack4 RenderTexture 和 CommandBuffer 兼容的纹理流。不要因为某一层缺失而把普通推理回退到临时 ComputeBuffer；应补齐纹理实现或在严格模式下抛出可定位错误。对同时需要纹理和固定 Buffer 输入的 CommandBuffer 图，使用 `ForwardPack4WithFixedInputs`：固定 Buffer 只能在图边界由 GPU dispatch 上传为纹理（Embed token 使用精确 RFloat LinearMat），进入第一层后不允许保留或回退为 ComputeBuffer activation。
+## 6. Runner catalog and model delivery
 
-## 5. 完整应用样例
+Importable components in the Main2 sample include `AexisNcnnModelLoadRunner`, `AexisOnnxInspectionRunner`, `ClipNcnnReproRunner`, `CodeFormerNcnnReproRunner2`, `DeepFillV2Runner`, `MatterNcnnReproRunner`, `RealEsrganNcnnReproRunner`, and `YoloSegNcnnReproRunner`.
 
-Package Manager 导入唯一的 **AIImage Main2 Application Example** 后，执行菜单：
-
-`Aexis/Examples/Install Main2 Application StreamingAssets`
-
-它会把 `Samples~/AIImageApplicationExample/StreamingAssets` 完整复制到 `Assets/StreamingAssets`。这是 Unity Player 会打入包体的标准位置；运行时不会使用 `AssetDatabase`。随后打开 `Scenes/Main2.unity`，或使用 `Aexis/Examples/Open Main2 Application Scene`。
-
-| 样例组件 | API | 默认用途 |
+| Runner / model | Delivery status | GitHub Release download page |
 | --- | --- | --- |
-| `AexisNcnnModelLoadRunner` | `LoadAsync`、`SelectModel`、`Release`、`LoadProgressChanged` | 读取任意 NCNN param/bin 对、创建会话、报告加载进度 |
-| `AexisOnnxInspectionRunner` | `InspectAsync`、`ModelInspected` | 跨平台读取 ONNX 并输出图摘要 |
-| `AexisSampleModelCatalog` | `ClipImageEncoder`、`CodeFormerEncoder`、`DeepFillV2`、`Matting`、`RealEsrgan`、`YoloV8Seg` | 预设模型默认路径 |
-| `Aexis.Samples.Runners.ClipNcnnReproRunner` | `ProcessAsync(Texture2D, CancellationToken)` | MobileCLIP 图像分类；样例标签缓存避免依赖未分发的文本权重 |
-| `Aexis.Samples.Runners.CodeFormerNcnnReproRunner2` | `ProcessAsync(Texture2D, CancellationToken)` | 人脸检测、对齐、修复和融合；使用样例 detector/encoder/generator |
-| `Aexis.Samples.Runners.DeepFillV2Runner` | `ProcessAsync(Texture, Texture, CancellationToken)` | 遮罩修补，支持 ONNX-direct 或 NCNN |
-| `Aexis.Samples.Runners.MatterNcnnReproRunner` | `ProcessAsync(Texture2D, CancellationToken)` | 抠图和 alpha 合成 |
-| `Aexis.Samples.Runners.RealEsrganNcnnReproRunner` | `ProcessAsync(Texture2D, CancellationToken)` | 切片超分 |
-| `Aexis.Samples.Runners.YoloSegNcnnReproRunner` | `ProcessAsync(Texture2D, CancellationToken)` | 分割检测、遮罩和叠加层 |
+| Qwen3.5 0.8B mobile Q4 | External model group | [`model`](https://github.com/newzjh/AIImage/releases/tag/model) |
+| Qwen3.5 0.8B mobile Q8 | External model group | [`qwen3.5_0.8b_mobile_q8`](https://github.com/newzjh/AIImage/releases/tag/qwen3.5_0.8b_mobile_q8) |
+| CLIP MobileCLIP S0 | Default sample model family | [`model`](https://github.com/newzjh/AIImage/releases/tag/model) |
+| CodeFormer | Default sample model family | [`model`](https://github.com/newzjh/AIImage/releases/tag/model) |
+| Matting | Default sample model family | [`model`](https://github.com/newzjh/AIImage/releases/tag/model) |
+| Real-ESRGAN | Default sample model family, after provenance review | [`realesr`](https://github.com/newzjh/AIImage/releases/tag/realesr) |
+| GFPGAN | External model group | [`gfpgan`](https://github.com/newzjh/AIImage/releases/tag/gfpgan) |
+| YOLO + DeepFillV2 | Default YOLO family; DeepFillV2 group is configuration-dependent | [`DeepFileV2`](https://github.com/newzjh/AIImage/releases/tag/DeepFileV2) |
+| YOLO + SD inpainting | External weights | [`model`](https://github.com/newzjh/AIImage/releases/tag/model) |
+| MONAI / VISTA | External model and data only | No package release asset |
 
-`AexisSampleStreamingAssets.ReadBytesAsync` 通过 `UnityWebRequest` 读取 `StreamingAssets`，因此可处理 Android 等不能直接 `File.ReadAllBytes` 的平台。所有 path 都相对 `Application.streamingAssetsPath`；默认模型目录为 `Clip`、`CodeFormer`、`DeepFileV2`、`Matting`、`RealESRGAN` 和 `Yolo`。
+Use the current `AIImageModelReleaseManifest.json` written by `Aexis/Release/Build Reduced/Prepare Model Release Assets` to identify an exact archive asset. The runtime/model-download UI understands both generated archives and configured flat release files. Do not invent an archive name from a display name.
 
-## 6. 现有 AIImage Runner 对应关系
+Default sample model paths are below `Application.streamingAssetsPath` under `Clip`, `CodeFormer`, `DeepFileV2`, `Matting`, `RealESRGAN`, and `Yolo`. GFPGAN, Stable Diffusion, SD inpainting, MONAI/VISTA, and Qwen weights are excluded from the normal package sample because of size and redistribution constraints.
 
-| AIImage Runner | 包内可复用部分 | 默认模型是否携带 |
+## 7. Example evidence
+
+All following images are actual documented runner outputs. Complete runner timings and the test input notes are maintained in the [root README](../README.md#examples).
+
+### Face restoration
+
+![CodeFormer output](../Packages/com.aexis/Documentation~/images/codeformer-face-restoration.png)
+
+![GFPGAN output](../Packages/com.aexis/Documentation~/images/gfpgan-face-restoration.png)
+
+Windows/Vulkan 2026-07-28 evidence: CodeFormer 16,075 ms; GFPGAN 4,786 ms.
+
+### Matting, inpainting, and upscaling
+
+![Matting composite](../Packages/com.aexis/Documentation~/images/matting-composite.png)
+
+![YOLO plus DeepFillV2 output](../Packages/com.aexis/Documentation~/images/yolo-deepfill-output.png)
+
+![Real-ESRGAN x4 output](../Packages/com.aexis/Documentation~/images/realesrgan-x4.png)
+
+Windows/Vulkan 2026-07-28 evidence: Matting 1,103 ms at 360x202; YOLO 1,529 ms plus DeepFillV2 1,686 ms; Real-ESRGAN 661 ms for `ref/03.jpg`.
+
+### Qwen, CLIP, MONAI, and VISTA
+
+![Qwen multimodal input](../Packages/com.aexis/Documentation~/images/qwen-and-clip-input.jpg)
+
+Qwen Q4 passed a strict texture smoke without a visible response; Q8 passed a multimodal strict-texture smoke with six generated tokens. CLIP's successful score evidence is from 2026-07-23 (`Photo` 0.332389 and `Portrait` 0.265945). The 2026-07-28 strict CLIP run was rejected because `transpose_121` requested an undeclared temporary RT; this is a documented current limitation.
+
+> **MONAI/VISTA screenshot slot:** Reserved for validated, distributable medical input. No medical image, private golden, checkpoint, or data result is included in `com.aexis`.
+
+## 8. Tested environments
+
+| Platform | Device / Unity / graphics API | Current result |
 | --- | --- | --- |
-| Clip | 完整 `ClipNcnnReproRunner`、`MobileClipSimpleTokenizer` | 是 |
-| CodeFormer | 完整 `CodeFormerNcnnReproRunner2`、`NcnnFaceRegionGenerator`、`NcnnFaceRegionPaster` | 是 |
-| DeepFillV2 | 完整 `DeepFillV2Runner`、ONNX 读取和 catalog | 是 |
-| Matting | 完整 `MatterNcnnReproRunner` | 是 |
-| RealESRGAN | 完整 `RealEsrganNcnnReproRunner` | 是 |
-| YOLO Segmentation | 完整 `YoloSegNcnnReproRunner` 和 sample-owned `ImageProcessing.compute` | 是 |
-| GFPGAN | 仅外部配置，模型不携带 | 否 |
-| Stable Diffusion | 仅外部配置，模型不携带 | 否 |
-| SD Inpainting | 仅外部配置，模型不携带 | 否 |
-| MONAI/VISTA | 仅外部配置，模型不携带 | 否 |
-| QWEN | 仅外部配置，模型不携带 | 否 |
+| Windows 11 Pro 64-bit | Intel Arc Graphics, Unity 6000.2.7f2, Vulkan | Passed for the documented 2026-07-28 runner results |
+| macOS | **TBD: machine, GPU, Unity, graphics API** | Existing `Tools/AIImage_MACOS.build-failure.txt`; no pass claimed |
+| Android | **TBD: device, SoC/GPU, Unity, graphics API** | **TBD: record build, runner, timing, and thermal condition** |
+| iOS | **TBD: device, SoC/GPU, Unity, graphics API** | **TBD: record build, runner, timing, and thermal condition** |
 
-迁入的 Runner 已位于 `Aexis.Samples.Runners` 并使用隔离的 `Aexis.Samples.Async`；它们不再编译依赖 Aexis Runtime 之外的 UniTask。`AIImage Main2 Application Example` 是唯一的应用样例，包含 Main2、MainView2、DesignView、LibraryView、所有 Runner（含 GFPGAN、Stable Diffusion、SD Inpainting、MONAI/VISTA、QWEN）及 Editor 测试/批处理代码。它带有 Clip、CodeFormer、DeepFillV2、Matting、RealESRGAN 和 YOLO 的默认模型；GFPGAN、Stable Diffusion、SD Inpainting、MONAI/VISTA、QWEN 的模型权重、外部 exe、私有 golden 和业务数据不随该 Sample 发布。样例将所需的 UniTask 和 SharpZip 源码隔离为 `Aexis.Samples.Async` 与 `Aexis.Samples.SharpZipLib`，不会与宿主工程的同名库冲突。SharpZip 仍被 `StandardImageIO` 和 MONAI 压缩输入读取路径调用，不能按未使用代码删除。
+Unity 2022.3 through 6000.3 is the package compatibility target, not a record that every editor/platform combination has passed this application workload. Always validate with a real graphics device; `-nographics` is forbidden for Aexis package, shader, or runner validation.
 
-## 7. 模型与许可证
+## 9. Release validation
 
-样例当前携带 Clip、CodeFormer、DeepFillV2、Matting、RealESRGAN、YOLO 的默认模型文件，共约 433 MB。GFPGAN、Stable Diffusion、SD Inpainting、MONAI/VISTA、QWEN 的权重不随包分发。
+1. Run `dotnet build AIImage.sln -v minimal -m:1`.
+2. Compile and run the default release smoke with Unity 6000.2.7f2 on a graphics-capable host.
+3. For full-range claims, create separate empty projects outside this repository for Unity 2022.3.9f1, 2023.2.20f1c1, and 6000.3.2f1. Never upgrade the current project to perform those checks.
+4. In each isolated project, validate both a `file:` package reference and the exported `.unitypackage`; compile first with only the package, then with the Main2 sample installed.
+5. Review logs for C# errors, shader errors, import failures, package-lock conflicts, and strict texture-plan rejections.
+6. Do not publish GFPGAN, Stable Diffusion, SD inpainting, MONAI/VISTA, Qwen, private golden data, or any other model artifact until its source URL, immutable revision/checksum, license, copyright, conversion history, and redistribution approval are recorded.
 
-Aexis 源码使用 MIT，不自动改变模型权重许可证。每一个发布模型必须在 release tag 记录上游 URL、固定 revision/哈希、原始许可证、版权、转换步骤和再分发许可。无法完整核查时，发布归档必须移除对应模型，只保留 Runner 和路径配置。`RealESRGAN/LICENSE` 会随其样例文件复制；其余模型不能凭名称推断许可证。
+## 10. License
 
-## 8. 发布验证
+`com.aexis/package.json` declares MIT as the Aexis source-license target. The pre-release `Packages/com.aexis/LICENSE.md` retains a release-audit gate, so the audit must be completed before any archive is represented as an MIT release.
 
-1. 运行 `dotnet build AIImage.sln -v minimal -m:1`。
-2. 用 Unity 2022.3.9f1、2023.2.20f1c1、6000.3.2f1 分别无界面编译验证工程。
-3. 每个版本新建默认空工程，分别验证 `file:` UPM 安装和 `Aexis/Release/Export Complete UnityPackage` 导出的 `.unitypackage` 导入编译。UnityPackage 导入后必须恢复 `Packages/com.aexis`，并在该包的 `Samples~/AIImageApplicationExample` 保留完整 Main2 样例；确认没有 UniTask、AIImage、Sentis、ONNX Runtime 或 ncnn Runtime 依赖。
-4. 在空工程导入 AIImage Main2 Application Example，运行 StreamingAssets 安装器后再次编译，确认 Main2 与六类携带模型的 runner 可发现。
-5. 安装 Unity Test Framework 并设置 `AEXIS_INCLUDE_EDITOR_TESTS` 后，确认样例附带的 Editor NUnit 测试可被编译和发现；默认导入不应因测试框架缺失而失败。
-6. 检查 package archive 不包含 GFPGAN、Stable Diffusion、SD Inpainting、MONAI/VISTA、QWEN 模型和未声明许可的二进制文件；Json.NET 仅可作为带许可证、来源、固定提交和校验值记录的 `Aexis.Samples.Json` 源码副本存在，禁止复制 `Newtonsoft.Json.dll` 到 `Assets` 或声明同名 UPM 依赖。
-# Reduced Main2 Model Delivery
-
-Use `Aexis/Release/Build Reduced` for Main2 Player output. The release pipeline never stages,
-moves, or modifies `Assets/StreamingAssets` or package sample `StreamingAssets`; it rewrites only
-generated Player output. Its bundled groups are MobileCLIP S0, CodeFormer, Matting, Real-ESRGAN AnimeVideo v3 x4,
-GFPGAN, YOLOv8 person segmentation, DeepFillV2 case1 NCNN, and Qwen3.5 mobile Q8. MONAI and
-VISTA are excluded. The reduced `.unitypackage` excludes GFPGAN and Qwen model weights.
-
-`Aexis/Release/Build Reduced/Prepare Model Release Assets` creates named model ZIP archives and a
-manifest for the `newzjh/AIImage` GitHub Release. The Editor download window and runtime UI Toolkit
-confirmation dialog support both archives and configured per-release flat assets, installing them
-below persistent data at the runner's required path instead of any source StreamingAssets directory.
-
-## P1 model contract additions
-
-`AexisModelAsset` is now the package importer output for `.onnx`, `.param`, and `.aexis` files. It stores source bytes, the versioned Aexis binary graph, optional NCNN weights, and the stable import diagnostic report. `AexisNcnnBinaryParam` and `AexisModelArchive` are the offline/prepack equivalents; archives must be rebuilt whenever a graph schema, custom layer declaration, or weight payload changes.
-
-Low-precision manifests may declare BF16, calibrated Pack4 INT8 activation plans, per-layer mixed precision, and a precision gate. Calibrated signed/unsigned INT8 plans directly configure Pack4 Conv/DWConv/Gemm/InnerProduct arithmetic on both immediate and CommandBuffer paths; mixed plans select each of those layers' FP16 or FP32/BF16 physical activation storage. Treat the gate as a required release check: compare the candidate output against the recorded FP32 baseline with `AexisPrecisionGateEvaluator`, then reject a variant that exceeds its recorded error/cosine limits.
-
-Custom layers must be registered through `AexisCustomLayerRegistry` with a versioned schema and shader kernel id. The built-in P1 visual family (GridSample, DeformableConv2D, Fold, Flip, GLU, Einsum, Diag, SPP, ROI, Proposal, DetectionOutput, and YOLO output) uses the same schema/ABI preflight as its Pack4 dispatch. An unsupported profile is a terminal error and must not be worked around with a ComputeBuffer readback or fallback. BF16 remains texture-native through FP32 storage; Pack4 `Cast` provides deterministic BF16 rounding.
+MIT source licensing does not grant rights to weights, checkpoints, medical data, or third-party sample artifacts. Follow [Third Party Notices](../Packages/com.aexis/Third%20Party%20Notices.md) and the model-distribution policy for every release.
