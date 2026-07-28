@@ -12,6 +12,14 @@ using UnityEngine;
 using UnityEngine.Rendering;
 using Aexis.Execution;
 
+public struct RealEsrganResult
+{
+    public Texture2D texture;
+    public string workDir;
+    public string error;
+    public long elapsedMs;
+}
+
 public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
 {
     private const string DefaultModelName = "realesr-animevideov3-x4";

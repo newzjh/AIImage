@@ -1,3 +1,0 @@
-E:/Projects/AIImage/RealESRGAN/Native/build-win64/CMakeFiles/realesrgan_unity.dir
-E:/Projects/AIImage/RealESRGAN/Native/build-win64/CMakeFiles/ALL_BUILD.dir
-E:/Projects/AIImage/RealESRGAN/Native/build-win64/CMakeFiles/ZERO_CHECK.dir

@@ -20,7 +20,6 @@ public sealed class AIImagePageHost : MonoBehaviour
     public ComputeShader ImageProcessingCS => _imageProcessingCS;
     public GpuSharpenRunner GpuSharpenRunner => _gpuSharpenRunner;
     public FaceMaskGenerator FaceMaskGenerator => _faceMaskGenerator;
-    public RealEsrganNcnnVulkanRunner RealEsrganRunner => _realEsrganRunner;
     public RealEsrganNcnnReproRunner RealEsrganReproRunner => _realEsrganReproRunner;
     public GfpganNcnnReproRunner GfpganReproRunner => _gfpganReproRunner;
     public CodeFormerNcnnReproRunner2 CodeFormerReproRunner => _codeFormerReproRunner;
@@ -44,7 +43,6 @@ public sealed class AIImagePageHost : MonoBehaviour
     private ComputeShader _imageProcessingCS;
     private GpuSharpenRunner _gpuSharpenRunner;
     private FaceMaskGenerator _faceMaskGenerator;
-    private RealEsrganNcnnVulkanRunner _realEsrganRunner;
     private RealEsrganNcnnReproRunner _realEsrganReproRunner;
     private GfpganNcnnReproRunner _gfpganReproRunner;
     private CodeFormerNcnnReproRunner2 _codeFormerReproRunner;
@@ -371,7 +369,6 @@ public sealed class AIImagePageHost : MonoBehaviour
         _modelDownloadDialog.Configure(_uiDocument);
         _gpuSharpenRunner = GetOrAdd<GpuSharpenRunner>();
         _faceMaskGenerator = GetOrAdd<FaceMaskGenerator>();
-        _realEsrganRunner = GetOrAdd<RealEsrganNcnnVulkanRunner>();
         _realEsrganReproRunner = GetOrAdd<RealEsrganNcnnReproRunner>();
         _gfpganReproRunner = GetOrAdd<GfpganNcnnReproRunner>();
         _codeFormerReproRunner = GetOrAdd<CodeFormerNcnnReproRunner2>();
