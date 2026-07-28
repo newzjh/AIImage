@@ -14,6 +14,53 @@
 
 `Aexis.Async` exposes BCL `Task` and does not ship, vendor, or reference UniTask. This keeps the engine compatible with Unity 2022.3 and prevents package-level conflicts when a host project uses its own UniTask version or distribution.
 
+## Runner evidence
+
+AIImage Main2 is the complete application example built on Aexis. It contains runner configuration for Qwen3.5 Q4/Q8, CLIP, CodeFormer, Matting, Real-ESRGAN, GFPGAN, YOLO plus DeepFillV2, YOLO plus Stable Diffusion inpainting, and MONAI/VISTA. The images below are actual runner artifacts copied into package documentation; the complete evidence and release table are in the [repository README](../../README.md).
+
+| Runner | Evidence | Result |
+| --- | --- | --- |
+| Qwen3.5 mobile Q4 | Strict texture text smoke, 65.533 s, 48 cache textures | Valid execution; only one end-of-turn token, so it is not presented as a quality demo. |
+| Qwen3.5 mobile Q8 | Strict texture multimodal smoke, 71.618 s, 6 generated tokens | Valid execution; generated text begins with a Chinese-language phrase. |
+| CLIP MobileCLIP S0 | Successful 2026-07-23 score artifact | `Photo` 0.332389; `Portrait` 0.265945. The current strict profile rejects an undeclared temporary RT at `transpose_121`. |
+| CodeFormer | Windows/Vulkan batch, 2026-07-28 | 16,075 ms |
+| Matting | Windows/Vulkan batch, 360x202 | 1,103 ms |
+| GFPGAN | Windows/Vulkan batch | 4,786 ms |
+| YOLO + DeepFillV2 | Windows/Vulkan batch | 1,529 ms YOLO; 1,686 ms DeepFillV2 |
+| Real-ESRGAN AnimeVideo v3 x4 | Windows/Vulkan Pack4 CommandBuffer validation | 661 ms for `ref/03.jpg`; paired output parity mean/max RGB error was 0. |
+| YOLO + SD inpainting | Archived validation artifact, 2026-07-16 | Visual sample only; not a current benchmark. |
+
+![Qwen multimodal input](Documentation~/images/qwen-and-clip-input.jpg)
+
+![CodeFormer result](Documentation~/images/codeformer-face-restoration.png)
+
+![Matting composite](Documentation~/images/matting-composite.png)
+
+![GFPGAN result](Documentation~/images/gfpgan-face-restoration.png)
+
+![YOLO and DeepFillV2 result](Documentation~/images/yolo-deepfill-output.png)
+
+![Real-ESRGAN x4 result](Documentation~/images/realesrgan-x4.png)
+
+![YOLO and SD inpainting result](Documentation~/images/yolo-sd-inpainting.png)
+
+> **MONAI/VISTA screenshot slot:** Reserved for a reproducible run with distributable medical input and confirmed data/model permissions. No medical image is published by this package.
+
+## Release downloads
+
+The Main2 model-delivery configuration resolves its assets from [newzjh/AIImage releases](https://github.com/newzjh/AIImage/releases). Download the current generated asset named in `AIImageModelReleaseManifest.json`, or use the application's model-download UI. Do not infer an archive name from a runner name.
+
+| Model group | Release download page |
+| --- | --- |
+| Qwen3.5 Q4, CLIP, CodeFormer, Matting, YOLO, SD inpainting configuration | [`model`](https://github.com/newzjh/AIImage/releases/tag/model) |
+| Qwen3.5 Q8 | [`qwen3.5_0.8b_mobile_q8`](https://github.com/newzjh/AIImage/releases/tag/qwen3.5_0.8b_mobile_q8) |
+| Real-ESRGAN | [`realesr`](https://github.com/newzjh/AIImage/releases/tag/realesr) |
+| GFPGAN | [`gfpgan`](https://github.com/newzjh/AIImage/releases/tag/gfpgan) |
+| DeepFillV2 | [`DeepFileV2`](https://github.com/newzjh/AIImage/releases/tag/DeepFileV2) |
+| MONAI / VISTA | External model and data acquisition only |
+
+Model weights have their own licenses and redistribution conditions. The listed release pages are download locations, not license grants.
+
 ## Install
 
 For an embedded package, add the following entry to the consuming project's `Packages/manifest.json`:
@@ -56,6 +103,23 @@ Unity imports `.onnx`, NCNN `.param`, and versioned `.aexis` archive files as `A
 
 P1 visual operators (`GridSample`, deformable/ROI/detection families, `Fold`, `Flip`, `GLU`, `Einsum`, `Diag`, and `SPP`) ship with built-in Pack4 RenderTexture and CommandBuffer profiles. Strict preflight reuses the same parameter/shape proof as dispatch; an unsupported profile is rejected before execution rather than materialized through a ComputeBuffer. BF16 uses FP32 texture storage because Unity has no portable BF16 render-texture format; Pack4 `Cast` provides deterministic BF16 rounding. Per-layer mixed plans select FP16/FP32/BF16 physical storage as appropriate, while calibrated signed or unsigned Pack4 INT8 plans feed Conv/DWConv/Gemm/InnerProduct dispatch directly.
 
+## Operator and quantization status
+
+`output/operator-capabilities/operator-capabilities.json` in the repository is the implementation snapshot used for release documentation. It lists 96 NCNN import entries (56 with both RenderTexture and CommandBuffer flags) and 19 Sentis/ONNX import entries (13 with both flags). The snapshot contains 56 `partial`, 29 `debug-only`, 5 `alias-only`, and 6 `unsupported` entries, so a flag is not a blanket model compatibility promise. Aexis imports ONNX/Sentis-dialect graphs but does not depend on Sentis or ONNX Runtime at runtime.
+
+`ModelManifest` can represent FP32, FP16, BF16, INT8/INT4 weight-only, calibrated W8A8, and per-layer mixed plans. Checked-in model manifests include model-specific INT8/INT4 profiles for MobileCLIP and Matting. The capability snapshot has zero universal per-operator FP16/INT8 flags; use strict preflight and the model's precision gate for a concrete graph. Qwen mobile Q4/Q8 are model archive variants, not a claim of generic engine-wide INT4/INT8 support.
+
+## Tested environments
+
+| Platform | Hardware and Unity | Current evidence | Status |
+| --- | --- | --- | --- |
+| Windows 11 Pro 64-bit | Intel Arc Graphics, Unity 6000.2.7f2, Vulkan | Documented 2026-07-28 runner results above | Passed for those runs |
+| macOS | **TBD: machine/GPU/Unity** | `Tools/AIImage_MACOS.build-failure.txt` records a failure, not a pass | Blocked / not validated |
+| Android phone | **TBD: device/SoC/GPU/Unity** | **TBD: runner and timing** | Not yet validated |
+| iPhone / iPad | **TBD: device/SoC/GPU/Unity** | **TBD: runner and timing** | Not yet validated |
+
+Validation must use a real graphics device. `-nographics` is not valid for Aexis shader, package, or runner validation.
+
 ## Quick start
 
 ```csharp
@@ -83,7 +147,7 @@ The complete sample retains its Editor NUnit sources. A default sample import ex
 
 ## Scope and licensing
 
-The source implementation is released under the MIT license in [LICENSE.md](LICENSE.md). Aexis does not include Unity Sentis, Tencent ncnn, ONNX Runtime, MNN, MONAI, or VISTA source/binaries as runtime dependencies. Compatibility targets do not imply affiliation or use of upstream code.
+`package.json` declares MIT as the Aexis source license target. The current pre-release [LICENSE.md](LICENSE.md) retains a release-audit gate; complete that audit before publishing or representing an archive as an MIT release. Aexis does not include Unity Sentis, Tencent ncnn, ONNX Runtime, MNN, MONAI, or VISTA source/binaries as runtime dependencies. Compatibility targets do not imply affiliation or use of upstream code.
 
 The complete application sample uses its namespace-isolated `Aexis.Samples.Json` source copy in fourteen files for dynamic JSON documents, token traversal, and editor diagnostics. These uses are not DTO-only configuration payloads, so Unity `JsonUtility` is not a compatible replacement. The source copy is MIT-licensed Json.NET 13.0.2, with its immutable revision, checksum, license, and shading record under `Samples/AIImageApplicationExample/ThirdParty/AexisSampleJson`; it does not install a Newtonsoft package or copy a duplicate DLL into `Assets`.
 

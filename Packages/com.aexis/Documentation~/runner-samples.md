@@ -10,6 +10,22 @@
 
 This is the only application/runner sample. Its installer copies the sample's complete `StreamingAssets` tree to `Assets/StreamingAssets`. This keeps UPM package contents immutable and makes player-included assets explicit. Every Player build also stages any missing sample payload files before Unity collects Player data, so package-default `.param`, `.bin`, ONNX, tokenizer, and inference-manifest files are included even when the installer was not run manually. Existing project files are preserved.
 
+## Documented runner results
+
+The package README and repository README carry the current evidence-backed runner gallery. These images are copied artifacts, not promotional mockups.
+
+![CodeFormer face restoration](images/codeformer-face-restoration.png)
+
+![Matting composite](images/matting-composite.png)
+
+![YOLO and DeepFillV2 output](images/yolo-deepfill-output.png)
+
+![Real-ESRGAN output](images/realesrgan-x4.png)
+
+The Windows 11 / Intel Arc / Vulkan / Unity 6000.2.7f2 batch record from 2026-07-28 is: CodeFormer 16,075 ms; Matting 1,103 ms at 360x202; GFPGAN 4,786 ms; YOLO 1,529 ms plus DeepFillV2 1,686 ms; and Real-ESRGAN 661 ms for `ref/03.jpg`. Qwen Q4 and Q8 passed strict texture execution smoke reports; Q4 did not produce visible response text, while Q8 emitted six tokens. The successful CLIP score artifact is from 2026-07-23; the 2026-07-28 strict CommandBuffer run was rejected because `transpose_121` requested an undeclared temporary RT.
+
+Qwen, GFPGAN, Stable Diffusion inpainting, MONAI, and VISTA weights are external. The model-delivery table in the [package README](../README.md#release-downloads) links their configured GitHub Release pages. MONAI/VISTA retains a screenshot slot until a reproducible run has distributable medical input and verified data/model permissions.
+
 ## Included reusable runners
 
 | Component | Function | Default model family |

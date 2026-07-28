@@ -17,6 +17,21 @@ After installing the sample payload, paths are relative to `Application.streamin
 
 Do not put model files for GFPGAN, Stable Diffusion, SD Inpainting, MONAI/VISTA, or QWEN in this package or its samples. Their Runner configuration may name an external model location, but consumers must obtain the model separately under its own license.
 
+## Configured GitHub Release pages
+
+`AIImageModelDelivery` resolves release assets from [newzjh/AIImage](https://github.com/newzjh/AIImage/releases). These are the configured release pages; use the release's current generated asset list or the application's download UI rather than guessing an archive name.
+
+| Group | Release download page |
+| --- | --- |
+| Qwen3.5 mobile Q4, CLIP, CodeFormer, Matting, YOLO, SD inpainting configuration | [`model`](https://github.com/newzjh/AIImage/releases/tag/model) |
+| Qwen3.5 mobile Q8 | [`qwen3.5_0.8b_mobile_q8`](https://github.com/newzjh/AIImage/releases/tag/qwen3.5_0.8b_mobile_q8) |
+| Real-ESRGAN | [`realesr`](https://github.com/newzjh/AIImage/releases/tag/realesr) |
+| GFPGAN | [`gfpgan`](https://github.com/newzjh/AIImage/releases/tag/gfpgan) |
+| DeepFillV2 | [`DeepFileV2`](https://github.com/newzjh/AIImage/releases/tag/DeepFileV2) |
+| MONAI / VISTA | No package release asset; obtain model and data externally |
+
+`Aexis/Release/Build Reduced/Prepare Model Release Assets` writes the current `AIImageModelReleaseManifest.json`. That manifest, not this documentation, is the authoritative list of exact generated ZIP asset names.
+
 ## Release gate
 
 Before publishing a package archive that contains any model artifact, complete an auditable record for every file: upstream project and URL, immutable revision or checksum, upstream license text, copyright notice, modification/export steps, and redistribution approval. Keep this record with the release tag. The MIT license for Aexis source does not grant rights to model weights.
