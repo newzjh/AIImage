@@ -210,7 +210,7 @@ namespace Aexis.Execution
 
         private static readonly HashSet<string> TextureAndCommandBufferOperators = new HashSet<string>(StringComparer.Ordinal)
         {
-            "AbsVal", "aten::to", "BatchNorm", "Bias", "BinaryOp", "Cast", "Clip", "Concat", "Convolution", "InstanceNorm", "MVN",
+            "AbsVal", "aten::to", "BatchNorm", "Bias", "BinaryOp", "Cast", "Clip", "Concat", "Convolution", "InstanceNorm", "MVN", "Normalize", "PriorBox",
             "Convolution1D", "Convolution3D", "ConvolutionDepthWise", "ConvolutionDepthWise3D", "Crop", "Deconvolution",
             "Deconvolution3D", "DeconvolutionDepthWise", "DeconvolutionDepthWise3D", "Eltwise", "ExpandDims", "Flatten", "GELU", "Squeeze",
             "Embed", "Gemm", "GroupNorm", "InnerProduct", "Interp", "LayerNorm", "MatMul", "Packing", "Padding",
@@ -240,7 +240,7 @@ namespace Aexis.Execution
             "Exp", "Log", "BNLL", "Power", "Threshold", "ThresholdedRelu", "ELU", "Erf", "HardSigmoid", "HardSwish", "Mish",
             "SELU", "Shrink", "Softplus", "Softsign", "IsInf", "IsNaN", "CELU", "Swish", "Clip", "GELU",
             "pnnx.Expression", "MemoryData", "Embed", "InnerProduct", "Pooling", "Pooling1D", "MaxPoolingInd",
-            "MaxUnPooling", "Pooling3D", "Reduction", "BatchNorm", "PReLU", "LRN", "InstanceNorm", "MVN", "Bias", "CopyTo", "Reshape",
+            "MaxUnPooling", "Pooling3D", "Reduction", "BatchNorm", "PReLU", "LRN", "InstanceNorm", "MVN", "Bias", "CopyTo", "Normalize", "PriorBox", "Reshape",
             "Flatten", "Squeeze", "ExpandDims", "Permute", "ShuffleChannel", "Gemm", "LayerNorm", "RMSNorm", "Slice", "Tile",
             "Packing", "Cast", "MatMul", "Softmax", "SDPA", "MultiHeadAttention", "NonZero", "Compress",
             "GatherND", "Scatter", "ScatterElements", "ScatterND", "CumSum", "CumulativeSum", "ReLU", "Sigmoid", "Trilu",
@@ -870,6 +870,14 @@ namespace Aexis.Execution
                     minInputs = 1;
                     maxInputs = 2;
                     break;
+                case "PriorBox":
+                    // ncnn supports both the MXNet one-feature profile and the
+                    // Caffe profile with a second static image-shape texture.
+                    // The loaded verifier proves the exact immutable parameters
+                    // and RFloat LinearMat output capacity before dispatch.
+                    minInputs = 1;
+                    maxInputs = 2;
+                    break;
                 case "GridSample":
                 case "ROIAlign":
                 case "ROIPooling":
@@ -969,7 +977,8 @@ namespace Aexis.Execution
                 || operatorName == "Gemm" || operatorName == "InnerProduct" || operatorName == "BatchNorm" || operatorName == "InstanceNorm"
                 || operatorName == "Bias" || operatorName == "LayerNorm" || operatorName == "RMSNorm" || operatorName == "GroupNorm" || operatorName == "Scale"
                 || operatorName == "Quantize" || operatorName == "Dequantize" || operatorName == "Requantize" || operatorName == "MultiHeadAttention"
-                || operatorName == "MemoryData" || operatorName == "RNN" || operatorName == "GRU" || operatorName == "LSTM";
+                || operatorName == "MemoryData" || operatorName == "Normalize" || operatorName == "PriorBox"
+                || operatorName == "RNN" || operatorName == "GRU" || operatorName == "LSTM";
         }
 
         private static string ResolveWeightContract(string operatorName)
@@ -1079,6 +1088,21 @@ namespace Aexis.Execution
                             shapeProfile = "boxes logical/storage [dims=2,w=4,h=num_boxes,d=1,c=1] and scores [dims=2,w=num_boxes,h=num_classes,d=1,c=1] as exact RFloat LinearMat; output padded [capacity,3] plus Int32 count[1] as RFloat textures",
                             supportedParameters = new[] { "ONNX static batch=1", "immutable max_output_boxes_per_class/iou_threshold/score_threshold", "capacity contract", "center_point_box=0|1", "deterministic score tie lower-index-first" },
                             rejectedParameters = new[] { "dynamic thresholds", "batch>1", "unbounded output", "count readback", "count-unaware consumer", "activation ComputeBuffer" }
+                        }
+                    };
+                case "PriorBox":
+                    return new[]
+                    {
+                        new AexisOperatorCapabilityProfile
+                        {
+                            backend = AexisOperatorCapabilityBackend.CommandBuffer,
+                            layouts = new[] { "Packed4", "Linear" },
+                            dtypes = new[] { "FP16", "FP32", "BF16" },
+                            inputRanks = new[] { 3, 4 },
+                            outputRanks = new[] { 1, 2 },
+                            shapeProfile = "one Pack4 feature input for MXNet MultiBoxPrior, or feature plus static Pack4 image-shape input for Caffe PriorBox; output is capacity-proven FP32 RFloat LinearMat [4*w*h*num_prior] or [2,4*w*h*num_prior]",
+                            supportedParameters = new[] { "immutable finite min_size/max_size/aspect_ratio/variance", "static feature and optional image dimensions", "flip/clip", "Caffe or MXNet parameter mode", "RFloat LinearMat output" },
+                            rejectedParameters = new[] { "missing immutable parameter buffer", "dynamic feature/image shape", "invalid size/ratio", "unproven output capacity", "activation ComputeBuffer", "CPU box generation/readback" }
                         }
                     };
                 case "ROIAlign":

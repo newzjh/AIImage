@@ -12,6 +12,50 @@ namespace Aexis.Execution
     {
         public AexisGeluLayer() : base(AexisLayerTypes.GELU, supportsBufferPath: true, supportsCommandBufferPath: true) { }
 
+        // ONNX Gelu defaults to the erf form. Native ncnn graphs retain their
+        // numeric fast flag in parameter 0; imported ONNX attributes override it.
+        internal static bool TryGetFastGelu(AexisGraphModel.Layer layer, out bool fast, out string reason)
+        {
+            fast = false;
+            reason = null;
+            var approximate = layer?.GetString("onnx.approximate", null);
+            if (string.IsNullOrWhiteSpace(approximate))
+                approximate = layer?.GetString("approximate", null);
+
+            if (!string.IsNullOrWhiteSpace(approximate))
+            {
+                if (string.Equals(approximate, "none", StringComparison.OrdinalIgnoreCase))
+                    return true;
+                if (string.Equals(approximate, "tanh", StringComparison.OrdinalIgnoreCase))
+                {
+                    fast = true;
+                    return true;
+                }
+
+                reason = "GELU approximate must be none or tanh, but was " + approximate + ".";
+                return false;
+            }
+
+            var nativeFast = layer?.GetInt(0, 0) ?? 0;
+            if (nativeFast == 0)
+                return true;
+            if (nativeFast == 1)
+            {
+                fast = true;
+                return true;
+            }
+
+            reason = "GELU fast parameter must be 0 or 1, but was " + nativeFast.ToString(CultureInfo.InvariantCulture) + ".";
+            return false;
+        }
+
+        private static bool GetFastGelu(AexisGraphModel.Layer layer)
+        {
+            if (TryGetFastGelu(layer, out var fast, out var reason))
+                return fast;
+            throw new InvalidOperationException(reason + " layer=" + (layer?.name ?? string.Empty));
+        }
+
         public override void ExecuteBuffer(AexisGraphSession owner, AexisGraphModel.Layer layer, AexisLayerBufferContext context)
         {
             if (!owner.ForceBufferGeluAll
@@ -75,24 +119,26 @@ namespace Aexis.Execution
             if (!AexisGraphSession.TryGetExistingTexture(textureBlobs, textureShapes, layer.bottomNames[0], out var srcTex, out var srcShape) || srcShape.dims > 3)
                 throw new InvalidOperationException("GELU render-texture path requires existing <=3D texture input: " + layer.name);
 
+            var fast = GetFastGelu(layer);
+
             if (AexisGraphSession.IsPack4LinearMatTexture(srcTex, srcShape))
             {
                 var storageShape = AexisGraphSession.GetTextureStorageShape(srcTex, srcShape);
                 var outRt = owner.RentTempArray(storageShape.w, storageShape.h, 1, srcTex.texture.format);
-                owner.Ops.GeluPack4(srcTex.texture, 1, false, outRt);
+                owner.Ops.GeluPack4(srcTex.texture, 1, fast, outRt);
                 AexisGraphSession.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, srcShape, storageShape);
             }
             else if (AexisGraphSession.IsStrictLinearMatTexture(srcTex))
             {
                 var storageShape = AexisGraphSession.GetTextureStorageShape(srcTex, srcShape);
                 var outRt = owner.RentTempMat(storageShape.w, storageShape.h, AexisGraphSession.ResolveLinearMatTextureFormat());
-                owner.Ops.GeluLinearMat(srcTex.texture, false, outRt);
+                owner.Ops.GeluLinearMat(srcTex.texture, fast, outRt);
                 AexisGraphSession.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, srcShape, storageShape);
             }
             else
             {
                 var outRt = owner.RentTempArray(srcTex.width, srcTex.height, srcTex.packs, RenderTextureFormat.ARGBHalf);
-                owner.Ops.GeluPack4(srcTex.texture, srcTex.packs, false, outRt);
+                owner.Ops.GeluPack4(srcTex.texture, srcTex.packs, fast, outRt);
                 AexisGraphSession.SetTextureBlob(textureBlobs, textureShapes, layer.topNames[0], outRt, srcShape);
             }
             owner.Consume(textureBlobs, context.bufferBlobs, context.bufferRefs, context.bufferViews, context.remaining, layer.bottomNames, context.pinnedNames);
@@ -109,7 +155,7 @@ namespace Aexis.Execution
                         {
                                                 var src = AexisGraphSession.GetCmdTensor(blobs, layer.bottomNames[0]);
                                                 var srcShape = AexisGraphSession.GetCmdShape(shapes, blobs, layer.bottomNames[0]);
-                                                var fast = layer.GetInt(0, 0) != 0;
+                                                var fast = GetFastGelu(layer);
                                                 if (AexisGraphSession.IsPack4LinearMatTexture(src, srcShape))
                                                 {
                                                     var storageShape = AexisGraphSession.GetCmdStorageShape(src, srcShape);

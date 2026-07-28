@@ -2222,6 +2222,10 @@ namespace Aexis.Execution
                     return VerifyStrictCommandBufferInstanceNorm(layer, inputs, request);
                 case "MVN":
                     return VerifyStrictCommandBufferMvn(layer, inputs, request);
+                case "Normalize":
+                    return VerifyStrictCommandBufferNormalize(layer, inputs, request);
+                case "PriorBox":
+                    return VerifyStrictCommandBufferPriorBox(layer, inputs, request);
                 case "Bias":
                     return VerifyStrictCommandBufferBias(layer, inputs, request);
                 case "CopyTo":
@@ -4009,6 +4013,31 @@ namespace Aexis.Execution
             return !double.IsNaN(value) && !double.IsInfinity(value);
         }
 
+        private static bool AllFinite(float[] values)
+        {
+            if (values == null || values.Length == 0)
+                return false;
+            for (var index = 0; index < values.Length; index++)
+                if (!IsStrictFinite(values[index])) return false;
+            return true;
+        }
+
+        private static bool AllFinitePositive(float[] values)
+        {
+            if (values == null || values.Length == 0)
+                return false;
+            for (var index = 0; index < values.Length; index++)
+                if (!IsStrictFinite(values[index]) || values[index] <= 0f) return false;
+            return true;
+        }
+
+        private static bool AllFinitePositiveOrEmpty(float[] values)
+        {
+            if (values == null || values.Length == 0)
+                return true;
+            return AllFinitePositive(values);
+        }
+
         private static bool IsStrictExactRFloatInteger(double value)
         {
             const double MaxExactRFloatInteger = 16777216d;
@@ -4595,6 +4624,8 @@ namespace Aexis.Execution
                 return RejectStrictCommandBufferPack4Node(reason);
             if (input.dims < 1 || input.dims > 4)
                 return RejectStrictCommandBufferPack4Node("GELU has no verified CommandBuffer Pack4 path for this rank.");
+            if (!AexisGeluLayer.TryGetFastGelu(layer, out _, out var geluReason))
+                return RejectStrictCommandBufferPack4Node(geluReason);
             return AcceptStrictCommandBufferPack4Node(layer, input, CopyStrictStorage(inputs[0]), request, "command-buffer-pack4:gelu");
         }
 
@@ -5286,6 +5317,94 @@ namespace Aexis.Execution
             }
             verification.scratch = scratch.ToArray();
             return verification;
+        }
+
+        private AexisTextureExecutionPlanNodeVerification VerifyStrictCommandBufferNormalize(
+            AexisGraphModel.Layer layer,
+            IReadOnlyList<AexisTexturePlanTensorDescriptor> inputs,
+            AexisTextureExecutionPlanRequest request)
+        {
+            if (!TryGetSingleStrictPlanShape(inputs, out var input, out var reason))
+                return RejectStrictCommandBufferPack4Node(reason);
+            if ((input.dims != 3 && input.dims != 4) || !HasStrictExactPack4Storage(inputs[0], input))
+                return RejectStrictCommandBufferPack4Node("Normalize requires an exact static rank-3/rank-4 Pack4 activation texture.");
+            if (!_extraPacks.TryGetValue(layer.name, out var packObject) || packObject is not NormalizePack pack)
+                return RejectStrictCommandBufferPack4Node("Normalize immutable scale parameters were not loaded.");
+            var requiredScales = pack.channelShared ? 1 : input.c;
+            if (pack.scale == null || pack.scaleDataSize != requiredScales || pack.scaleCpu == null || pack.scaleCpu.Length != requiredScales)
+                return RejectStrictCommandBufferPack4Node("Normalize requires an immutable scale tensor with exactly " + requiredScales.ToString(CultureInfo.InvariantCulture) + " entries for this Pack4 channel profile.");
+            if (!IsStrictFinite(pack.eps) || pack.eps <= 0f || pack.epsMode < 0 || pack.epsMode > 2)
+                return RejectStrictCommandBufferPack4Node("Normalize epsilon must be finite and positive and eps_mode must be 0, 1, or 2.");
+            for (var index = 0; index < pack.scaleCpu.Length; index++)
+                if (!IsStrictFinite(pack.scaleCpu[index]))
+                    return RejectStrictCommandBufferPack4Node("Normalize immutable scale contains a non-finite value.");
+
+            return AcceptStrictCommandBufferPack4Node(
+                layer,
+                input,
+                CopyStrictStorage(inputs[0]),
+                request,
+                "command-buffer-pack4:normalize");
+        }
+
+        private AexisTextureExecutionPlanNodeVerification VerifyStrictCommandBufferPriorBox(
+            AexisGraphModel.Layer layer,
+            IReadOnlyList<AexisTexturePlanTensorDescriptor> inputs,
+            AexisTextureExecutionPlanRequest request)
+        {
+            if (inputs == null || inputs.Count < 1 || inputs.Count > 2 || layer?.topNames == null || layer.topNames.Length != 1)
+                return RejectStrictCommandBufferPack4Node("PriorBox requires one feature texture, an optional image texture, and one output.");
+            if (!TryGetStrictPlanShapes(inputs, out var shapes, out var reason))
+                return RejectStrictCommandBufferPack4Node(reason);
+            for (var index = 0; index < shapes.Length; index++)
+                if (!HasStrictExactPack4Storage(inputs[index], shapes[index]))
+                    return RejectStrictCommandBufferPack4Node("PriorBox input " + index.ToString(CultureInfo.InvariantCulture) + " requires exact Pack4 texture storage.");
+            var feature = shapes[0];
+            if (feature.dims < 2 || feature.w <= 0 || feature.h <= 0)
+                return RejectStrictCommandBufferPack4Node("PriorBox feature map requires positive static width and height.");
+            if (!_extraPacks.TryGetValue(layer.name, out var packObject) || packObject is not PriorBoxPack pack)
+                return RejectStrictCommandBufferPack4Node("PriorBox immutable parameter buffers were not loaded.");
+            if (pack.minSizeBuffer == null || pack.maxSizeBuffer == null || pack.aspectRatioBuffer == null || pack.varianceBuffer == null
+                || pack.minSizes == null || pack.minSizes.Length == 0 || pack.variances == null || pack.variances.Length != 4)
+            {
+                return RejectStrictCommandBufferPack4Node("PriorBox requires loaded immutable min_size, max_size, aspect_ratio, and variance parameter buffers.");
+            }
+            if (!AllFinitePositive(pack.minSizes) || !AllFinitePositiveOrEmpty(pack.maxSizes) || !AllFinitePositiveOrEmpty(pack.aspectRatios)
+                || !AllFinite(pack.variances) || !IsStrictFinite(pack.offset) || !IsStrictFinite(pack.stepWidth) || !IsStrictFinite(pack.stepHeight))
+            {
+                return RejectStrictCommandBufferPack4Node("PriorBox immutable sizes/ratios and scalar parameters must be finite, with positive sizes and ratios.");
+            }
+
+            var useMxnet = inputs.Count == 1 && pack.imageWidth == -233 && pack.imageHeight == -233 && pack.maxSizes.Length == 0;
+            BufferShape output;
+            if (useMxnet)
+            {
+                var numPrior = checked(pack.minSizes.Length - 1 + pack.aspectRatios.Length);
+                if (numPrior <= 0)
+                    return RejectStrictCommandBufferPack4Node("PriorBox MXNet profile resolves no prior boxes.");
+                output = new BufferShape(1, checked(4 * feature.w * feature.h * numPrior), 1, 1, 1);
+            }
+            else
+            {
+                var imageW = pack.imageWidth == -233 ? (inputs.Count == 2 ? shapes[1].w : 0) : pack.imageWidth;
+                var imageH = pack.imageHeight == -233 ? (inputs.Count == 2 ? shapes[1].h : 0) : pack.imageHeight;
+                if (imageW <= 0 || imageH <= 0)
+                    return RejectStrictCommandBufferPack4Node("PriorBox requires positive static image dimensions or a second static image texture when dimensions are -233.");
+                if (pack.maxSizes.Length != 0 && pack.maxSizes.Length != pack.minSizes.Length)
+                    return RejectStrictCommandBufferPack4Node("PriorBox max_size count must be zero or match min_size count.");
+                var numPrior = checked(pack.minSizes.Length * pack.aspectRatios.Length + pack.minSizes.Length + pack.maxSizes.Length
+                    + (pack.flip ? pack.minSizes.Length * pack.aspectRatios.Length : 0));
+                if (numPrior <= 0)
+                    return RejectStrictCommandBufferPack4Node("PriorBox Caffe profile resolves no prior boxes.");
+                output = new BufferShape(2, checked(4 * feature.w * feature.h * numPrior), 2, 1, 1);
+            }
+
+            return AcceptStrictLinearTextureNode(
+                layer,
+                request,
+                "command-buffer-linearmat:priorbox",
+                new[] { output },
+                new[] { "Float32" });
         }
 
         private static AexisTextureExecutionPlanNodeVerification VerifyStrictCommandBufferPadding(
@@ -9628,7 +9747,8 @@ namespace Aexis.Execution
                     var src = GetCmdTensor(blobs, l.bottomNames[0]);
                     var srcShape = GetCmdShape(null, blobs, l.bottomNames[0]);
                     var storageShape = GetCmdStorageShape(src, srcShape);
-                    var fast = l.GetInt(0, 0) != 0;
+                    if (!AexisGeluLayer.TryGetFastGelu(l, out var fast, out var geluReason))
+                        throw new InvalidOperationException(geluReason + " layer=" + (l.name ?? string.Empty));
                     var outArr = RentTempArray(cmd, src.width, src.height, src.packs, RenderTextureFormat.ARGBHalf);
                     _ops.GeluPack4(cmd, src.texture, src.packs, fast, outArr);
                     blobs[l.topNames[0]] = CreateCmdTensorRef(outArr, srcShape, storageShape, owned: true, blobName: l.topNames[0]);

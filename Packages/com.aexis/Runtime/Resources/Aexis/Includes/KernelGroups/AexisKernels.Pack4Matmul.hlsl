@@ -3,6 +3,50 @@
 #define NCNN_SDPA_Q_CACHE_FLOATS 1024
 groupshared float _SdpaQCache[NCNN_SDPA_Q_CACHE_FLOATS];
 
+float AexisErfApprox(float x)
+{
+    // Abramowitz-Stegun 7.1.26: maximum error is below 1.5e-7, sufficient
+    // for the ONNX/Sentis GELU erf contract on graphics APIs without erf().
+    const float p = 0.3275911;
+    const float a1 = 0.254829592;
+    const float a2 = -0.284496736;
+    const float a3 = 1.421413741;
+    const float a4 = -1.453152027;
+    const float a5 = 1.061405429;
+    float ax = abs(x);
+    float t = 1.0 / (1.0 + p * ax);
+    float y = 1.0 - (((((a5 * t + a4) * t + a3) * t + a2) * t + a1) * t) * exp(-ax * ax);
+    return x < 0.0 ? -y : y;
+}
+
+float4 AexisErfApprox(float4 x)
+{
+    return float4(AexisErfApprox(x.x), AexisErfApprox(x.y), AexisErfApprox(x.z), AexisErfApprox(x.w));
+}
+
+float AexisGeluExact(float x)
+{
+    return 0.5 * x * (1.0 + AexisErfApprox(x * 0.7071067811865475));
+}
+
+float4 AexisGeluExact(float4 x)
+{
+    return 0.5 * x * (1.0 + AexisErfApprox(x * 0.7071067811865475));
+}
+
+float AexisGeluFast(float x)
+{
+    float t = clamp(0.79788452 * (x + 0.044715 * x * x * x), -10.0, 10.0);
+    return 0.5 * x * (1.0 + tanh(t));
+}
+
+float4 AexisGeluFast(float4 x)
+{
+    float4 x3 = x * x * x;
+    float4 t = clamp(0.79788452 * (x + 0.044715 * x3), -10.0, 10.0);
+    return 0.5 * x * (1.0 + tanh(t));
+}
+
 float AexisApplyUnaryOpLinearScalar(float x)
 {
     float y = x;
@@ -56,9 +100,7 @@ float AexisApplySigmoidLinearScalar(float x)
 
 float AexisApplyGeluLinearScalar(float x)
 {
-    float x3 = x * x * x;
-    float t = clamp(0.79788452 * (x + 0.044715 * x3), -10.0, 10.0);
-    return 0.5 * x * (1.0 + tanh(t));
+    return _GeluFast != 0 ? AexisGeluFast(x) : AexisGeluExact(x);
 }
 
 void AexisSwishPack4_Impl(uint3 id)
@@ -117,9 +159,7 @@ void AexisGeluPack4_Impl(uint3 id)
     int p = (int)id.z;
     if (p < 0 || p >= (int)d) return;
     float4 x = _ActInArr[int3((int)id.x, (int)id.y, p)];
-    float4 x3 = x * x * x;
-    float4 t = clamp(0.79788452 * (x + 0.044715 * x3), -10.0, 10.0);
-    float4 y = 0.5 * x * (1.0 + tanh(t));
+    float4 y = _GeluFast != 0 ? AexisGeluFast(x) : AexisGeluExact(x);
     _ActOutArr[int3((int)id.x, (int)id.y, p)] = y;
 }
 

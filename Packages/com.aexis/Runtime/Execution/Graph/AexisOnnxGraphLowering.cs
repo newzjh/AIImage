@@ -90,7 +90,10 @@ namespace Aexis.Execution
     public static class AexisOnnxGraphLowering
     {
         private const int MinimumSupportedOpset = 7;
-        private const int MaximumSupportedOpset = 19;
+        // ONNX Gelu was introduced at opset 20. Its exact and tanh Pack4
+        // CommandBuffer paths have explicit golden coverage, so 20 is the
+        // highest import contract we can claim.
+        private const int MaximumSupportedOpset = 20;
 
         private readonly struct OperatorSchema
         {
@@ -113,7 +116,7 @@ namespace Aexis.Execution
         private static readonly Dictionary<string, OperatorSchema> OperatorSchemas = CreateOperatorSchemas();
         private static readonly Dictionary<string, string> OperatorMap = new Dictionary<string, string>(StringComparer.Ordinal)
         {
-            { "Identity", "Noop" }, { "Dropout", "Dropout" }, { "Relu", "ReLU" }, { "Sigmoid", "Sigmoid" },
+            { "Identity", "Noop" }, { "Dropout", "Dropout" }, { "Relu", "ReLU" }, { "Relu6", "Clip" }, { "Sigmoid", "Sigmoid" },
             { "Tanh", "TanH" }, { "Abs", "AbsVal" }, { "Exp", "Exp" }, { "Log", "Log" },
             { "Celu", "CELU" }, { "Elu", "ELU" }, { "Erf", "Erf" }, { "Gelu", "GELU" },
             { "HardSigmoid", "HardSigmoid" }, { "HardSwish", "HardSwish" }, { "LeakyRelu", "ReLU" },
@@ -163,11 +166,11 @@ namespace Aexis.Execution
         // away from native .param UnaryOp layers.
         private static readonly Dictionary<string, int> UnaryOps = new Dictionary<string, int>(StringComparer.Ordinal)
         {
-            { "Neg", 1 }, { "Floor", 2 }, { "Ceil", 3 }, { "Sqrt", 5 },
-            { "Reciprocal", 15 }, { "Sin", 9 }, { "Cos", 10 }, { "Tan", 11 },
+            { "Neg", 1 }, { "Floor", 2 }, { "Ceil", 3 }, { "Square", 4 }, { "Sqrt", 5 }, { "Rsqrt", 6 },
+            { "Reciprocal", 15 }, { "Log10", 17 }, { "Sin", 9 }, { "Cos", 10 }, { "Tan", 11 },
             { "Asin", 12 }, { "Acos", 13 }, { "Atan", 14 }, { "Round", 18 },
-            { "Sign", 20 }, { "Sinh", 22 }, { "Asinh", 23 }, { "Cosh", 24 },
-            { "Acosh", 25 }, { "Atanh", 26 }, { "Not", 28 }
+            { "Trunc", 19 }, { "Sign", 20 }, { "Expm1", 21 }, { "Sinh", 22 }, { "Asinh", 23 }, { "Cosh", 24 },
+            { "Acosh", 25 }, { "Atanh", 26 }, { "Log1p", 27 }, { "Not", 28 }
         };
 
         public static AexisOnnxGraphLoweringResult Import(string path, AexisOnnxGraphLoweringOptions options = null)
@@ -680,12 +683,12 @@ namespace Aexis.Execution
             }
 
             Add(new OperatorSchema(1, 1, 1, 1),
-                "Identity", "Relu", "Sigmoid", "Tanh", "Abs", "Exp", "Log", "Celu", "Elu", "Erf", "Gelu",
+                "Identity", "Relu", "Relu6", "Sigmoid", "Tanh", "Abs", "Exp", "Log", "Celu", "Elu", "Erf", "Gelu",
                 "HardSigmoid", "HardSwish", "LeakyRelu", "Selu", "Softplus", "Softsign", "Shrink", "IsInf", "IsNaN",
                 "Swish", "ThresholdedRelu", "LRN", "DepthToSpace", "SpaceToDepth", "GlobalAveragePool", "GlobalMaxPool",
                 "Softmax", "LogSoftmax", "Hardmax", "Transpose", "Flatten", "Shape", "Size", "ArgMax", "ArgMin",
-                "NonZero", "Neg", "Floor", "Ceil", "Sqrt", "Reciprocal", "Sin", "Cos", "Tan", "Asin", "Acos",
-                "Atan", "Round", "Sign", "Sinh", "Asinh", "Cosh", "Acosh", "Atanh", "Not", "ExtractImagePatches");
+                "NonZero", "Neg", "Floor", "Ceil", "Square", "Sqrt", "Rsqrt", "Reciprocal", "Log10", "Sin", "Cos", "Tan", "Asin", "Acos",
+                "Atan", "Round", "Trunc", "Sign", "Expm1", "Sinh", "Asinh", "Cosh", "Acosh", "Atanh", "Log1p", "Not", "ExtractImagePatches");
             Add(new OperatorSchema(1, 1, 1, 1), "RandomUniformLike", "RandomNormalLike");
             Add(new OperatorSchema(0, 0, 1, 1), "RandomUniform", "RandomNormal");
             Add(new OperatorSchema(1, 1, 1, 1, 7), "Multinomial");
@@ -749,6 +752,7 @@ namespace Aexis.Execution
                 case "NonMaxSuppression": return 10;
                 case "GridSample": return 16;
                 case "CastLike": return 15;
+                case "Gelu": return 20;
                 default: return schemaMinimum;
             }
         }
@@ -762,13 +766,13 @@ namespace Aexis.Execution
             {
                 diagnostics.Add(Diagnostic(-1, model.graph.name, "Graph", "missing-default-opset",
                     "The ONNX model does not declare an ai.onnx default-domain opset.",
-                    "Export a model with an ai.onnx opset in the supported 7 through 19 range.", options.requireDeclaredGraphOutputs));
+                    "Export a model with an ai.onnx opset in the supported 7 through 20 range.", options.requireDeclaredGraphOutputs));
             }
             else if (model.opset < MinimumSupportedOpset || model.opset > MaximumSupportedOpset)
             {
                 diagnostics.Add(Diagnostic(-1, model.graph.name, "Graph", "unsupported-opset",
-                    "ONNX opset " + model.opset.ToString(CultureInfo.InvariantCulture) + " is outside the verified Aexis range 7 through 19.",
-                    "Re-export with opset 7 through 19 or extend the schema, lowering, and GPU golden coverage before import.", true));
+                    "ONNX opset " + model.opset.ToString(CultureInfo.InvariantCulture) + " is outside the verified Aexis range 7 through 20.",
+                    "Re-export with opset 7 through 20 or extend the schema, lowering, and GPU golden coverage before import.", true));
             }
 
             var available = new HashSet<string>(StringComparer.Ordinal);
@@ -1206,6 +1210,35 @@ namespace Aexis.Execution
             if (string.Equals(node.opType, "Mod", StringComparison.Ordinal))
             {
                 layer.intParams[0] = GetInt(node, "fmod", 0) != 0 ? "12" : "19";
+            }
+
+            if (string.Equals(node.opType, "Gelu", StringComparison.Ordinal))
+            {
+                var approximate = GetString(node, "approximate");
+                if (string.IsNullOrWhiteSpace(approximate))
+                    approximate = "none";
+                if (!string.Equals(approximate, "none", StringComparison.Ordinal)
+                    && !string.Equals(approximate, "tanh", StringComparison.Ordinal))
+                {
+                    diagnostics.Add(Diagnostic(index, layer.name, node.opType, "unsupported-gelu-approximation",
+                        "Gelu approximate must be none or tanh for the verified Pack4 profile, but was " + approximate + ".",
+                        "Export Gelu with approximate=none or approximate=tanh.", true));
+                }
+                else
+                {
+                    layer.intParams[0] = string.Equals(approximate, "tanh", StringComparison.Ordinal) ? "1" : "0";
+                    layer.stringParams["onnx.approximate"] = approximate;
+                }
+            }
+
+            // Sentis exposes Relu6 as a first-class layer. Its exact semantics
+            // are the existing texture-native Clip [0,6] kernel, so preserve the
+            // single Pack4 dispatch rather than expanding it into two operations.
+            if (string.Equals(node.opType, "Relu6", StringComparison.Ordinal))
+            {
+                layer.intParams[0] = "0";
+                layer.intParams[1] = "6";
+                layer.stringParams["aexis.source_op"] = "Relu6";
             }
 
             if (string.Equals(node.opType, "RandomUniformLike", StringComparison.Ordinal)

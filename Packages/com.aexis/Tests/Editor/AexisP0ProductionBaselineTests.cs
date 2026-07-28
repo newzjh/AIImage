@@ -85,6 +85,179 @@ namespace Aexis.Tests.Editor
         }
 
         [Test]
+        public void OnnxLowering_NcnnAndSentisUnaryExtensionsUseStrictPack4CommandBufferAbi()
+        {
+            RequireArgbFloatCompute();
+            var model = new OnnxModel { opset = 13 };
+            model.graph.inputs.Add(Value("x", TensorDataType.Float32, 1, 5, 1, 1));
+            model.graph.outputs.Add(Value("y", TensorDataType.Float32, 1, 5, 1, 1));
+            model.graph.nodes.Add(Node("relu6", "Relu6", new[] { "x" }, new[] { "clamped" }));
+            model.graph.nodes.Add(Node("square", "Square", new[] { "clamped" }, new[] { "squared" }));
+            model.graph.nodes.Add(Node("rsqrt", "Rsqrt", new[] { "squared" }, new[] { "y" }));
+
+            var lowered = AexisOnnxGraphLowering.Lower(model);
+            Assert.That(lowered.IsEligible, Is.True, DescribeLowering(lowered));
+            var clipLayer = lowered.graph.layers.Single(layer => string.Equals(layer.typeName, "Clip", StringComparison.Ordinal));
+            Assert.That(clipLayer.GetFloat(0), Is.EqualTo(0f));
+            Assert.That(clipLayer.GetFloat(1), Is.EqualTo(6f));
+            var unaryLayers = lowered.graph.layers.Where(layer => string.Equals(layer.typeName, "UnaryOp", StringComparison.Ordinal)).ToArray();
+            Assert.That(unaryLayers.Select(layer => layer.typeName), Is.EqualTo(new[] { "UnaryOp", "UnaryOp" }));
+            Assert.That(unaryLayers.Select(layer => layer.GetInt(0)), Is.EqualTo(new[] { 4, 6 }),
+                "The lowering must retain ncnn UnaryOp::Operation_SQUARE and Operation_RSQRT ABI values.");
+
+            var compiled = AexisOnnxGraphCompiler.Compile(lowered);
+            using var ops = new AexisOps();
+            using var session = new AexisGraphSession(ops)
+            {
+                TensorTextureFormat = RenderTextureFormat.ARGBFloat,
+                StrictTextureTargetDtype = "FP32"
+            };
+            compiled.LoadInto(session);
+            var report = session.AnalyzeLoadedModelPreflight(StrictTextureRequest(new[] { Texture("x", 3, 1, 1, 1, 5) }));
+            Assert.That(report.strictEligible, Is.True, DescribeReport(report));
+            Assert.That(report.texturePlan.nodes.Where(node => !string.Equals(node.executionPath, "external-pack4-input", StringComparison.Ordinal)).Select(node => node.executionPath),
+                Is.EqualTo(new[] { "command-buffer-pack4:pointwise-clip", "command-buffer-pack4:unary", "command-buffer-pack4:unary" }), DescribeReport(report));
+
+            using var commandBuffer = new CommandBuffer { name = "AexisNcnnUnaryExtensionsPack4Golden" };
+            var inputUpload = CreatePack4Array(new[]
+            {
+                1f, 2f, 7f, 8f,
+                3f, -7f, 99f, -13f
+            }, 1, 1, 2);
+            var outputReadback = CreatePack4Target(1, 1, 2);
+            ComputeTexture input = null;
+            try
+            {
+                input = session.RentTempArray(commandBuffer, 1, 1, 2, RenderTextureFormat.ARGBFloat);
+                commandBuffer.CopyTexture(inputUpload, 0, 0, input.nameID, 0, 0);
+                commandBuffer.CopyTexture(inputUpload, 1, 0, input.nameID, 1, 0);
+                using (var execution = session.ForwardPack4Outputs(
+                    commandBuffer,
+                    new Dictionary<string, ComputeTexture>(StringComparer.Ordinal) { ["x"] = input },
+                    new Dictionary<string, AexisGraphSession.BufferShape>(StringComparer.Ordinal)
+                    {
+                        ["x"] = new AexisGraphSession.BufferShape(3, 1, 1, 1, 5)
+                    },
+                    new[] { "y" }))
+                {
+                    commandBuffer.CopyTexture(execution.GetTexture("y").nameID, 0, 0, outputReadback, 0, 0);
+                    commandBuffer.CopyTexture(execution.GetTexture("y").nameID, 1, 0, outputReadback, 1, 0);
+                }
+                session.ReturnTempArray(commandBuffer, input);
+                input = null;
+                Graphics.ExecuteCommandBuffer(commandBuffer);
+
+                Assert.That(session.LastTextureExecutionPlan.strictEligible, Is.True, session.LastTextureExecutionPlan.summary);
+                Assert.That(session.LastCommandBufferRtArena.unplannedTextureAllocations, Is.Zero);
+                Assert.That(session.LastCommandBufferRtArena.allPlannedResourcesBound, Is.True);
+                Assert.That(session.LastCommandBufferRtArena.allBoundResourcesReleased, Is.True);
+                Assert.That(ReadPack4Slice(outputReadback, 0), Is.EqualTo(new[] { 1f, 0.5f, 1f / 6f, 1f / 6f }).Within(2e-6f));
+                Assert.That(ReadPack4Slice(outputReadback, 1), Is.EqualTo(new[] { 1f / 3f, 0f, 0f, 0f }).Within(2e-6f));
+            }
+            finally
+            {
+                if (input != null)
+                    session.ReturnTempArray(commandBuffer, input);
+                UnityEngine.Object.DestroyImmediate(inputUpload);
+                UnityEngine.Object.DestroyImmediate(outputReadback);
+            }
+        }
+
+        [TestCase("none", false)]
+        [TestCase("tanh", true)]
+        public void OnnxGelu_UsesDeclaredApproximationOnStrictPack4CommandBuffer(string approximate, bool fast)
+        {
+            RequireArgbFloatCompute();
+            var model = new OnnxModel { opset = 20 };
+            model.graph.inputs.Add(Value("x", TensorDataType.Float32, 1, 5, 1, 1));
+            model.graph.outputs.Add(Value("y", TensorDataType.Float32, 1, 5, 1, 1));
+            var gelu = Node("gelu", "Gelu", new[] { "x" }, new[] { "y" });
+            gelu.attributes["approximate"] = StringAttribute(approximate);
+            model.graph.nodes.Add(gelu);
+
+            var lowered = AexisOnnxGraphLowering.Lower(model);
+            Assert.That(lowered.IsEligible, Is.True, DescribeLowering(lowered));
+            var layer = lowered.graph.layers.Single(candidate => string.Equals(candidate.typeName, "GELU", StringComparison.Ordinal));
+            Assert.That(layer.GetInt(0), Is.EqualTo(fast ? 1 : 0));
+            Assert.That(layer.GetString("onnx.approximate"), Is.EqualTo(approximate));
+
+            var compiled = AexisOnnxGraphCompiler.Compile(lowered);
+            using var ops = new AexisOps();
+            using var session = new AexisGraphSession(ops)
+            {
+                TensorTextureFormat = RenderTextureFormat.ARGBFloat,
+                StrictTextureTargetDtype = "FP32"
+            };
+            compiled.LoadInto(session);
+            var report = session.AnalyzeLoadedModelPreflight(StrictTextureRequest(new[] { Texture("x", 3, 1, 1, 1, 5) }));
+            Assert.That(report.strictEligible, Is.True, DescribeReport(report));
+            Assert.That(report.texturePlan.nodes.Single(candidate => candidate.layer == "gelu").executionPath,
+                Is.EqualTo("command-buffer-pack4:gelu"));
+
+            using var commandBuffer = new CommandBuffer { name = "AexisOnnxGeluPack4Golden" };
+            var inputUpload = CreatePack4Array(new[]
+            {
+                -2f, -1f, 0f, 1f,
+                2f, 0f, 0f, 0f
+            }, 1, 1, 2);
+            var outputReadback = CreatePack4Target(1, 1, 2);
+            ComputeTexture input = null;
+            try
+            {
+                input = session.RentTempArray(commandBuffer, 1, 1, 2, RenderTextureFormat.ARGBFloat);
+                commandBuffer.CopyTexture(inputUpload, 0, 0, input.nameID, 0, 0);
+                commandBuffer.CopyTexture(inputUpload, 1, 0, input.nameID, 1, 0);
+                using (var execution = session.ForwardPack4Outputs(
+                    commandBuffer,
+                    new Dictionary<string, ComputeTexture>(StringComparer.Ordinal) { ["x"] = input },
+                    new Dictionary<string, AexisGraphSession.BufferShape>(StringComparer.Ordinal)
+                    {
+                        ["x"] = new AexisGraphSession.BufferShape(3, 1, 1, 1, 5)
+                    },
+                    new[] { "y" }))
+                {
+                    commandBuffer.CopyTexture(execution.GetTexture("y").nameID, 0, 0, outputReadback, 0, 0);
+                    commandBuffer.CopyTexture(execution.GetTexture("y").nameID, 1, 0, outputReadback, 1, 0);
+                }
+                session.ReturnTempArray(commandBuffer, input);
+                input = null;
+                Graphics.ExecuteCommandBuffer(commandBuffer);
+
+                var expected = fast
+                    ? new[] { -0.0454023f, -0.1588080f, 0f, 0.8411920f, 1.9545977f }
+                    : new[] { -0.0455003f, -0.1586553f, 0f, 0.8413447f, 1.9544997f };
+                Assert.That(ReadPack4Slice(outputReadback, 0), Is.EqualTo(expected.Take(4).ToArray()).Within(4e-5f));
+                Assert.That(ReadPack4Slice(outputReadback, 1), Is.EqualTo(new[] { expected[4], 0f, 0f, 0f }).Within(4e-5f));
+                Assert.That(session.LastCommandBufferRtArena.unplannedTextureAllocations, Is.Zero);
+                Assert.That(session.LastCommandBufferRtArena.allPlannedResourcesBound, Is.True);
+                Assert.That(session.LastCommandBufferRtArena.allBoundResourcesReleased, Is.True);
+            }
+            finally
+            {
+                if (input != null)
+                    session.ReturnTempArray(commandBuffer, input);
+                UnityEngine.Object.DestroyImmediate(inputUpload);
+                UnityEngine.Object.DestroyImmediate(outputReadback);
+            }
+        }
+
+        [Test]
+        public void OnnxGelu_RejectsUnknownApproximationBeforeStrictExecution()
+        {
+            var model = new OnnxModel { opset = 20 };
+            model.graph.inputs.Add(Value("x", TensorDataType.Float32, 1, 4, 1, 1));
+            var gelu = Node("gelu", "Gelu", new[] { "x" }, new[] { "y" });
+            gelu.attributes["approximate"] = StringAttribute("erf_fast");
+            model.graph.nodes.Add(gelu);
+
+            var lowered = AexisOnnxGraphLowering.Lower(model);
+
+            Assert.That(lowered.IsEligible, Is.False, DescribeLowering(lowered));
+            Assert.That(lowered.diagnostics, Has.Some.Matches<AexisOnnxLoweringDiagnostic>(diagnostic =>
+                diagnostic.code == "unsupported-gelu-approximation" && diagnostic.blocking));
+        }
+
+        [Test]
         public void OnnxLowering_BoundedHighRankArenaKeepsLogicalRankAndPlansPack4Relu()
         {
             RequireArgbFloatCompute();
@@ -211,6 +384,86 @@ namespace Aexis.Tests.Editor
             Assert.That(layer.GetInt(5), Is.EqualTo(1));
             Assert.That(layer.GetInt(6), Is.EqualTo(108));
             Assert.That(layer.stringParams["onnx.weight"], Is.EqualTo("weight"));
+        }
+
+        [Test]
+        public void NcnnNormalizeAndPriorBox_LoadedProfilesRequireAndPlanTextureNativeContracts()
+        {
+            var normalize = SentisLayer("Normalize", new[] { "data" }, new[] { "normalized" });
+            normalize.intParams[0] = "1";
+            normalize.intParams[1] = "0";
+            normalize.intParams[2] = "0.0001";
+            normalize.intParams[3] = "3";
+            normalize.intParams[4] = "1";
+            normalize.intParams[9] = "0";
+            var normalizeReport = AnalyzeLoadedLayer(
+                normalize,
+                StrictTextureRequest(new[] { Texture("data", 3, 2, 2, 1, 3) }),
+                1f, 0.5f, 2f);
+
+            Assert.That(normalizeReport.strictEligible, Is.True, DescribeReport(normalizeReport));
+            Assert.That(normalizeReport.texturePlan.nodes.Single().executionPath,
+                Is.EqualTo("command-buffer-pack4:normalize"));
+
+            var priorBox = SentisLayer("PriorBox", new[] { "feature", "image" }, new[] { "priors" });
+            priorBox.intParams[-23300] = "2";
+            priorBox.intParams[-23302] = "2";
+            priorBox.intParams[3] = "0.1";
+            priorBox.intParams[4] = "0.1";
+            priorBox.intParams[5] = "0.2";
+            priorBox.intParams[6] = "0.2";
+            priorBox.intParams[7] = "0";
+            priorBox.intParams[8] = "0";
+            priorBox.intParams[9] = "-233";
+            priorBox.intParams[10] = "-233";
+            priorBox.intParams[11] = "-233";
+            priorBox.intParams[12] = "-233";
+            var priorReport = AnalyzeLoadedLayer(
+                priorBox,
+                StrictTextureRequest(new[]
+                {
+                    Texture("feature", 3, 2, 2, 1, 4),
+                    Texture("image", 3, 8, 8, 1, 3)
+                }));
+
+            Assert.That(priorReport.strictEligible, Is.True, DescribeReport(priorReport));
+            Assert.That(priorReport.texturePlan.nodes.Single().executionPath,
+                Is.EqualTo("command-buffer-linearmat:priorbox"));
+            Assert.That(priorReport.texturePlan.nodes.Single().outputs[0].logicalShape,
+                Is.EqualTo(new[] { 2, 32, 2, 1, 1 }));
+            Assert.That(priorReport.texturePlan.nodes.Single().outputs[0].dtype, Is.EqualTo("FP32"));
+        }
+
+        [Test]
+        public void NcnnCoreRegistry_ExposesOnlyCommandBufferProfilesOrExplicitDescriptorAliases()
+        {
+            // Snapshot of ref/ncnn-master/src/CMakeLists.txt ncnn_add_layer entries.
+            // The test keeps package capability metadata from claiming registry
+            // completeness while silently dropping a production operator.
+            var layers = new[]
+            {
+                "AbsVal", "ArgMax", "BatchNorm", "Bias", "BNLL", "Concat", "Convolution", "Crop", "Deconvolution", "Dropout", "Eltwise", "ELU", "Embed", "Exp", "Flatten", "InnerProduct", "Input", "Log", "LRN", "MemoryData", "MVN", "Pooling", "Power", "PReLU", "Proposal", "Reduction", "ReLU", "Reshape", "ROIPooling", "Scale", "Sigmoid", "Slice", "Softmax", "Split", "SPP", "TanH", "Threshold", "Tile", "RNN", "LSTM", "BinaryOp", "UnaryOp", "ConvolutionDepthWise", "Padding", "Squeeze", "ExpandDims", "Normalize", "Permute", "PriorBox", "DetectionOutput", "Interp", "DeconvolutionDepthWise", "ShuffleChannel", "InstanceNorm", "Clip", "Reorg", "YoloDetectionOutput", "Quantize", "Dequantize", "Yolov3DetectionOutput", "PSROIPooling", "ROIAlign", "Packing", "Requantize", "Cast", "HardSigmoid", "SELU", "HardSwish", "Noop", "PixelShuffle", "DeepCopy", "Mish", "StatisticsPooling", "Swish", "Gemm", "GroupNorm", "LayerNorm", "Softplus", "GRU", "MultiHeadAttention", "GELU", "Convolution1D", "Pooling1D", "ConvolutionDepthWise1D", "Convolution3D", "ConvolutionDepthWise3D", "Pooling3D", "MatMul", "Deconvolution1D", "DeconvolutionDepthWise1D", "Deconvolution3D", "DeconvolutionDepthWise3D", "Einsum", "DeformableConv2D", "GLU", "Fold", "Unfold", "GridSample", "CumulativeSum", "CopyTo", "Erf", "Diag", "CELU", "Shrink", "RMSNorm", "Spectrogram", "InverseSpectrogram", "Flip", "SDPA", "RotaryEmbed"
+            };
+            var aliases = new HashSet<string>(StringComparer.Ordinal)
+            {
+                "Input", "Split", "Dropout", "Noop", "DeepCopy"
+            };
+
+            foreach (var layer in layers)
+            {
+                Assert.That(AexisLayerFactory.IsRegistered(layer), Is.True, layer + " must remain registered.");
+                Assert.That(AexisOperatorCapabilities.TryGet(layer, out var capability), Is.True, layer + " must expose a capability document.");
+                if (aliases.Contains(layer))
+                {
+                    Assert.That(capability.status, Is.EqualTo(AexisOperatorCapabilityStatus.AliasOnly), layer);
+                    continue;
+                }
+
+                Assert.That(capability.profiles.Any(profile =>
+                    string.Equals(profile.backend, AexisOperatorCapabilityBackend.CommandBuffer, StringComparison.Ordinal)
+                    && profile.minInputs >= 0 && profile.maxOutputs != 0), Is.True,
+                    layer + " must retain a CommandBuffer production profile.");
+            }
         }
 
         [Test]
@@ -358,7 +611,7 @@ namespace Aexis.Tests.Editor
         [Test]
         public void OnnxLowering_RejectsUnsupportedOpsetAndOperatorBeforeIntroduction()
         {
-            var unsupported = new OnnxModel { opset = 20 };
+            var unsupported = new OnnxModel { opset = 21 };
             unsupported.graph.inputs.Add(Value("x", TensorDataType.Float32, 1));
             unsupported.graph.nodes.Add(Node("identity", "Identity", new[] { "x" }, new[] { "y" }));
             unsupported.graph.outputs.Add(Value("y", TensorDataType.Float32, 1));

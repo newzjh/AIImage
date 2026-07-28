@@ -251,6 +251,9 @@ public static class NcnnDebugRunner
             case nameof(RunCodeFormerDebugBatch):
                 RunCodeFormerDebugBatch();
                 return;
+            case nameof(RunCodeFormerEncoderPack4RegressionBatch):
+                RunCodeFormerEncoderPack4RegressionBatch();
+                return;
             case nameof(RunClipDebugBatch):
                 RunClipDebugBatch();
                 return;
@@ -774,10 +777,13 @@ public static class NcnnDebugRunner
                 throw new InvalidOperationException("Invalid " + MattingPrecisionEnvVar + ": " + configuredPrecision);
             runner.precisionMode = precisionMode;
             runner.forceBufferConvolution = false;
-            runner.useCommandBuffer = ResolveBoolEnv(MattingUseCommandBufferEnvVar, false);
+            // The released runner records the production Pack4 plan through a
+            // CommandBuffer. The immediate path remains an explicit diagnostic
+            // choice, never the sample's accidental fallback.
+            runner.useCommandBuffer = ResolveBoolEnv(MattingUseCommandBufferEnvVar, true);
             runner.useAsyncComputeCommandBuffer = runner.useCommandBuffer
                 && ResolveBoolEnv(MattingUseAsyncComputeEnvVar, false);
-            var mattingPack4OnlyGuard = ResolveBoolEnv(MattingPack4OnlyGuardEnvVar, false);
+            var mattingPack4OnlyGuard = ResolveBoolEnv(MattingPack4OnlyGuardEnvVar, true);
             runner.disallowBufferAccess = mattingPack4OnlyGuard;
             runner.disallowBufferOutputs = mattingPack4OnlyGuard;
             runner.disallowBufferToTextureMaterialization = mattingPack4OnlyGuard;
@@ -870,7 +876,7 @@ public static class NcnnDebugRunner
             runner.logAllLayerHeartbeats = ResolveBoolEnv(YoloLogAllLayerHeartbeatsEnvVar, false);
             runner.logAllLayerOutputs = ResolveBoolEnv(YoloLogAllLayerOutputsEnvVar, false);
             runner.logAllBufferMaterialize = ResolveBoolEnv(YoloLogAllBufferMaterializeEnvVar, false);
-            var yoloPack4OnlyGuard = ResolveBoolEnv(YoloPack4OnlyGuardEnvVar, false);
+            var yoloPack4OnlyGuard = ResolveBoolEnv(YoloPack4OnlyGuardEnvVar, true);
             runner.disallowBufferAccess = yoloPack4OnlyGuard;
             runner.disallowBufferOutputs = yoloPack4OnlyGuard;
             runner.disallowBufferToTextureMaterialization = yoloPack4OnlyGuard;
