@@ -184,10 +184,28 @@ namespace Aexis.Execution
             if (owner.UseNcnnStyleGroupNorm && CanUsePack4CmdPath(src, srcShape, gp))
             {
                 var logicalDepth = srcShape.dims == 4 ? Mathf.Max(1, srcShape.d) : 1;
-                var statsA = owner.RentTempArray(cmd, gp.group, 1, 1, RenderTextureFormat.ARGBFloat);
-                var statsB = owner.RentTempArray(cmd, gp.group, 1, 1, RenderTextureFormat.ARGBFloat);
+                var statsA = owner.RentTempArrayExactFormat(
+                    cmd,
+                    gp.group,
+                    1,
+                    1,
+                    RenderTextureFormat.ARGBFloat,
+                    AexisGraphSession.GetStrictPack4ScratchIdentity(layer, "groupnorm-stats-a"));
+                var statsB = owner.RentTempArrayExactFormat(
+                    cmd,
+                    gp.group,
+                    1,
+                    1,
+                    RenderTextureFormat.ARGBFloat,
+                    AexisGraphSession.GetStrictPack4ScratchIdentity(layer, "groupnorm-stats-b"));
                 var outDepth = srcShape.dims == 4 ? logicalDepth * src.packs : src.packs;
-                var outArr = owner.RentTempArray(cmd, src.width, src.height, outDepth, RenderTextureFormat.ARGBHalf);
+                var outArr = owner.RentTempArray(
+                    cmd,
+                    src.width,
+                    src.height,
+                    outDepth,
+                    RenderTextureFormat.ARGBHalf,
+                    layer.topNames[0]);
                 owner.Ops.GroupNormPack4Tex(cmd, src.texture, srcShape.w, srcShape.h, logicalDepth, srcShape.c, src.packs, gp.group, gp.eps, gp.gamma, gp.beta, statsA, statsB, outArr);
                 owner.ReturnTempArray(cmd, statsA);
                 owner.ReturnTempArray(cmd, statsB);
@@ -313,13 +331,31 @@ namespace Aexis.Execution
             var storageShape = AexisGraphSession.GetCmdStorageShape(src, srcShape);
             var pack4Shape = BuildLinearMatPack4Shape(srcShape, gp);
             var packCount = Mathf.Max(1, Mathf.CeilToInt(pack4Shape.c / 4f));
-            var statsA = owner.RentTempArray(cmd, gp.group, 1, 1, RenderTextureFormat.ARGBFloat);
-            var statsB = owner.RentTempArray(cmd, gp.group, 1, 1, RenderTextureFormat.ARGBFloat);
+            var statsA = owner.RentTempArrayExactFormat(
+                cmd,
+                gp.group,
+                1,
+                1,
+                RenderTextureFormat.ARGBFloat,
+                AexisGraphSession.GetStrictPack4ScratchIdentity(layer, "groupnorm-stats-a"));
+            var statsB = owner.RentTempArrayExactFormat(
+                cmd,
+                gp.group,
+                1,
+                1,
+                RenderTextureFormat.ARGBFloat,
+                AexisGraphSession.GetStrictPack4ScratchIdentity(layer, "groupnorm-stats-b"));
             ComputeTexture materializedInput = null;
             ComputeTexture outArr = null;
             try
             {
-                materializedInput = owner.RentTempArray(cmd, pack4Shape.w, pack4Shape.h, packCount, RenderTextureFormat.ARGBFloat);
+                materializedInput = owner.RentTempArrayExactFormat(
+                    cmd,
+                    pack4Shape.w,
+                    pack4Shape.h,
+                    packCount,
+                    RenderTextureFormat.ARGBFloat,
+                    AexisGraphSession.GetStrictPack4ScratchIdentity(layer, "groupnorm-linear-packed-input"));
                 owner.Ops.ReshapeLinearMatToPack4(
                     cmd,
                     src.texture,
@@ -332,7 +368,13 @@ namespace Aexis.Execution
                     pack4Shape.dims,
                     materializedInput);
 
-                outArr = owner.RentTempArray(cmd, pack4Shape.w, pack4Shape.h, packCount, RenderTextureFormat.ARGBFloat);
+                outArr = owner.RentTempArrayExactFormat(
+                    cmd,
+                    pack4Shape.w,
+                    pack4Shape.h,
+                    packCount,
+                    RenderTextureFormat.ARGBFloat,
+                    AexisGraphSession.GetStrictPack4ScratchIdentity(layer, "groupnorm-linear-packed-output"));
                 owner.Ops.GroupNormPack4Tex(
                     cmd,
                     materializedInput,

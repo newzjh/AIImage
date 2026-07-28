@@ -250,6 +250,10 @@ namespace Aexis.Execution
         public string trackerLabel;
         public bool isTemporary;
         public bool isReleased;
+        // Non-negative only while a CommandBuffer graph activation is bound to
+        // a compiled static RT-arena slot. Kernel-local temporary textures keep
+        // this at -1 and retain their normal CommandBuffer lifetime.
+        public int arenaSlot = -1;
         public AexisTemporaryRtDescriptor temporaryDescriptor;
     }
 
@@ -367,6 +371,8 @@ namespace Aexis.Execution
         private readonly int _kConv3dBuf;
         private readonly int _kConv3dPack4Cdhw16x4;
         private readonly int _kConv3dPack4CdhwTile3x3;
+        private readonly int _kConvDepthWise3dPack4Cdhw;
+        private readonly int _kDeconvolutionDepthWise3dPack4Cdhw;
         private readonly int _kDeconvolutionBuf;
         private readonly int _kDeconvolution3dPack4Cdhw;
         private readonly int _kDeconvolution3dBuf;
@@ -412,6 +418,8 @@ namespace Aexis.Execution
         private readonly int _kConcatPack4Cdhw;
         private readonly int _kConcatSequencePack4Cdhw;
         private readonly int _kAppendSequencePack4Cdhw;
+        private readonly int _kDeterministicRandomPack4;
+        private readonly int _kMultinomialPack4;
         private readonly int _kBuildSdInpaintInput9Pack4;
         private readonly int _kInterpPack4;
         private readonly int _kInterpPack4Nearest;
@@ -453,6 +461,7 @@ namespace Aexis.Execution
         private readonly int _kAexisCompressLinearMat;
         private readonly int _kAexisGatherNdLinearMat;
         private readonly int _kAexisScatterLinearMat;
+        private readonly int _kAexisNonMaxSuppressionPack4;
         private readonly int _kScalePack4;
         private readonly int _kAddBiasPack4;
         private readonly int _kBatchNormPack4;
@@ -476,12 +485,18 @@ namespace Aexis.Execution
         private readonly int _kSoftmaxChannelPack4;
         private readonly int _kSoftmaxLinearMat2D;
         private readonly int _kSoftmaxPack4LinearMat2D;
+        private readonly int _kStatisticsPoolingPack4;
+        private readonly int _kSpectrogramPack4;
+        private readonly int _kInverseSpectrogramPack4;
+        private readonly int _kRecurrentPack4;
+        private readonly int _kStaticRandomPack4;
         private readonly int _kUnaryOpPack4;
         private readonly int _kUnaryOpLinearMat;
         private readonly int _kTriluPack4;
         private readonly int _kTriluLinearMat;
         private readonly int _kBinaryOpLinearMat;
         private readonly int _kBinaryOpLinearMatFixedInputScalar;
+        private readonly int _kBinaryOpLinearMatScalarArray;
         private readonly int _kBinaryOpPack4;
         private readonly int _kBinaryOpPack4LinearMixed;
         private readonly int _kBinaryOpPack4LinearMixedArray;
@@ -920,6 +935,8 @@ namespace Aexis.Execution
             _kConv3dBuf = _cs.FindKernel("AexisConv3dBuf");
             _kConv3dPack4Cdhw16x4 = _cs.FindKernel("AexisConv3dPack4CDHW16x4");
             _kConv3dPack4CdhwTile3x3 = _cs.FindKernel("AexisConv3dPack4CDHWTile3x3");
+            _kConvDepthWise3dPack4Cdhw = _cs.FindKernel("AexisConvDepthWise3dPack4CDHW");
+            _kDeconvolutionDepthWise3dPack4Cdhw = _cs.FindKernel("AexisDeconvolutionDepthWise3dPack4CDHW");
             _kDeconvolutionBuf = _cs.FindKernel("AexisDeconvolutionBuf");
             _kDeconvolution3dPack4Cdhw = _cs.FindKernel("AexisDeconvolution3dPack4CDHW");
             _kDeconvolution3dBuf = _cs.FindKernel("AexisDeconvolution3dBuf");
@@ -959,6 +976,8 @@ namespace Aexis.Execution
             _kConcatPack4Cdhw = _cs.FindKernel("AexisConcatPack4CDHW");
             _kConcatSequencePack4Cdhw = _cs.FindKernel("AexisConcatSequencePack4CDHW");
             _kAppendSequencePack4Cdhw = _cs.FindKernel("AexisAppendSequencePack4CDHW");
+            _kDeterministicRandomPack4 = _cs.FindKernel("AexisDeterministicRandomPack4");
+            _kMultinomialPack4 = _cs.FindKernel("AexisMultinomialPack4");
             _kBuildSdInpaintInput9Pack4 = _cs.FindKernel("AexisBuildSdInpaintInput9Pack4");
             _kInterpPack4 = _cs.FindKernel("AexisInterpPack4");
             _kInterpPack4Nearest = _cs.FindKernel("AexisInterpPack4Nearest");
@@ -1000,6 +1019,7 @@ namespace Aexis.Execution
             _kAexisCompressLinearMat = _cs.FindKernel("AexisCompressLinearMat");
             _kAexisGatherNdLinearMat = _cs.FindKernel("AexisGatherNDLinearMat");
             _kAexisScatterLinearMat = _cs.FindKernel("AexisScatterLinearMat");
+            _kAexisNonMaxSuppressionPack4 = _cs.FindKernel("AexisNonMaxSuppressionPack4");
             _kScalePack4 = _cs.FindKernel("AexisScalePack4");
             _kAddBiasPack4 = _cs.FindKernel("AexisAddBiasPack4");
             _kBatchNormPack4 = _cs.FindKernel("AexisBatchNormPack4");
@@ -1023,12 +1043,18 @@ namespace Aexis.Execution
             _kSoftmaxChannelPack4 = _cs.FindKernel("AexisSoftmaxChannelPack4");
             _kSoftmaxLinearMat2D = _cs.FindKernel("AexisSoftmaxLinearMat2D");
             _kSoftmaxPack4LinearMat2D = _cs.FindKernel("AexisSoftmaxPack4LinearMat2D");
+            _kStatisticsPoolingPack4 = _cs.FindKernel("AexisStatisticsPoolingPack4");
+            _kSpectrogramPack4 = _cs.FindKernel("AexisSpectrogramPack4");
+            _kInverseSpectrogramPack4 = _cs.FindKernel("AexisInverseSpectrogramPack4");
+            _kRecurrentPack4 = _cs.FindKernel("AexisRecurrentPack4");
+            _kStaticRandomPack4 = _cs.FindKernel("AexisStaticRandomPack4");
             _kUnaryOpPack4 = _cs.FindKernel("AexisUnaryOpPack4");
             _kUnaryOpLinearMat = _cs.FindKernel("AexisUnaryOpLinearMat");
             _kTriluPack4 = _cs.FindKernel("AexisTriluPack4");
             _kTriluLinearMat = _cs.FindKernel("AexisTriluLinearMat");
             _kBinaryOpLinearMat = _cs.FindKernel("AexisBinaryOpLinearMat");
             _kBinaryOpLinearMatFixedInputScalar = _cs.FindKernel("AexisBinaryOpLinearMatFixedInputScalar");
+            _kBinaryOpLinearMatScalarArray = _cs.FindKernel("AexisBinaryOpLinearMatScalarArray");
             _kBinaryOpPack4 = _cs.FindKernel("AexisBinaryOpPack4");
             _kBinaryOpPack4LinearMixed = _cs.FindKernel("AexisBinaryOpPack4LinearMixed");
             _kBinaryOpPack4LinearMixedArray = _cs.FindKernel("AexisBinaryOpPack4LinearMixedArray");
@@ -2665,6 +2691,90 @@ namespace Aexis.Execution
             cmd.SetComputeIntParam(_cs, prefix + "D", Mathf.Max(1, shape.d));
             cmd.SetComputeIntParam(_cs, prefix + "C", Mathf.Max(0, shape.c));
             cmd.SetComputeIntParam(_cs, prefix + "Dims", Mathf.Max(1, shape.dims));
+        }
+
+        public void NonMaxSuppressionPack4(
+            RenderTexture boxes,
+            RenderTexture scores,
+            int numBoxes,
+            int numClasses,
+            int capacity,
+            int maxOutputPerClass,
+            float iouThreshold,
+            float scoreThreshold,
+            bool centerPointBox,
+            RenderTexture output,
+            RenderTexture count)
+        {
+            if (boxes == null) throw new ArgumentNullException(nameof(boxes));
+            if (scores == null) throw new ArgumentNullException(nameof(scores));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (count == null) throw new ArgumentNullException(nameof(count));
+            ValidateNonMaxSuppressionParameters(numBoxes, numClasses, capacity, maxOutputPerClass, iouThreshold);
+            SetNonMaxSuppressionParameters(numBoxes, numClasses, capacity, maxOutputPerClass, iouThreshold, scoreThreshold, centerPointBox);
+            _cs.SetTexture(_kAexisNonMaxSuppressionPack4, "_NmsBoxesArr", boxes);
+            _cs.SetTexture(_kAexisNonMaxSuppressionPack4, "_NmsScoresArr", scores);
+            _cs.SetTexture(_kAexisNonMaxSuppressionPack4, "_NmsOutputArr", output);
+            _cs.SetTexture(_kAexisNonMaxSuppressionPack4, "_NmsCountArr", count);
+            Dispatch3D(_kAexisNonMaxSuppressionPack4, 1, 1, 1, 1, 1);
+        }
+
+        public void NonMaxSuppressionPack4(
+            CommandBuffer cmd,
+            ComputeTexture boxes,
+            ComputeTexture scores,
+            int numBoxes,
+            int numClasses,
+            int capacity,
+            int maxOutputPerClass,
+            float iouThreshold,
+            float scoreThreshold,
+            bool centerPointBox,
+            ComputeTexture output,
+            ComputeTexture count)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (boxes == null) throw new ArgumentNullException(nameof(boxes));
+            if (scores == null) throw new ArgumentNullException(nameof(scores));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (count == null) throw new ArgumentNullException(nameof(count));
+            ValidateNonMaxSuppressionParameters(numBoxes, numClasses, capacity, maxOutputPerClass, iouThreshold);
+            SetNonMaxSuppressionParameters(cmd, numBoxes, numClasses, capacity, maxOutputPerClass, iouThreshold, scoreThreshold, centerPointBox);
+            cmd.SetComputeTextureParam(_cs, _kAexisNonMaxSuppressionPack4, "_NmsBoxesArr", boxes.nameID);
+            cmd.SetComputeTextureParam(_cs, _kAexisNonMaxSuppressionPack4, "_NmsScoresArr", scores.nameID);
+            cmd.SetComputeTextureParam(_cs, _kAexisNonMaxSuppressionPack4, "_NmsOutputArr", output.nameID);
+            cmd.SetComputeTextureParam(_cs, _kAexisNonMaxSuppressionPack4, "_NmsCountArr", count.nameID);
+            Dispatch3D(cmd, _kAexisNonMaxSuppressionPack4, 1, 1, 1, 1, 1);
+        }
+
+        private static void ValidateNonMaxSuppressionParameters(int numBoxes, int numClasses, int capacity, int maxOutputPerClass, float iouThreshold)
+        {
+            if (numBoxes <= 0 || numClasses <= 0 || capacity <= 0 || maxOutputPerClass < 0)
+                throw new ArgumentOutOfRangeException(nameof(numBoxes), "NonMaxSuppression requires positive static box/class/capacity dimensions and a non-negative per-class limit.");
+            if (iouThreshold < 0f || iouThreshold > 1f)
+                throw new ArgumentOutOfRangeException(nameof(iouThreshold), "NonMaxSuppression IoU threshold must be in [0,1].");
+        }
+
+        private void SetNonMaxSuppressionParameters(int numBoxes, int numClasses, int capacity, int maxOutputPerClass, float iouThreshold, float scoreThreshold, bool centerPointBox)
+        {
+            _cs.SetInt("_NmsNumBoxes", numBoxes);
+            _cs.SetInt("_NmsNumClasses", numClasses);
+            _cs.SetInt("_NmsCapacity", capacity);
+            _cs.SetInt("_NmsMaxOutputPerClass", maxOutputPerClass);
+            _cs.SetInt("_NmsCenterPointBox", centerPointBox ? 1 : 0);
+            _cs.SetFloat("_NmsIouThreshold", iouThreshold);
+            _cs.SetFloat("_NmsScoreThreshold", scoreThreshold);
+        }
+
+        private void SetNonMaxSuppressionParameters(CommandBuffer cmd, int numBoxes, int numClasses, int capacity, int maxOutputPerClass, float iouThreshold, float scoreThreshold, bool centerPointBox)
+        {
+            cmd.SetComputeIntParam(_cs, "_NmsNumBoxes", numBoxes);
+            cmd.SetComputeIntParam(_cs, "_NmsNumClasses", numClasses);
+            cmd.SetComputeIntParam(_cs, "_NmsCapacity", capacity);
+            cmd.SetComputeIntParam(_cs, "_NmsMaxOutputPerClass", maxOutputPerClass);
+            cmd.SetComputeIntParam(_cs, "_NmsCenterPointBox", centerPointBox ? 1 : 0);
+            cmd.SetComputeFloatParam(_cs, "_NmsIouThreshold", iouThreshold);
+            cmd.SetComputeFloatParam(_cs, "_NmsScoreThreshold", scoreThreshold);
         }
 
         public void CropPack4(RenderTexture input, int inW, int inH, int inC, int offsetW, int offsetH, int offsetC, int outW, int outH, int outC, RenderTexture output)
@@ -4544,6 +4654,193 @@ namespace Aexis.Execution
             Dispatch2D(cmd, _cs, _kSoftmaxLinearMat2D, output.width, output.height, 8, 8);
         }
 
+        public void StatisticsPoolingPack4(RenderTexture input, int frames, int channels, bool includeStd, float epsilon, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (frames <= 0) throw new ArgumentOutOfRangeException(nameof(frames));
+            if (channels <= 0) throw new ArgumentOutOfRangeException(nameof(channels));
+            if (float.IsNaN(epsilon) || float.IsInfinity(epsilon) || epsilon < 0f) throw new ArgumentOutOfRangeException(nameof(epsilon));
+            _cs.SetInt("_StatsPoolingFrames", frames);
+            _cs.SetInt("_StatsPoolingChannels", channels);
+            _cs.SetInt("_StatsPoolingIncludeStd", includeStd ? 1 : 0);
+            _cs.SetFloat("_StatsPoolingEpsilon", epsilon);
+            _cs.SetTexture(_kStatisticsPoolingPack4, "_StatsPoolingIn", input);
+            _cs.SetTexture(_kStatisticsPoolingPack4, "_StatsPoolingOut", output);
+            Dispatch2D(_kStatisticsPoolingPack4, output.width, output.height, 8, 8);
+        }
+
+        public void StatisticsPoolingPack4(CommandBuffer cmd, ComputeTexture input, int frames, int channels, bool includeStd, float epsilon, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (frames <= 0) throw new ArgumentOutOfRangeException(nameof(frames));
+            if (channels <= 0) throw new ArgumentOutOfRangeException(nameof(channels));
+            if (float.IsNaN(epsilon) || float.IsInfinity(epsilon) || epsilon < 0f) throw new ArgumentOutOfRangeException(nameof(epsilon));
+            cmd.SetComputeIntParam(_cs, "_StatsPoolingFrames", frames);
+            cmd.SetComputeIntParam(_cs, "_StatsPoolingChannels", channels);
+            cmd.SetComputeIntParam(_cs, "_StatsPoolingIncludeStd", includeStd ? 1 : 0);
+            cmd.SetComputeFloatParam(_cs, "_StatsPoolingEpsilon", epsilon);
+            cmd.SetComputeTextureParam(_cs, _kStatisticsPoolingPack4, "_StatsPoolingIn", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kStatisticsPoolingPack4, "_StatsPoolingOut", output.nameID);
+            Dispatch2D(cmd, _cs, _kStatisticsPoolingPack4, output.width, output.height, 8, 8);
+        }
+
+        public void SpectrogramPack4(RenderTexture input, int nfft, int hop, int channels, int frames, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            ValidateSpectrogramParameters(nfft, hop, channels, frames);
+            _cs.SetInt("_SpectrogramNfft", nfft);
+            _cs.SetInt("_SpectrogramHop", hop);
+            _cs.SetInt("_SpectrogramChannels", channels);
+            _cs.SetInt("_SpectrogramFrames", frames);
+            _cs.SetTexture(_kSpectrogramPack4, "_SpectrogramIn", input);
+            _cs.SetTexture(_kSpectrogramPack4, "_SpectrogramOut", output);
+            Dispatch2D(_kSpectrogramPack4, output.width, output.height, 8, 8);
+        }
+
+        public void SpectrogramPack4(CommandBuffer cmd, ComputeTexture input, int nfft, int hop, int channels, int frames, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            ValidateSpectrogramParameters(nfft, hop, channels, frames);
+            cmd.SetComputeIntParam(_cs, "_SpectrogramNfft", nfft);
+            cmd.SetComputeIntParam(_cs, "_SpectrogramHop", hop);
+            cmd.SetComputeIntParam(_cs, "_SpectrogramChannels", channels);
+            cmd.SetComputeIntParam(_cs, "_SpectrogramFrames", frames);
+            cmd.SetComputeTextureParam(_cs, _kSpectrogramPack4, "_SpectrogramIn", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kSpectrogramPack4, "_SpectrogramOut", output.nameID);
+            Dispatch2D(cmd, _cs, _kSpectrogramPack4, output.width, output.height, 8, 8);
+        }
+
+        public void InverseSpectrogramPack4(RenderTexture input, int nfft, int hop, int channels, int frames, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            ValidateSpectrogramParameters(nfft, hop, channels, frames);
+            _cs.SetInt("_SpectrogramNfft", nfft);
+            _cs.SetInt("_SpectrogramHop", hop);
+            _cs.SetInt("_SpectrogramChannels", channels);
+            _cs.SetInt("_SpectrogramFrames", frames);
+            _cs.SetTexture(_kInverseSpectrogramPack4, "_SpectrogramIn", input);
+            _cs.SetTexture(_kInverseSpectrogramPack4, "_SpectrogramOut", output);
+            Dispatch2D(_kInverseSpectrogramPack4, output.width, output.height, 8, 8);
+        }
+
+        public void InverseSpectrogramPack4(CommandBuffer cmd, ComputeTexture input, int nfft, int hop, int channels, int frames, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            ValidateSpectrogramParameters(nfft, hop, channels, frames);
+            cmd.SetComputeIntParam(_cs, "_SpectrogramNfft", nfft);
+            cmd.SetComputeIntParam(_cs, "_SpectrogramHop", hop);
+            cmd.SetComputeIntParam(_cs, "_SpectrogramChannels", channels);
+            cmd.SetComputeIntParam(_cs, "_SpectrogramFrames", frames);
+            cmd.SetComputeTextureParam(_cs, _kInverseSpectrogramPack4, "_SpectrogramIn", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kInverseSpectrogramPack4, "_SpectrogramOut", output.nameID);
+            Dispatch2D(cmd, _cs, _kInverseSpectrogramPack4, output.width, output.height, 8, 8);
+        }
+
+        public void RecurrentPack4(
+            RenderTexture input, ComputeBuffer inputWeights, ComputeBuffer recurrentWeights, ComputeBuffer bias,
+            int kind, int sequenceLength, int inputSize, int hiddenSize, RenderTexture output)
+        {
+            if (input == null || output == null) throw new ArgumentNullException(input == null ? nameof(input) : nameof(output));
+            if (inputWeights == null || recurrentWeights == null || bias == null)
+                throw new ArgumentNullException("Recurrent immutable weight buffer is null.");
+            ValidateRecurrentParameters(kind, sequenceLength, inputSize, hiddenSize);
+            _cs.SetInt("_RecurrentKind", kind);
+            _cs.SetInt("_RecurrentSequenceLength", sequenceLength);
+            _cs.SetInt("_RecurrentInputSize", inputSize);
+            _cs.SetInt("_RecurrentHiddenSize", hiddenSize);
+            _cs.SetTexture(_kRecurrentPack4, "_RecurrentInputArr", input);
+            _cs.SetTexture(_kRecurrentPack4, "_RecurrentOutputArr", output);
+            _cs.SetBuffer(_kRecurrentPack4, "_RecurrentInputWeights", inputWeights);
+            _cs.SetBuffer(_kRecurrentPack4, "_RecurrentStateWeights", recurrentWeights);
+            _cs.SetBuffer(_kRecurrentPack4, "_RecurrentBias", bias);
+            Dispatch3D(_kRecurrentPack4, 1, 1, 1, 1, 1);
+        }
+
+        public void RecurrentPack4(
+            CommandBuffer cmd, ComputeTexture input, ComputeBuffer inputWeights, ComputeBuffer recurrentWeights, ComputeBuffer bias,
+            int kind, int sequenceLength, int inputSize, int hiddenSize, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null || output == null) throw new ArgumentNullException(input == null ? nameof(input) : nameof(output));
+            if (inputWeights == null || recurrentWeights == null || bias == null)
+                throw new ArgumentNullException("Recurrent immutable weight buffer is null.");
+            ValidateRecurrentParameters(kind, sequenceLength, inputSize, hiddenSize);
+            cmd.SetComputeIntParam(_cs, "_RecurrentKind", kind);
+            cmd.SetComputeIntParam(_cs, "_RecurrentSequenceLength", sequenceLength);
+            cmd.SetComputeIntParam(_cs, "_RecurrentInputSize", inputSize);
+            cmd.SetComputeIntParam(_cs, "_RecurrentHiddenSize", hiddenSize);
+            cmd.SetComputeTextureParam(_cs, _kRecurrentPack4, "_RecurrentInputArr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kRecurrentPack4, "_RecurrentOutputArr", output.nameID);
+            cmd.SetComputeBufferParam(_cs, _kRecurrentPack4, "_RecurrentInputWeights", inputWeights);
+            cmd.SetComputeBufferParam(_cs, _kRecurrentPack4, "_RecurrentStateWeights", recurrentWeights);
+            cmd.SetComputeBufferParam(_cs, _kRecurrentPack4, "_RecurrentBias", bias);
+            Dispatch3D(cmd, _kRecurrentPack4, 1, 1, 1, 1, 1);
+        }
+
+        public void StaticRandomPack4(RenderTexture output, int mode, int seed, float parameter0, float parameter1, int packs, int channels)
+        {
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            ValidateStaticRandomParameters(mode, parameter0, parameter1, packs, channels);
+            _cs.SetInt("_RandomMode", mode);
+            _cs.SetInt("_RandomSeed", seed);
+            _cs.SetInt("_RandomPacks", packs);
+            _cs.SetInt("_RandomChannels", channels);
+            _cs.SetFloat("_RandomParam0", parameter0);
+            _cs.SetFloat("_RandomParam1", parameter1);
+            _cs.SetTexture(_kStaticRandomPack4, "_TexOut0Arr", output);
+            Dispatch3D(_kStaticRandomPack4, output.width, output.height, output.volumeDepth, 8, 8);
+        }
+
+        public void StaticRandomPack4(CommandBuffer cmd, ComputeTexture output, int mode, int seed, float parameter0, float parameter1, int packs, int channels)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            ValidateStaticRandomParameters(mode, parameter0, parameter1, packs, channels);
+            cmd.SetComputeIntParam(_cs, "_RandomMode", mode);
+            cmd.SetComputeIntParam(_cs, "_RandomSeed", seed);
+            cmd.SetComputeIntParam(_cs, "_RandomPacks", packs);
+            cmd.SetComputeIntParam(_cs, "_RandomChannels", channels);
+            cmd.SetComputeFloatParam(_cs, "_RandomParam0", parameter0);
+            cmd.SetComputeFloatParam(_cs, "_RandomParam1", parameter1);
+            cmd.SetComputeTextureParam(_cs, _kStaticRandomPack4, "_TexOut0Arr", output.nameID);
+            Dispatch3D(cmd, _kStaticRandomPack4, output.width, output.height, output.depth, 8, 8);
+        }
+
+        private static void ValidateStaticRandomParameters(int mode, float parameter0, float parameter1, int packs, int channels)
+        {
+            if (mode != 0 && mode != 1) throw new ArgumentOutOfRangeException(nameof(mode));
+            if (packs <= 0 || channels <= 0) throw new ArgumentOutOfRangeException(nameof(channels));
+            if (float.IsNaN(parameter0) || float.IsInfinity(parameter0) || float.IsNaN(parameter1) || float.IsInfinity(parameter1))
+                throw new ArgumentOutOfRangeException(nameof(parameter0));
+            if ((mode == 0 && !(parameter1 > parameter0)) || (mode == 1 && !(parameter1 > 0f)))
+                throw new ArgumentOutOfRangeException(nameof(parameter1));
+        }
+
+        private static void ValidateRecurrentParameters(int kind, int sequenceLength, int inputSize, int hiddenSize)
+        {
+            if (kind < 0 || kind > 2) throw new ArgumentOutOfRangeException(nameof(kind));
+            if (sequenceLength <= 0 || sequenceLength > 256) throw new ArgumentOutOfRangeException(nameof(sequenceLength));
+            if (inputSize <= 0 || inputSize > 256) throw new ArgumentOutOfRangeException(nameof(inputSize));
+            if (hiddenSize <= 0 || hiddenSize > 256) throw new ArgumentOutOfRangeException(nameof(hiddenSize));
+        }
+
+        private static void ValidateSpectrogramParameters(int nfft, int hop, int channels, int frames)
+        {
+            if (nfft < 2 || nfft > 256 || (nfft & 1) != 0) throw new ArgumentOutOfRangeException(nameof(nfft));
+            if (hop <= 0 || hop > nfft) throw new ArgumentOutOfRangeException(nameof(hop));
+            if (channels <= 0) throw new ArgumentOutOfRangeException(nameof(channels));
+            if (frames <= 0) throw new ArgumentOutOfRangeException(nameof(frames));
+        }
+
         // Pack4 linear matrices store four adjacent logical columns per RGBA texel.
         // The scalar LinearMat kernel would treat the physical width (W / 4) as
         // the Softmax extent, so this path preserves the logical matrix contract.
@@ -4756,6 +5053,27 @@ namespace Aexis.Execution
             Dispatch2D(_kBinaryOpLinearMatFixedInputScalar, output.width, output.height, 8, 8);
         }
 
+        public void BinaryOpLinearMatScalarArray(RenderTexture linear, RenderTexture scalarArray, bool linearIsA, int opType, RenderTexture output)
+        {
+            if (linear == null) throw new ArgumentNullException(nameof(linear));
+            if (scalarArray == null) throw new ArgumentNullException(nameof(scalarArray));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (scalarArray.dimension != TextureDimension.Tex2DArray)
+                throw new ArgumentException("BinaryOp LinearMat scalar array requires a Texture2DArray input.", nameof(scalarArray));
+            if (_probeFastZeroBinaryOp)
+            {
+                FillScalarTexture(ZeroScalar, output);
+                return;
+            }
+
+            _cs.SetInt("_BinaryOpType", opType);
+            _cs.SetInt("_BinaryLinearMatScalarArrayMode", linearIsA ? 1 : 2);
+            _cs.SetTexture(_kBinaryOpLinearMatScalarArray, "_LinearIn0", linear);
+            _cs.SetTexture(_kBinaryOpLinearMatScalarArray, "_BinaryLinearIn1Arr", scalarArray);
+            _cs.SetTexture(_kBinaryOpLinearMatScalarArray, "_LinearOut0", output);
+            Dispatch2D(_kBinaryOpLinearMatScalarArray, output.width, output.height, 8, 8);
+        }
+
         public void BinaryOpLinearMat(CommandBuffer cmd, ComputeTexture a, ComputeTexture b, int opType, ComputeTexture output)
         {
             if (cmd == null) throw new ArgumentNullException(nameof(cmd));
@@ -4810,6 +5128,28 @@ namespace Aexis.Execution
             cmd.SetComputeBufferParam(_cs, _kBinaryOpLinearMatFixedInputScalar, "_BufB", scalar);
             cmd.SetComputeTextureParam(_cs, _kBinaryOpLinearMatFixedInputScalar, "_LinearOut0", output.nameID);
             Dispatch2D(cmd, _cs, _kBinaryOpLinearMatFixedInputScalar, output.width, output.height, 8, 8);
+        }
+
+        public void BinaryOpLinearMatScalarArray(CommandBuffer cmd, ComputeTexture linear, ComputeTexture scalarArray, bool linearIsA, int opType, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (linear == null) throw new ArgumentNullException(nameof(linear));
+            if (scalarArray == null) throw new ArgumentNullException(nameof(scalarArray));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (scalarArray.dimension != TextureDimension.Tex2DArray)
+                throw new ArgumentException("BinaryOp LinearMat scalar array requires a Texture2DArray input.", nameof(scalarArray));
+            if (_probeFastZeroBinaryOp)
+            {
+                FillScalarTexture(cmd, ZeroScalar, output);
+                return;
+            }
+
+            cmd.SetComputeIntParam(_cs, "_BinaryOpType", opType);
+            cmd.SetComputeIntParam(_cs, "_BinaryLinearMatScalarArrayMode", linearIsA ? 1 : 2);
+            cmd.SetComputeTextureParam(_cs, _kBinaryOpLinearMatScalarArray, "_LinearIn0", linear.nameID);
+            cmd.SetComputeTextureParam(_cs, _kBinaryOpLinearMatScalarArray, "_BinaryLinearIn1Arr", scalarArray.nameID);
+            cmd.SetComputeTextureParam(_cs, _kBinaryOpLinearMatScalarArray, "_LinearOut0", output.nameID);
+            Dispatch2D(cmd, _cs, _kBinaryOpLinearMatScalarArray, output.width, output.height, 8, 8);
         }
 
         public void BinaryOpPack4(RenderTexture a, RenderTexture b, int packs, int opType, RenderTexture output)
@@ -6060,6 +6400,141 @@ namespace Aexis.Execution
             _cs.SetTexture(_kAppendSequencePack4Cdhw, "_TexIn0Arr", current);
             _cs.SetTexture(_kAppendSequencePack4Cdhw, "_TexOut0Arr", output);
             Dispatch3D(_kAppendSequencePack4Cdhw, current.width, currentHeight, Mathf.Max(1, current.volumeDepth), 8, 8);
+        }
+
+        // Bounded categorical sampling remains entirely in Pack4 texture arrays.
+        // The indices are represented as exact FP32 lanes (category <= 4096) and
+        // the execution-plan descriptor retains their logical Int32 contract.
+        public void MultinomialPack4(
+            RenderTexture logits,
+            int seed,
+            int batch,
+            int classes,
+            int samples,
+            RenderTexture output)
+        {
+            if (logits == null) throw new ArgumentNullException(nameof(logits));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            ValidateMultinomialParameters(logits.width, logits.height, logits.volumeDepth, batch, classes, samples, output.width, output.height, output.volumeDepth);
+            _cs.SetInt("_MultinomialSeed", seed);
+            _cs.SetInt("_MultinomialBatch", batch);
+            _cs.SetInt("_MultinomialClasses", classes);
+            _cs.SetInt("_MultinomialSamples", samples);
+            _cs.SetTexture(_kMultinomialPack4, "_MultinomialLogitsArr", logits);
+            _cs.SetTexture(_kMultinomialPack4, "_MultinomialOutputArr", output);
+            Dispatch3D(_kMultinomialPack4, output.width, output.height, output.volumeDepth, 8, 8);
+        }
+
+        public void MultinomialPack4(
+            CommandBuffer cmd,
+            ComputeTexture logits,
+            int seed,
+            int batch,
+            int classes,
+            int samples,
+            ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (logits == null) throw new ArgumentNullException(nameof(logits));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            ValidateMultinomialParameters(logits.width, logits.height, logits.depth, batch, classes, samples, output.width, output.height, output.depth);
+            cmd.SetComputeIntParam(_cs, "_MultinomialSeed", seed);
+            cmd.SetComputeIntParam(_cs, "_MultinomialBatch", batch);
+            cmd.SetComputeIntParam(_cs, "_MultinomialClasses", classes);
+            cmd.SetComputeIntParam(_cs, "_MultinomialSamples", samples);
+            cmd.SetComputeTextureParam(_cs, _kMultinomialPack4, "_MultinomialLogitsArr", logits.nameID);
+            cmd.SetComputeTextureParam(_cs, _kMultinomialPack4, "_MultinomialOutputArr", output.nameID);
+            Dispatch3D(cmd, _kMultinomialPack4, output.width, output.height, output.depth, 8, 8);
+        }
+
+        private static void ValidateMultinomialParameters(
+            int inputWidth,
+            int inputHeight,
+            int inputDepth,
+            int batch,
+            int classes,
+            int samples,
+            int outputWidth,
+            int outputHeight,
+            int outputDepth)
+        {
+            if (batch <= 0 || batch > AexisMultinomialLayer.MaxBatch
+                || classes <= 1 || classes > AexisMultinomialLayer.MaxClasses
+                || samples <= 0 || samples > AexisMultinomialLayer.MaxSamples)
+            {
+                throw new ArgumentOutOfRangeException(nameof(samples), "Multinomial profile is outside the fixed Pack4 arena contract.");
+            }
+            var classPacks = AexisMultinomialLayer.PackCount(classes);
+            var samplePacks = AexisMultinomialLayer.PackCount(samples);
+            if (inputWidth != 1 || inputHeight != batch || inputDepth != classPacks
+                || outputWidth != 1 || outputHeight != batch || outputDepth != samplePacks)
+            {
+                throw new InvalidOperationException("Multinomial requires exact Pack4 logits [1,batch,ceil(classes/4)] and output [1,batch,ceil(samples/4)] storage.");
+            }
+        }
+
+        // Random generation is texture-native and stateless: no CPU seed expansion
+        // or activation ComputeBuffer is involved in either execution mode.
+        public void DeterministicRandomPack4(
+            RenderTexture input,
+            int mode,
+            int seed,
+            float parameter0,
+            float parameter1,
+            int packs,
+            int logicalChannels,
+            RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (input.width != output.width || input.height != output.height || input.volumeDepth != output.volumeDepth)
+                throw new InvalidOperationException("DeterministicRandomPack4 requires identical Pack4 input/output storage.");
+            SetDeterministicRandomParameters(mode, seed, parameter0, parameter1, packs, logicalChannels);
+            _cs.SetTexture(_kDeterministicRandomPack4, "_TexIn0Arr", input);
+            _cs.SetTexture(_kDeterministicRandomPack4, "_TexOut0Arr", output);
+            Dispatch3D(_kDeterministicRandomPack4, output.width, output.height, Mathf.Max(1, output.volumeDepth), 8, 8);
+        }
+
+        public void DeterministicRandomPack4(
+            CommandBuffer cmd,
+            ComputeTexture input,
+            int mode,
+            int seed,
+            float parameter0,
+            float parameter1,
+            int packs,
+            int logicalChannels,
+            ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (input.width != output.width || input.height != output.height || input.depth != output.depth)
+                throw new InvalidOperationException("DeterministicRandomPack4 requires identical Pack4 input/output storage.");
+            SetDeterministicRandomParameters(cmd, mode, seed, parameter0, parameter1, packs, logicalChannels);
+            cmd.SetComputeTextureParam(_cs, _kDeterministicRandomPack4, "_TexIn0Arr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kDeterministicRandomPack4, "_TexOut0Arr", output.nameID);
+            Dispatch3D(cmd, _kDeterministicRandomPack4, output.width, output.height, output.depth, 8, 8);
+        }
+
+        private void SetDeterministicRandomParameters(int mode, int seed, float parameter0, float parameter1, int packs, int logicalChannels)
+        {
+            _cs.SetInt("_RandomMode", mode);
+            _cs.SetInt("_RandomSeed", seed);
+            _cs.SetInt("_RandomPacks", Mathf.Max(1, packs));
+            _cs.SetInt("_RandomChannels", Mathf.Max(1, logicalChannels));
+            _cs.SetFloat("_RandomParam0", parameter0);
+            _cs.SetFloat("_RandomParam1", parameter1);
+        }
+
+        private void SetDeterministicRandomParameters(CommandBuffer cmd, int mode, int seed, float parameter0, float parameter1, int packs, int logicalChannels)
+        {
+            cmd.SetComputeIntParam(_cs, "_RandomMode", mode);
+            cmd.SetComputeIntParam(_cs, "_RandomSeed", seed);
+            cmd.SetComputeIntParam(_cs, "_RandomPacks", Mathf.Max(1, packs));
+            cmd.SetComputeIntParam(_cs, "_RandomChannels", Mathf.Max(1, logicalChannels));
+            cmd.SetComputeFloatParam(_cs, "_RandomParam0", parameter0);
+            cmd.SetComputeFloatParam(_cs, "_RandomParam1", parameter1);
         }
 
         public void BuildSdInpaintInput9Pack4(RenderTexture latents, RenderTexture mask, RenderTexture maskedLatents, RenderTexture output)
@@ -11318,6 +11793,247 @@ namespace Aexis.Execution
             _cs.SetBuffer(_kDeconvolution3dBuf, "_ConvB", biasO);
             _cs.SetBuffer(_kDeconvolution3dBuf, "_ConvOut", output.buffer);
             Dispatch3D(_kDeconvolution3dBuf, output.w, output.h, output.d * outC, 8, 8);
+        }
+
+        public void ConvDepthWise3dPack4CDHW(
+            RenderTexture input,
+            int inW,
+            int inH,
+            int inD,
+            int channels,
+            ComputeBuffer weightsP4K3,
+            ComputeBuffer biasP4,
+            int outW,
+            int outH,
+            int outD,
+            int kernelW,
+            int kernelH,
+            int kernelD,
+            int strideW,
+            int strideH,
+            int strideD,
+            int padLeft,
+            int padRight,
+            int padTop,
+            int padBottom,
+            int padFront,
+            int padBehind,
+            int dilationW,
+            int dilationH,
+            int dilationD,
+            int activationType,
+            float activationParam,
+            RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (weightsP4K3 == null) throw new ArgumentNullException(nameof(weightsP4K3));
+            if (biasP4 == null) throw new ArgumentNullException(nameof(biasP4));
+            if (inW <= 0 || inH <= 0 || inD <= 0 || outW <= 0 || outH <= 0 || outD <= 0 || channels <= 0)
+                throw new ArgumentOutOfRangeException(nameof(channels));
+            var packs = Mathf.Max(1, (channels + 3) / 4);
+            _cs.SetInt("_InW", inW);
+            _cs.SetInt("_InH", inH);
+            _cs.SetInt("_InD", inD);
+            _cs.SetInt("_OutW", outW);
+            _cs.SetInt("_OutH", outH);
+            _cs.SetInt("_OutD", outD);
+            _cs.SetInt("_InC", channels);
+            _cs.SetInt("_OutC", channels);
+            _cs.SetInt("_InPacks", packs);
+            _cs.SetInt("_OutPacks", packs);
+            _cs.SetInt("_ConvGroup", channels);
+            _cs.SetInt("_KernelWVar", kernelW);
+            _cs.SetInt("_KernelHVar", kernelH);
+            _cs.SetInt("_KernelDVar", kernelD);
+            _cs.SetInt("_StrideWVar", Mathf.Max(1, strideW));
+            _cs.SetInt("_StrideHVar", Mathf.Max(1, strideH));
+            _cs.SetInt("_StrideDVar", Mathf.Max(1, strideD));
+            _cs.SetInt("_PadLeftVar", Mathf.Max(0, padLeft));
+            _cs.SetInt("_PadRightVar", Mathf.Max(0, padRight));
+            _cs.SetInt("_PadTopVar", Mathf.Max(0, padTop));
+            _cs.SetInt("_PadBottomVar", Mathf.Max(0, padBottom));
+            _cs.SetInt("_PadFrontVar", Mathf.Max(0, padFront));
+            _cs.SetInt("_PadBehindVar", Mathf.Max(0, padBehind));
+            _cs.SetInt("_DilationWVar", Mathf.Max(1, dilationW));
+            _cs.SetInt("_DilationHVar", Mathf.Max(1, dilationH));
+            _cs.SetInt("_DilationDVar", Mathf.Max(1, dilationD));
+            _cs.SetInt("_ActType", activationType);
+            _cs.SetFloat("_ActParam", activationParam);
+            _cs.SetBuffer(_kConvDepthWise3dPack4Cdhw, "_DwConvW4", weightsP4K3);
+            _cs.SetBuffer(_kConvDepthWise3dPack4Cdhw, "_DwConvB4", biasP4);
+            _cs.SetTexture(_kConvDepthWise3dPack4Cdhw, "_ConvInArr", input);
+            _cs.SetTexture(_kConvDepthWise3dPack4Cdhw, "_ConvOutArr", output);
+            Dispatch3D(_kConvDepthWise3dPack4Cdhw, outW, outH, ResolveRenderTextureDispatchDepth(output, outD * packs), 8, 8);
+        }
+
+        public void ConvDepthWise3dPack4CDHW(
+            CommandBuffer cmd,
+            ComputeTexture input,
+            int inW,
+            int inH,
+            int inD,
+            int channels,
+            ComputeBuffer weightsP4K3,
+            ComputeBuffer biasP4,
+            int outW,
+            int outH,
+            int outD,
+            int kernelW,
+            int kernelH,
+            int kernelD,
+            int strideW,
+            int strideH,
+            int strideD,
+            int padLeft,
+            int padRight,
+            int padTop,
+            int padBottom,
+            int padFront,
+            int padBehind,
+            int dilationW,
+            int dilationH,
+            int dilationD,
+            int activationType,
+            float activationParam,
+            ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (weightsP4K3 == null) throw new ArgumentNullException(nameof(weightsP4K3));
+            if (biasP4 == null) throw new ArgumentNullException(nameof(biasP4));
+            if (inW <= 0 || inH <= 0 || inD <= 0 || outW <= 0 || outH <= 0 || outD <= 0 || channels <= 0)
+                throw new ArgumentOutOfRangeException(nameof(channels));
+            var packs = Mathf.Max(1, (channels + 3) / 4);
+            cmd.SetComputeIntParam(_cs, "_InW", inW);
+            cmd.SetComputeIntParam(_cs, "_InH", inH);
+            cmd.SetComputeIntParam(_cs, "_InD", inD);
+            cmd.SetComputeIntParam(_cs, "_OutW", outW);
+            cmd.SetComputeIntParam(_cs, "_OutH", outH);
+            cmd.SetComputeIntParam(_cs, "_OutD", outD);
+            cmd.SetComputeIntParam(_cs, "_InC", channels);
+            cmd.SetComputeIntParam(_cs, "_OutC", channels);
+            cmd.SetComputeIntParam(_cs, "_InPacks", packs);
+            cmd.SetComputeIntParam(_cs, "_OutPacks", packs);
+            cmd.SetComputeIntParam(_cs, "_ConvGroup", channels);
+            cmd.SetComputeIntParam(_cs, "_KernelWVar", kernelW);
+            cmd.SetComputeIntParam(_cs, "_KernelHVar", kernelH);
+            cmd.SetComputeIntParam(_cs, "_KernelDVar", kernelD);
+            cmd.SetComputeIntParam(_cs, "_StrideWVar", Mathf.Max(1, strideW));
+            cmd.SetComputeIntParam(_cs, "_StrideHVar", Mathf.Max(1, strideH));
+            cmd.SetComputeIntParam(_cs, "_StrideDVar", Mathf.Max(1, strideD));
+            cmd.SetComputeIntParam(_cs, "_PadLeftVar", Mathf.Max(0, padLeft));
+            cmd.SetComputeIntParam(_cs, "_PadRightVar", Mathf.Max(0, padRight));
+            cmd.SetComputeIntParam(_cs, "_PadTopVar", Mathf.Max(0, padTop));
+            cmd.SetComputeIntParam(_cs, "_PadBottomVar", Mathf.Max(0, padBottom));
+            cmd.SetComputeIntParam(_cs, "_PadFrontVar", Mathf.Max(0, padFront));
+            cmd.SetComputeIntParam(_cs, "_PadBehindVar", Mathf.Max(0, padBehind));
+            cmd.SetComputeIntParam(_cs, "_DilationWVar", Mathf.Max(1, dilationW));
+            cmd.SetComputeIntParam(_cs, "_DilationHVar", Mathf.Max(1, dilationH));
+            cmd.SetComputeIntParam(_cs, "_DilationDVar", Mathf.Max(1, dilationD));
+            cmd.SetComputeIntParam(_cs, "_ActType", activationType);
+            cmd.SetComputeFloatParam(_cs, "_ActParam", activationParam);
+            cmd.SetComputeBufferParam(_cs, _kConvDepthWise3dPack4Cdhw, "_DwConvW4", weightsP4K3);
+            cmd.SetComputeBufferParam(_cs, _kConvDepthWise3dPack4Cdhw, "_DwConvB4", biasP4);
+            cmd.SetComputeTextureParam(_cs, _kConvDepthWise3dPack4Cdhw, "_ConvInArr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kConvDepthWise3dPack4Cdhw, "_ConvOutArr", output.nameID);
+            Dispatch3D(cmd, _kConvDepthWise3dPack4Cdhw, outW, outH, ResolveComputeTextureDispatchDepth(output, outD * packs), 8, 8);
+        }
+
+        public void DeconvolutionDepthWise3dPack4CDHW(
+            RenderTexture input, int inW, int inH, int inD, int channels,
+            ComputeBuffer weightsP4K3, ComputeBuffer biasP4,
+            int outW, int outH, int outD,
+            int kernelW, int kernelH, int kernelD,
+            int strideW, int strideH, int strideD,
+            int padLeft, int padTop, int padFront,
+            int dilationW, int dilationH, int dilationD,
+            int activationType, float activationParam, RenderTexture output)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (weightsP4K3 == null) throw new ArgumentNullException(nameof(weightsP4K3));
+            if (biasP4 == null) throw new ArgumentNullException(nameof(biasP4));
+            if (inW <= 0 || inH <= 0 || inD <= 0 || outW <= 0 || outH <= 0 || outD <= 0 || channels <= 0)
+                throw new ArgumentOutOfRangeException(nameof(channels));
+            var packs = Mathf.Max(1, (channels + 3) / 4);
+            SetDepthWise3dDeconvolutionParams(
+                _kDeconvolutionDepthWise3dPack4Cdhw, input, inW, inH, inD, channels, weightsP4K3, biasP4,
+                outW, outH, outD, kernelW, kernelH, kernelD, strideW, strideH, strideD,
+                padLeft, padTop, padFront, dilationW, dilationH, dilationD, activationType, activationParam, output);
+            Dispatch3D(_kDeconvolutionDepthWise3dPack4Cdhw, outW, outH, ResolveRenderTextureDispatchDepth(output, outD * packs), 8, 8);
+        }
+
+        public void DeconvolutionDepthWise3dPack4CDHW(
+            CommandBuffer cmd, ComputeTexture input, int inW, int inH, int inD, int channels,
+            ComputeBuffer weightsP4K3, ComputeBuffer biasP4,
+            int outW, int outH, int outD,
+            int kernelW, int kernelH, int kernelD,
+            int strideW, int strideH, int strideD,
+            int padLeft, int padTop, int padFront,
+            int dilationW, int dilationH, int dilationD,
+            int activationType, float activationParam, ComputeTexture output)
+        {
+            if (cmd == null) throw new ArgumentNullException(nameof(cmd));
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (output == null) throw new ArgumentNullException(nameof(output));
+            if (weightsP4K3 == null) throw new ArgumentNullException(nameof(weightsP4K3));
+            if (biasP4 == null) throw new ArgumentNullException(nameof(biasP4));
+            if (inW <= 0 || inH <= 0 || inD <= 0 || outW <= 0 || outH <= 0 || outD <= 0 || channels <= 0)
+                throw new ArgumentOutOfRangeException(nameof(channels));
+            var packs = Mathf.Max(1, (channels + 3) / 4);
+            cmd.SetComputeIntParam(_cs, "_InW", inW);
+            cmd.SetComputeIntParam(_cs, "_InH", inH);
+            cmd.SetComputeIntParam(_cs, "_InD", inD);
+            cmd.SetComputeIntParam(_cs, "_OutW", outW);
+            cmd.SetComputeIntParam(_cs, "_OutH", outH);
+            cmd.SetComputeIntParam(_cs, "_OutD", outD);
+            cmd.SetComputeIntParam(_cs, "_InC", channels);
+            cmd.SetComputeIntParam(_cs, "_OutC", channels);
+            cmd.SetComputeIntParam(_cs, "_InPacks", packs);
+            cmd.SetComputeIntParam(_cs, "_OutPacks", packs);
+            cmd.SetComputeIntParam(_cs, "_ConvGroup", channels);
+            cmd.SetComputeIntParam(_cs, "_KernelWVar", kernelW);
+            cmd.SetComputeIntParam(_cs, "_KernelHVar", kernelH);
+            cmd.SetComputeIntParam(_cs, "_KernelDVar", kernelD);
+            cmd.SetComputeIntParam(_cs, "_StrideWVar", Mathf.Max(1, strideW));
+            cmd.SetComputeIntParam(_cs, "_StrideHVar", Mathf.Max(1, strideH));
+            cmd.SetComputeIntParam(_cs, "_StrideDVar", Mathf.Max(1, strideD));
+            cmd.SetComputeIntParam(_cs, "_PadLeftVar", Mathf.Max(0, padLeft));
+            cmd.SetComputeIntParam(_cs, "_PadTopVar", Mathf.Max(0, padTop));
+            cmd.SetComputeIntParam(_cs, "_PadFrontVar", Mathf.Max(0, padFront));
+            cmd.SetComputeIntParam(_cs, "_DilationWVar", Mathf.Max(1, dilationW));
+            cmd.SetComputeIntParam(_cs, "_DilationHVar", Mathf.Max(1, dilationH));
+            cmd.SetComputeIntParam(_cs, "_DilationDVar", Mathf.Max(1, dilationD));
+            cmd.SetComputeIntParam(_cs, "_ActType", activationType);
+            cmd.SetComputeFloatParam(_cs, "_ActParam", activationParam);
+            cmd.SetComputeBufferParam(_cs, _kDeconvolutionDepthWise3dPack4Cdhw, "_DwConvW4", weightsP4K3);
+            cmd.SetComputeBufferParam(_cs, _kDeconvolutionDepthWise3dPack4Cdhw, "_DwConvB4", biasP4);
+            cmd.SetComputeTextureParam(_cs, _kDeconvolutionDepthWise3dPack4Cdhw, "_ConvInArr", input.nameID);
+            cmd.SetComputeTextureParam(_cs, _kDeconvolutionDepthWise3dPack4Cdhw, "_ConvOutArr", output.nameID);
+            Dispatch3D(cmd, _kDeconvolutionDepthWise3dPack4Cdhw, outW, outH, ResolveComputeTextureDispatchDepth(output, outD * packs), 8, 8);
+        }
+
+        private void SetDepthWise3dDeconvolutionParams(
+            int kernel, RenderTexture input, int inW, int inH, int inD, int channels,
+            ComputeBuffer weightsP4K3, ComputeBuffer biasP4,
+            int outW, int outH, int outD, int kernelW, int kernelH, int kernelD,
+            int strideW, int strideH, int strideD, int padLeft, int padTop, int padFront,
+            int dilationW, int dilationH, int dilationD, int activationType, float activationParam, RenderTexture output)
+        {
+            var packs = Mathf.Max(1, (channels + 3) / 4);
+            _cs.SetInt("_InW", inW); _cs.SetInt("_InH", inH); _cs.SetInt("_InD", inD);
+            _cs.SetInt("_OutW", outW); _cs.SetInt("_OutH", outH); _cs.SetInt("_OutD", outD);
+            _cs.SetInt("_InC", channels); _cs.SetInt("_OutC", channels);
+            _cs.SetInt("_InPacks", packs); _cs.SetInt("_OutPacks", packs); _cs.SetInt("_ConvGroup", channels);
+            _cs.SetInt("_KernelWVar", kernelW); _cs.SetInt("_KernelHVar", kernelH); _cs.SetInt("_KernelDVar", kernelD);
+            _cs.SetInt("_StrideWVar", Mathf.Max(1, strideW)); _cs.SetInt("_StrideHVar", Mathf.Max(1, strideH)); _cs.SetInt("_StrideDVar", Mathf.Max(1, strideD));
+            _cs.SetInt("_PadLeftVar", Mathf.Max(0, padLeft)); _cs.SetInt("_PadTopVar", Mathf.Max(0, padTop)); _cs.SetInt("_PadFrontVar", Mathf.Max(0, padFront));
+            _cs.SetInt("_DilationWVar", Mathf.Max(1, dilationW)); _cs.SetInt("_DilationHVar", Mathf.Max(1, dilationH)); _cs.SetInt("_DilationDVar", Mathf.Max(1, dilationD));
+            _cs.SetInt("_ActType", activationType); _cs.SetFloat("_ActParam", activationParam);
+            _cs.SetBuffer(kernel, "_DwConvW4", weightsP4K3); _cs.SetBuffer(kernel, "_DwConvB4", biasP4);
+            _cs.SetTexture(kernel, "_ConvInArr", input); _cs.SetTexture(kernel, "_ConvOutArr", output);
         }
 
         public void Deconvolution3dPack4CDHW(

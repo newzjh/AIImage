@@ -57,6 +57,21 @@ namespace Aexis.Execution
         // variable-sized standard ONNX result. Keep it opt-in so a stock ONNX
         // graph is never silently rewritten to consume a second count output.
         public bool enableBoundedDataIndexLowering;
+        // NonMaxSuppression is likewise only lowered when an exporter opts into
+        // the padded-index plus GPU-count contract. The original ONNX output is
+        // data dependent and therefore cannot be represented by an unbounded RT.
+        public bool enableBoundedNonMaxSuppressionLowering;
+        // P2 control-flow values are lowered at import time only after their
+        // capacities are proven. The generated graph contains normal static
+        // Pack4 nodes and shares the one CommandBuffer RT execution arena.
+        public bool enableBoundedControlFlowLowering;
+        public int maximumStaticLoopIterations = 256;
+        public int maximumStaticScanSteps = 256;
+        // P2 high-rank tensors keep their full ONNX logical shape while the
+        // static Pack4 arena folds leading non-spatial axes into C. Only
+        // pointwise kernels with an exact physical descriptor are admitted.
+        public bool enableBoundedHighRankArenaLowering;
+        public int maximumBoundedArenaRank = 8;
         public Dictionary<string, int> outputCapacities = new Dictionary<string, int>(StringComparer.Ordinal);
         // Scatter duplicate writes are intentionally rejected by the texture
         // kernel. The exporter/import caller supplies proof by node name.
@@ -108,6 +123,7 @@ namespace Aexis.Execution
             { "LRN", "LRN" }, { "Pad", "Padding" }, { "Resize", "Interp" }, { "Upsample", "Interp" },
             { "ExtractImagePatches", "ExtractPatches" },
             { "GridSample", "GridSample" },
+            { "RoiAlign", "ROIAlign" },
             { "DepthToSpace", "PixelShuffle" }, { "SpaceToDepth", "Reorg" },
             { "Conv", "Convolution" }, { "ConvTranspose", "Deconvolution" }, { "BatchNormalization", "BatchNorm" },
             { "InstanceNormalization", "InstanceNorm" }, { "LayerNormalization", "LayerNorm" },
@@ -124,6 +140,11 @@ namespace Aexis.Execution
             { "TopK", "TopK" }, { "NonZero", "NonZero" }, { "OneHot", "OneHot" }, { "CumSum", "CumSum" },
             { "Compress", "Compress" }, { "Gather", "Gather" }, { "GatherElements", "GatherElements" },
             { "GatherND", "GatherND" }, { "Scatter", "Scatter" }, { "ScatterElements", "ScatterElements" }, { "ScatterND", "ScatterND" },
+            { "NonMaxSuppression", "Nms" },
+            { "RandomUniformLike", "RandomLike" }, { "RandomNormalLike", "RandomLike" },
+            { "RandomUniform", "RandomLike" }, { "RandomNormal", "RandomLike" }, { "Bernoulli", "RandomLike" },
+            { "Multinomial", "Multinomial" },
+            { "RNN", "RNN" }, { "GRU", "GRU" }, { "LSTM", "LSTM" },
             { "Einsum", "Einsum" },
             { "Mod", "BinaryOp" }, { "Equal", "BinaryOp" }, { "Greater", "BinaryOp" }, { "GreaterOrEqual", "BinaryOp" },
             { "Less", "BinaryOp" }, { "LessOrEqual", "BinaryOp" }, { "And", "BinaryOp" }, { "Or", "BinaryOp" },
@@ -167,9 +188,16 @@ namespace Aexis.Execution
                 throw new ArgumentException("An ONNX graph is required.", nameof(model));
             options ??= new AexisOnnxGraphLoweringOptions();
 
+            var boundedControlFlow = AexisOnnxBoundedControlFlow.Flatten(model, options);
+            model = boundedControlFlow.model;
             var result = new AexisOnnxGraphLoweringResult();
             var descriptors = new Dictionary<string, AexisOnnxTensorDescriptor>(StringComparer.Ordinal);
             var diagnostics = new List<AexisOnnxLoweringDiagnostic>();
+            foreach (var diagnostic in boundedControlFlow.diagnostics)
+            {
+                diagnostics.Add(Diagnostic(diagnostic.nodeIndex, diagnostic.node, diagnostic.opType, diagnostic.code,
+                    diagnostic.message, diagnostic.recommendedAction, true));
+            }
             ValidateGraphContract(model, options, diagnostics);
             var immutableTensors = new Dictionary<string, OnnxTensor>(model.graph.initializers, StringComparer.Ordinal);
             foreach (var input in model.graph.inputs)
@@ -192,7 +220,24 @@ namespace Aexis.Execution
                         "Aexis runtime index textures use logical Int32 values and cannot accept a dynamic ONNX INT64 input without a range-checked conversion.",
                         "Export this input as INT32 or insert a range-proven Cast to INT32 before strict import.", true));
                 }
-                if (descriptor.shape != null && (descriptor.shape.Length == 3 || descriptor.shape.Length == 4))
+                if (IsLayout0RecurrentGraphInput(model.graph.nodes, input.name))
+                {
+                    if (descriptor.shape == null || descriptor.shape.Length != 3 || descriptor.shape[1] != 1)
+                    {
+                        diagnostics.Add(Diagnostic(-1, input.name, "Input", "unsupported-recurrent-batch-size",
+                            "The bounded ONNX recurrent profile requires X[sequence,1,input] with its singleton batch on axis 1.",
+                            "Export forward layout=0 RNN/GRU/LSTM with static batch=1 and no dynamic sequence lengths.", true));
+                    }
+                    else
+                    {
+                        SetBatchContract(descriptor, 1);
+                    }
+                }
+                else if (descriptor.shape != null
+                    && (descriptor.shape.Length == 3 || descriptor.shape.Length == 4
+                        || (options.enableBoundedHighRankArenaLowering
+                            && descriptor.shape.Length >= 5
+                            && descriptor.shape.Length <= Math.Max(5, options.maximumBoundedArenaRank))))
                 {
                     if (descriptor.shape[0] == 1)
                     {
@@ -205,11 +250,13 @@ namespace Aexis.Execution
                             "Export a static batch=1 model or implement an explicit batched texture contract.", true));
                     }
                 }
-                if (descriptor.shape == null || descriptor.shape.Length > 4 || options.rejectDynamicShapes && HasDynamic(descriptor.shape))
+                if (descriptor.shape == null
+                    || (descriptor.shape.Length > 4 && !TryGetBoundedHighRankRuntimeShape(descriptor.shape, options, out _))
+                    || options.rejectDynamicShapes && HasDynamic(descriptor.shape))
                 {
                     diagnostics.Add(Diagnostic(-1, input.name, "Input", "unsupported-input-shape",
-                        "Aexis P0 requires a static input rank from 0 through 4.",
-                        "Export static value_info with rank <= 4.", true));
+                        "Aexis requires a static rank <=4 input, or the bounded rank-5..8 batch-one Pack4 arena profile.",
+                        "Export static value_info with rank <=4, or enable the bounded arena profile with leading batch=1.", true));
                 }
                 else if (HasZeroExtent(descriptor.shape))
                 {
@@ -294,6 +341,8 @@ namespace Aexis.Execution
                 var nodeName = NodeName(node, index);
                 var inputDescriptors = ResolveInputs(node, descriptors, index, diagnostics);
                 ValidateInputBatchContracts(node, inputDescriptors, index, diagnostics);
+                if (!ValidateBoundedHighRankArenaProfile(node, inputDescriptors, options, index, diagnostics))
+                    continue;
                 if (string.Equals(node.opType, "ExtractImagePatches", StringComparison.Ordinal)
                     && TryLowerExtractImagePatches(node, nodeName, inputDescriptors, index, diagnostics, out var patchLayers))
                 {
@@ -332,7 +381,7 @@ namespace Aexis.Execution
 
                 ConfigureCoreNcnnContract(node, layer, inputDescriptors, immutableTensors, diagnostics, index);
                 ConfigureCanonicalContract(node, layer, inputDescriptors, immutableTensors, diagnostics, index, model.opset);
-                if (!ConfigureBoundedDataIndexNode(node, layer, inputDescriptors, model.graph.nodes, options, index, diagnostics))
+                if (!ConfigureBoundedDataIndexNode(node, layer, inputDescriptors, immutableTensors, model.graph.nodes, options, index, diagnostics))
                     continue;
                 InferOutputs(node, inputDescriptors, descriptors, immutableTensors, options, index, diagnostics);
                 if (IsLegacyAxisActivation(node.opType, model.opset))
@@ -535,35 +584,10 @@ namespace Aexis.Execution
             string action;
             switch (node.opType)
             {
-                case "NonMaxSuppression":
-                    code = "missing-bounded-nms-profile";
-                    message = "NonMaxSuppression has a data-dependent selected-index count and no capacity-bounded deterministic Aexis texture profile.";
-                    action = "Use an exporter-proven bounded NMS contract with a GPU count tensor and a texture-native kernel; CPU readback is not accepted.";
-                    break;
-                case "RoiAlign":
-                    code = "missing-roialign-texture-kernel";
-                    message = "RoiAlign requires per-ROI indexed sampling and reduction; no verified Pack4 CommandBuffer implementation is registered.";
-                    action = "Implement a texture-native RoiAlign kernel for the required mode/sampling_ratio profile before import.";
-                    break;
-                case "LSTM":
-                    code = "missing-lstm-texture-profile";
-                    message = "LSTM requires recurrent state, direction/layout handling, optional sequence lengths, and immutable gate weights; no complete Aexis texture-native state contract exists.";
-                    action = "Decompose to verified primitive texture operators or implement a bounded CommandBuffer LSTM state profile.";
-                    break;
                 case "ImageScaler":
                     code = "imagescaler-rewrite-required";
                     message = "Legacy ImageScaler is not a runtime layer; its scale and per-channel bias must be decomposed before strict Aexis import.";
                     action = "Rewrite ImageScaler as Mul plus Add/Bias with static immutable constants.";
-                    break;
-                case "Bernoulli":
-                case "Multinomial":
-                case "RandomNormal":
-                case "RandomNormalLike":
-                case "RandomUniform":
-                case "RandomUniformLike":
-                    code = "missing-deterministic-random-texture-profile";
-                    message = node.opType + " requires a reproducible GPU RNG/state contract which is not part of the P0 inference runtime.";
-                    action = "Fold seeded random tensors offline or implement an explicit deterministic texture-native RNG profile.";
                     break;
                 default:
                     return false;
@@ -662,10 +686,16 @@ namespace Aexis.Execution
                 "Softmax", "LogSoftmax", "Hardmax", "Transpose", "Flatten", "Shape", "Size", "ArgMax", "ArgMin",
                 "NonZero", "Neg", "Floor", "Ceil", "Sqrt", "Reciprocal", "Sin", "Cos", "Tan", "Asin", "Acos",
                 "Atan", "Round", "Sign", "Sinh", "Asinh", "Cosh", "Acosh", "Atanh", "Not", "ExtractImagePatches");
+            Add(new OperatorSchema(1, 1, 1, 1), "RandomUniformLike", "RandomNormalLike");
+            Add(new OperatorSchema(0, 0, 1, 1), "RandomUniform", "RandomNormal");
+            Add(new OperatorSchema(1, 1, 1, 1, 7), "Multinomial");
+            Add(new OperatorSchema(4, 4, 1, 1), "RNN", "GRU", "LSTM");
+            Add(new OperatorSchema(1, 1, 1, 1, 15), "Bernoulli");
             Add(new OperatorSchema(2, 2, 1, 1),
                 "PRelu", "MatMul", "CastLike", "Expand", "CumSum", "Compress", "Gather", "GatherElements", "GatherND",
                 "GridSample", "Add", "Sub", "Mul", "Div", "Max", "Min", "Pow", "Mod", "Equal", "Greater", "GreaterOrEqual",
                 "Less", "LessOrEqual", "And", "Or", "Xor");
+            Add(new OperatorSchema(3, 3, 1, 1, 10), "RoiAlign");
             Add(new OperatorSchema(3, 3, 1, 1), "Where", "OneHot", "Range", "Scatter", "ScatterElements", "ScatterND");
             Add(new OperatorSchema(0, 0, 1, 1), "Constant");
             Add(new OperatorSchema(1, 3, 1, 2), "Dropout");
@@ -681,6 +711,7 @@ namespace Aexis.Execution
             Add(new OperatorSchema(1, int.MaxValue, 1, 1), "Concat", "Sum", "Mean");
             Add(new OperatorSchema(1, 2, 1, int.MaxValue), "Split");
             Add(new OperatorSchema(1, 2, 1, 1), "Squeeze", "Unsqueeze", "TopK");
+            Add(new OperatorSchema(2, 5, 1, 1, 10), "NonMaxSuppression");
             Add(new OperatorSchema(1, 5, 1, 1), "Slice");
             Add(new OperatorSchema(1, 1, 1, 1), "Cast", "ConstantOfShape");
             Add(new OperatorSchema(1, 2, 1, 1),
@@ -714,6 +745,8 @@ namespace Aexis.Execution
                 case "GreaterOrEqual":
                 case "LessOrEqual": return 12;
                 case "HardSwish": return 14;
+                case "RoiAlign": return 10;
+                case "NonMaxSuppression": return 10;
                 case "GridSample": return 16;
                 case "CastLike": return 15;
                 default: return schemaMinimum;
@@ -854,6 +887,24 @@ namespace Aexis.Execution
                         "Graph output " + name + " is not a graph input, initializer, or node output.",
                         "Connect the output to an existing tensor producer and preserve topological order.", true));
             }
+        }
+
+        private static bool IsLayout0RecurrentGraphInput(IList<OnnxNode> nodes, string inputName)
+        {
+            if (nodes == null || string.IsNullOrWhiteSpace(inputName))
+                return false;
+            for (var index = 0; index < nodes.Count; index++)
+            {
+                var node = nodes[index];
+                if (node == null || node.inputs == null || node.inputs.Count == 0 || !string.Equals(node.inputs[0], inputName, StringComparison.Ordinal))
+                    continue;
+                if ((string.Equals(node.opType, "RNN", StringComparison.Ordinal)
+                        || string.Equals(node.opType, "GRU", StringComparison.Ordinal)
+                        || string.Equals(node.opType, "LSTM", StringComparison.Ordinal))
+                    && GetInt(node, "layout", 0) == 0)
+                    return true;
+            }
+            return false;
         }
 
         private static string FormatRange(int minimum, int maximum)
@@ -1157,6 +1208,30 @@ namespace Aexis.Execution
                 layer.intParams[0] = GetInt(node, "fmod", 0) != 0 ? "12" : "19";
             }
 
+            if (string.Equals(node.opType, "RandomUniformLike", StringComparison.Ordinal)
+                || string.Equals(node.opType, "RandomNormalLike", StringComparison.Ordinal)
+                || string.Equals(node.opType, "Bernoulli", StringComparison.Ordinal))
+            {
+                ConfigureDeterministicRandomLikeContract(node, layer, inputs, diagnostics, index);
+            }
+            else if (string.Equals(node.opType, "RandomUniform", StringComparison.Ordinal)
+                || string.Equals(node.opType, "RandomNormal", StringComparison.Ordinal))
+            {
+                ConfigureDeterministicStaticRandomContract(node, layer, inputs, diagnostics, index);
+            }
+
+            if (string.Equals(node.opType, "RNN", StringComparison.Ordinal)
+                || string.Equals(node.opType, "GRU", StringComparison.Ordinal)
+                || string.Equals(node.opType, "LSTM", StringComparison.Ordinal))
+            {
+                ConfigureBoundedRecurrentContract(node, layer, inputs, initializers, diagnostics, index);
+            }
+
+            if (string.Equals(node.opType, "Multinomial", StringComparison.Ordinal))
+            {
+                ConfigureBoundedMultinomialContract(node, layer, inputs, diagnostics, index);
+            }
+
             if (string.Equals(node.opType, "GridSample", StringComparison.Ordinal))
             {
                 var validInput = inputs.Count == 2
@@ -1195,6 +1270,68 @@ namespace Aexis.Execution
                 layer.stringParams["onnx.mode"] = mode;
                 layer.stringParams["onnx.padding_mode"] = padding;
                 layer.stringParams["onnx.align_corners"] = layer.intParams[2];
+            }
+
+            if (string.Equals(node.opType, "RoiAlign", StringComparison.Ordinal))
+            {
+                var validInput = inputs.Count == 3
+                    && inputs[0]?.shape != null && inputs[0].shape.Length == 4
+                    && inputs[1]?.shape != null && inputs[1].shape.Length == 2
+                    && inputs[2]?.shape != null && inputs[2].shape.Length == 1
+                    && inputs[0].onnxDataType == 1 && inputs[1].onnxDataType == 1
+                    && (inputs[2].onnxDataType == 6 || inputs[2].onnxDataType == 7)
+                    && inputs[0].shape[0] == 1
+                    && inputs[1].shape[0] > 0 && inputs[1].shape[1] == 4
+                    && inputs[2].shape[0] == inputs[1].shape[0]
+                    && !HasDynamic(inputs[0].shape) && !HasDynamic(inputs[1].shape) && !HasDynamic(inputs[2].shape);
+                if (!validInput)
+                {
+                    diagnostics.Add(Diagnostic(index, layer.name, node.opType, "unsupported-roialign-pack4-profile",
+                        "RoiAlign requires static FP32 X[N=1,C,H,W], static FP32 rois[num_rois,4], and static INT32/INT64 batch_indices[num_rois].",
+                        "Export a static batch-one RoiAlign graph with rank-4 features and fixed ROI capacity.", true));
+                    return;
+                }
+
+                if (!TryGetInitializerInput(node, 2, initializers, out var batchIndices)
+                    || !TryGetIntValues(batchIndices, out var batchValues)
+                    || batchValues.Length != inputs[1].shape[0]
+                    || batchValues.Any(value => value != 0))
+                {
+                    diagnostics.Add(Diagnostic(index, layer.name, node.opType, "roialign-batch-indices-not-static-zero",
+                        "The Pack4 RoiAlign profile executes a static batch-one feature texture and requires immutable batch_indices containing only zero.",
+                        "Fold batch_indices into an INT32/INT64 zero initializer; multi-batch RoiAlign is not part of this profile.", true));
+                    return;
+                }
+
+                var mode = GetString(node, "mode") ?? "avg";
+                var coordinateTransform = GetString(node, "coordinate_transformation_mode") ?? "half_pixel";
+                var pooledHeight = GetInt(node, "output_height", 0);
+                var pooledWidth = GetInt(node, "output_width", 0);
+                var samplingRatio = GetInt(node, "sampling_ratio", 0);
+                var spatialScale = GetFloat(node, "spatial_scale", 1f);
+                if (!string.Equals(mode, "avg", StringComparison.Ordinal)
+                    || !string.Equals(coordinateTransform, "half_pixel", StringComparison.Ordinal)
+                    || pooledHeight <= 0 || pooledWidth <= 0 || samplingRatio < 0 || spatialScale <= 0f)
+                {
+                    diagnostics.Add(Diagnostic(index, layer.name, node.opType, "unsupported-roialign-attributes",
+                        "The Pack4 RoiAlign profile supports mode=avg, coordinate_transformation_mode=half_pixel, positive output_height/output_width/spatial_scale, and sampling_ratio >= 0.",
+                        "Export the standard average half-pixel RoiAlign profile or add a separately verified GPU kernel.", true));
+                    return;
+                }
+
+                // Batch indices are proven immutable zero at import time, so they do
+                // not become a runtime activation or a third GPU texture binding.
+                layer.bottomNames = new[] { node.inputs[0], node.inputs[1] };
+                layer.bottoms = layer.bottomNames.Length;
+                layer.intParams[0] = pooledWidth.ToString(CultureInfo.InvariantCulture);
+                layer.intParams[1] = pooledHeight.ToString(CultureInfo.InvariantCulture);
+                layer.intParams[2] = spatialScale.ToString("R", CultureInfo.InvariantCulture);
+                layer.intParams[3] = samplingRatio.ToString(CultureInfo.InvariantCulture);
+                layer.intParams[4] = "1";
+                layer.intParams[5] = "1";
+                layer.stringParams["onnx.mode"] = mode;
+                layer.stringParams["onnx.coordinate_transformation_mode"] = coordinateTransform;
+                layer.stringParams["onnx.batch_indices"] = node.inputs[2];
             }
 
             if (string.Equals(node.opType, "Not", StringComparison.Ordinal))
@@ -2475,6 +2612,158 @@ namespace Aexis.Execution
             return Clone(onnxShape);
         }
 
+        // A high-rank ONNX value is not presented to a kernel as a high-rank texture.
+        // The bounded arena profile removes the proven singleton batch and folds only
+        // leading non-spatial axes into C, leaving the trailing D/H/W coordinate order
+        // intact. Operators that observe, permute, or reduce those axes are rejected
+        // before this representation reaches the execution plan.
+        private static bool TryGetBoundedHighRankRuntimeShape(
+            long[] logicalShape,
+            AexisOnnxGraphLoweringOptions options,
+            out long[] runtimeShape)
+        {
+            runtimeShape = Array.Empty<long>();
+            if (!IsBoundedHighRankArenaShape(logicalShape, options))
+                return false;
+
+            runtimeShape = ToRuntimeTextureShape(logicalShape, 0);
+            if (runtimeShape == null || runtimeShape.Length < 1 || runtimeShape.Length > 4
+                || HasDynamic(runtimeShape) || HasZeroExtent(runtimeShape))
+            {
+                runtimeShape = Array.Empty<long>();
+                return false;
+            }
+            return true;
+        }
+
+        private static bool IsBoundedHighRankArenaShape(long[] logicalShape, AexisOnnxGraphLoweringOptions options)
+        {
+            if (options == null || !options.enableBoundedHighRankArenaLowering
+                || logicalShape == null || logicalShape.Length < 5)
+            {
+                return false;
+            }
+
+            var maximumRank = Math.Min(8, options.maximumBoundedArenaRank);
+            if (maximumRank < 5 || logicalShape.Length > maximumRank || logicalShape[0] != 1)
+                return false;
+            for (var axis = 0; axis < logicalShape.Length; axis++)
+            {
+                if (logicalShape[axis] <= 0 || logicalShape[axis] > int.MaxValue)
+                    return false;
+            }
+            return true;
+        }
+
+        private static long[] ToRuntimeTextureShape(long[] onnxShape, int batchAxis)
+        {
+            if (onnxShape == null || onnxShape.Length == 0)
+                return new long[] { 1 };
+
+            var source = Clone(onnxShape);
+            if (batchAxis >= 0)
+            {
+                if (batchAxis >= source.Length)
+                    return source;
+                source = RemoveAxis(source, batchAxis);
+            }
+            if (source.Length <= 4)
+                return source;
+            // Only rank-5..8 source shapes can belong to the bounded arena profile.
+            // Leave every other form unmodified so the normal strict rank validation
+            // emits an actionable rejection instead of creating an ambiguous layout.
+            if (source.Length > 7 || HasDynamic(source) || HasZeroExtent(source))
+                return source;
+
+            var foldedAxes = source.Length - 3;
+            long channels = 1;
+            try
+            {
+                for (var axis = 0; axis < foldedAxes; axis++)
+                    channels = checked(channels * source[axis]);
+            }
+            catch (OverflowException)
+            {
+                return source;
+            }
+            if (channels <= 0 || channels > int.MaxValue)
+                return source;
+
+            var runtime = new long[4];
+            runtime[0] = channels;
+            runtime[1] = source[source.Length - 3];
+            runtime[2] = source[source.Length - 2];
+            runtime[3] = source[source.Length - 1];
+            return runtime;
+        }
+
+        private static bool ValidateBoundedHighRankArenaProfile(
+            OnnxNode node,
+            List<AexisOnnxTensorDescriptor> inputs,
+            AexisOnnxGraphLoweringOptions options,
+            int index,
+            List<AexisOnnxLoweringDiagnostic> diagnostics)
+        {
+            var hasHighRankInput = false;
+            for (var inputIndex = 0; inputIndex < (inputs?.Count ?? 0); inputIndex++)
+            {
+                var input = inputs[inputIndex];
+                if (input?.shape == null || input.shape.Length <= 4)
+                    continue;
+                hasHighRankInput = true;
+                if (input.isInitializer)
+                {
+                    diagnostics.Add(Diagnostic(index, NodeName(node, index), node.opType, "bounded-high-rank-initializer",
+                        "The bounded rank-5..8 arena profile permits texture-native activations only; immutable high-rank weights have no upload layout contract.",
+                        "Flatten or lower this initializer offline to a supported rank-4-or-less immutable texture layout.", true));
+                    return false;
+                }
+                if (input.batchAxis != 0 || !TryGetBoundedHighRankRuntimeShape(input.shape, options, out var expectedRuntimeShape))
+                {
+                    diagnostics.Add(Diagnostic(index, NodeName(node, index), node.opType, "unsupported-bounded-high-rank-shape",
+                        "Input " + input.name + " has logical shape [" + Join(input.shape) + "] without the required static batch=1 Pack4 arena mapping.",
+                        "Enable the bounded arena profile and export a static rank-5..8 tensor with leading batch=1 and positive extents.", true));
+                    return false;
+                }
+                if (!ShapesEqual(input.runtimeShape, expectedRuntimeShape))
+                {
+                    diagnostics.Add(Diagnostic(index, NodeName(node, index), node.opType, "inconsistent-bounded-high-rank-storage",
+                        "Input " + input.name + " maps logical [" + Join(input.shape) + "] to physical CDHW [" + Join(expectedRuntimeShape) + "], but its descriptor carries a different storage shape.",
+                        "Re-import the graph so its static Pack4 execution descriptors are regenerated.", true));
+                    return false;
+                }
+            }
+
+            if (!hasHighRankInput)
+                return true;
+
+            var outputCount = 0;
+            for (var outputIndex = 0; outputIndex < (node?.outputs?.Count ?? 0); outputIndex++)
+                if (!string.IsNullOrEmpty(node.outputs[outputIndex])) outputCount++;
+            var isUnary = string.Equals(node.opType, "Identity", StringComparison.Ordinal)
+                || string.Equals(node.opType, "Relu", StringComparison.Ordinal)
+                || string.Equals(node.opType, "Sigmoid", StringComparison.Ordinal)
+                || string.Equals(node.opType, "Tanh", StringComparison.Ordinal);
+            var isExactBinary = string.Equals(node.opType, "Add", StringComparison.Ordinal)
+                || string.Equals(node.opType, "Sub", StringComparison.Ordinal)
+                || string.Equals(node.opType, "Mul", StringComparison.Ordinal)
+                || string.Equals(node.opType, "Div", StringComparison.Ordinal);
+
+            if (isUnary && inputs.Count == 1 && outputCount == 1)
+                return true;
+            if (isExactBinary && inputs.Count == 2 && outputCount == 1
+                && inputs[0] != null && inputs[1] != null && ShapesEqual(inputs[0].shape, inputs[1].shape))
+            {
+                return true;
+            }
+
+            diagnostics.Add(Diagnostic(index, NodeName(node, index), node.opType, "unsupported-bounded-high-rank-profile",
+                "Logical rank-5..8 Pack4 arena tensors only support Identity, Relu, Sigmoid, Tanh, and exact-shape Add/Sub/Mul/Div; "
+                + node.opType + " is not layout-preserving under the folded CDHW storage contract.",
+                "Lower this node offline to a rank <=4 profile, or keep the high-rank segment to the documented static pointwise operators.", true));
+            return false;
+        }
+
         private static void SetNcnnShapeParams(AexisGraphModel.Layer layer, long[] logicalShape)
         {
             layer.intParams.Remove(0);
@@ -2881,6 +3170,7 @@ namespace Aexis.Execution
             OnnxNode node,
             AexisGraphModel.Layer layer,
             List<AexisOnnxTensorDescriptor> inputs,
+            Dictionary<string, OnnxTensor> initializers,
             IReadOnlyList<OnnxNode> graphNodes,
             AexisOnnxGraphLoweringOptions options,
             int index,
@@ -2973,6 +3263,145 @@ namespace Aexis.Execution
                 layer.intParams[30] = layer.stringParams["capacity"];
                 var countName = layer.topNames.Length > 0 ? layer.topNames[0] + ".count" : layer.name + ".count";
                 layer.topNames = new[] { layer.topNames[0], countName };
+                layer.tops = 2;
+                return true;
+            }
+
+            if (string.Equals(node.opType, "NonMaxSuppression", StringComparison.Ordinal))
+            {
+                if (!options.enableBoundedNonMaxSuppressionLowering)
+                {
+                    diagnostics.Add(Diagnostic(index, layer.name, node.opType, "bounded-nms-profile-required",
+                        "NonMaxSuppression has a data-dependent standard ONNX result and requires the explicit Aexis padded-index/GPU-count texture profile.",
+                        "Enable bounded NMS lowering and supply a fixed output capacity; keep both generated texture outputs terminal until a count-aware GPU consumer exists.", true));
+                    return false;
+                }
+
+                if (node.inputs.Count < 2 || node.inputs.Count > 5 || inputs.Count < 2
+                    || inputs[0] == null || inputs[1] == null
+                    || !IsStrictFloat32Descriptor(inputs[0]) || !IsStrictFloat32Descriptor(inputs[1])
+                    || inputs[0].shape == null || inputs[1].shape == null
+                    || HasDynamic(inputs[0].shape) || HasDynamic(inputs[1].shape)
+                    || inputs[0].shape.Length != 3 || inputs[1].shape.Length != 3
+                    || inputs[0].shape[0] != 1 || inputs[1].shape[0] != 1
+                    || inputs[0].shape[1] <= 0 || inputs[0].shape[1] > int.MaxValue
+                    || inputs[0].shape[2] != 4
+                    || inputs[1].shape[1] <= 0 || inputs[1].shape[1] > int.MaxValue
+                    || inputs[1].shape[2] != inputs[0].shape[1])
+                {
+                    diagnostics.Add(Diagnostic(index, layer.name, node.opType, "unsupported-bounded-nms-input-profile",
+                        "Bounded NMS requires static FP32 boxes [1,num_boxes,4] and scores [1,num_classes,num_boxes] with positive Int32-range extents.",
+                        "Export static batch-one FP32 boxes/scores in the standard ONNX layout.", true));
+                    return false;
+                }
+                if (node.outputs.Count != 1 || string.IsNullOrWhiteSpace(node.outputs[0]))
+                {
+                    diagnostics.Add(Diagnostic(index, layer.name, node.opType, "invalid-bounded-nms-output",
+                        "Bounded NMS accepts one named standard ONNX output and synthesizes its GPU count texture output.",
+                        "Export exactly one selected_indices output.", true));
+                    return false;
+                }
+
+                var capacity = ResolveCapacity(options, layer.name, node.outputs[0], null);
+                if (capacity <= 0)
+                {
+                    diagnostics.Add(Diagnostic(index, layer.name, node.opType, "missing-output-capacity",
+                        "Bounded NMS requires a positive fixed selected-index capacity before a texture plan can be compiled.",
+                        "Declare outputCapacities by node or selected_indices output name.", true));
+                    return false;
+                }
+
+                var maxOutputPerClass = 0;
+                if (node.inputs.Count > 2 && !string.IsNullOrEmpty(node.inputs[2]))
+                {
+                    if (!TryGetInitializerInput(node, 2, initializers, out var maximumTensor)
+                        || !TryGetIntValues(maximumTensor, out var maximumValues) || maximumValues.Length != 1
+                        || maximumValues[0] < 0 || maximumValues[0] > int.MaxValue)
+                    {
+                        diagnostics.Add(Diagnostic(index, layer.name, node.opType, "non-static-nms-max-output",
+                            "max_output_boxes_per_class must be an immutable non-negative Int32-range scalar for bounded NMS.",
+                            "Fold the scalar into an INT32/INT64 initializer.", true));
+                        return false;
+                    }
+                    maxOutputPerClass = (int)maximumValues[0];
+                }
+
+                var iouThreshold = 0f;
+                if (node.inputs.Count > 3 && !string.IsNullOrEmpty(node.inputs[3]))
+                {
+                    if (!TryGetInitializerInput(node, 3, initializers, out var iouTensor)
+                        || !TryGetScalarFloat(iouTensor, out iouThreshold)
+                        || float.IsNaN(iouThreshold) || iouThreshold < 0f || iouThreshold > 1f)
+                    {
+                        diagnostics.Add(Diagnostic(index, layer.name, node.opType, "non-static-nms-iou-threshold",
+                            "iou_threshold must be an immutable scalar in [0,1] for the deterministic GPU NMS kernel.",
+                            "Fold a valid FP32 scalar threshold into an initializer.", true));
+                        return false;
+                    }
+                }
+
+                var scoreThreshold = float.NegativeInfinity;
+                if (node.inputs.Count > 4 && !string.IsNullOrEmpty(node.inputs[4]))
+                {
+                    if (!TryGetInitializerInput(node, 4, initializers, out var scoreTensor)
+                        || !TryGetScalarFloat(scoreTensor, out scoreThreshold) || float.IsNaN(scoreThreshold))
+                    {
+                        diagnostics.Add(Diagnostic(index, layer.name, node.opType, "non-static-nms-score-threshold",
+                            "score_threshold must be an immutable non-NaN scalar for the deterministic GPU NMS kernel.",
+                            "Fold the FP32 scalar threshold into an initializer.", true));
+                        return false;
+                    }
+                }
+
+                var centerPointBox = GetInt(node, "center_point_box", 0);
+                if (centerPointBox < 0 || centerPointBox > 1)
+                {
+                    diagnostics.Add(Diagnostic(index, layer.name, node.opType, "unsupported-nms-center-point-box",
+                        "center_point_box must be 0 (corner coordinates) or 1 (center coordinates).",
+                        "Set center_point_box to 0 or 1 before strict import.", true));
+                    return false;
+                }
+
+                long maximumSelected;
+                try
+                {
+                    maximumSelected = checked(inputs[1].shape[1] * (long)maxOutputPerClass);
+                }
+                catch (OverflowException)
+                {
+                    maximumSelected = long.MaxValue;
+                }
+                if (maxOutputPerClass > capacity || maximumSelected > capacity)
+                {
+                    diagnostics.Add(Diagnostic(index, layer.name, node.opType, "insufficient-output-capacity",
+                        "NMS capacity " + capacity.ToString(CultureInfo.InvariantCulture) + " is below the static maximum " + maximumSelected.ToString(CultureInfo.InvariantCulture) + " selected rows.",
+                        "Use capacity >= num_classes * max_output_boxes_per_class so GPU execution never truncates standard ONNX results.", true));
+                    return false;
+                }
+
+                var consumer = FindTensorConsumer(graphNodes, node.outputs[0], index);
+                if (consumer != null)
+                {
+                    diagnostics.Add(Diagnostic(index, layer.name, node.opType, "bounded-nms-consumer-requires-count",
+                        "Bounded NMS output " + node.outputs[0] + " is consumed by " + NodeName(consumer.Value.node, consumer.Value.index)
+                        + " without its generated GPU count texture.",
+                        "Keep padded indices/count terminal, or implement an explicit count-aware texture-native consumer profile.", true));
+                    return false;
+                }
+
+                var countName = node.outputs[0] + ".aexis_count";
+                layer.intParams[0] = capacity.ToString(CultureInfo.InvariantCulture);
+                layer.intParams[1] = maxOutputPerClass.ToString(CultureInfo.InvariantCulture);
+                layer.intParams[2] = centerPointBox.ToString(CultureInfo.InvariantCulture);
+                layer.intParams[3] = iouThreshold.ToString("R", CultureInfo.InvariantCulture);
+                layer.intParams[4] = scoreThreshold.ToString("R", CultureInfo.InvariantCulture);
+                layer.stringParams["capacity"] = layer.intParams[0];
+                layer.stringParams["max_output_boxes_per_class"] = layer.intParams[1];
+                layer.stringParams["center_point_box"] = layer.intParams[2];
+                layer.stringParams["aexis.count_output"] = countName;
+                layer.bottomNames = new[] { node.inputs[0], node.inputs[1] };
+                layer.bottoms = 2;
+                layer.topNames = new[] { node.outputs[0], countName };
                 layer.tops = 2;
                 return true;
             }
@@ -3223,9 +3652,47 @@ namespace Aexis.Execution
             var type = inputs.Count > 0 ? inputs[0].dataType : TensorDataType.Unknown;
             var onnxDataType = inputs.Count > 0 ? inputs[0].onnxDataType : 0;
             var shape = inputs.Count > 0 ? Clone(inputs[0].shape) : Array.Empty<long>();
+            var staticRandom = string.Equals(node.opType, "RandomUniform", StringComparison.Ordinal)
+                || string.Equals(node.opType, "RandomNormal", StringComparison.Ordinal);
+            var boundedRecurrent = string.Equals(node.opType, "RNN", StringComparison.Ordinal)
+                || string.Equals(node.opType, "GRU", StringComparison.Ordinal)
+                || string.Equals(node.opType, "LSTM", StringComparison.Ordinal);
+            var boundedMultinomial = string.Equals(node.opType, "Multinomial", StringComparison.Ordinal);
+            if (staticRandom)
+            {
+                type = TensorDataType.Float32;
+                onnxDataType = 1;
+                shape = GetInts(node, "shape", Array.Empty<long>());
+            }
+            if (boundedRecurrent
+                && inputs.Count > 0 && inputs[0]?.shape != null && inputs[0].shape.Length == 3)
+            {
+                var hiddenSize = GetInt(node, "hidden_size", 0);
+                type = TensorDataType.Float32;
+                onnxDataType = 1;
+                // The bounded native profile drops the standard singleton
+                // direction axis and keeps [sequence, batch=1, hidden].
+                shape = hiddenSize > 0 ? new[] { inputs[0].shape[0], 1L, (long)hiddenSize } : Dynamic(3);
+            }
+            if (boundedMultinomial && inputs.Count == 1 && inputs[0]?.shape != null && inputs[0].shape.Length == 2)
+            {
+                type = TensorDataType.Int32;
+                onnxDataType = 6;
+                var sampleSize = GetInt(node, "sample_size", 0);
+                shape = sampleSize > 0 ? new[] { inputs[0].shape[0], (long)sampleSize } : Dynamic(2);
+            }
             if (string.Equals(node.opType, "Split", StringComparison.Ordinal))
             {
                 InferSplitOutputs(node, inputs, descriptors, initializers, options, index, diagnostics);
+                return;
+            }
+            if (string.Equals(node.opType, "NonMaxSuppression", StringComparison.Ordinal))
+            {
+                var capacity = ResolveCapacity(options, NodeName(node, index), node.outputs.Count > 0 ? node.outputs[0] : string.Empty, null);
+                if (capacity <= 0 || node.outputs.Count == 0 || string.IsNullOrWhiteSpace(node.outputs[0]))
+                    return;
+                Register(descriptors, node.outputs[0], TensorDataType.Int32, new long[] { capacity, 3 }, false, 6);
+                Register(descriptors, node.outputs[0] + ".aexis_count", TensorDataType.Int32, new long[] { 1 }, false, 6);
                 return;
             }
             var boundedDataIndexCapacity = (string.Equals(node.opType, "NonZero", StringComparison.Ordinal) || string.Equals(node.opType, "Compress", StringComparison.Ordinal))
@@ -3253,6 +3720,17 @@ namespace Aexis.Execution
                 && inputs[0].shape?.Length == 4 && inputs[1].shape?.Length == 4)
             {
                 shape = new[] { inputs[0].shape[0], inputs[0].shape[1], inputs[1].shape[1], inputs[1].shape[2] };
+            }
+            if (string.Equals(node.opType, "RoiAlign", StringComparison.Ordinal) && inputs.Count == 3
+                && inputs[0].shape?.Length == 4 && inputs[1].shape?.Length == 2)
+            {
+                shape = new[]
+                {
+                    inputs[1].shape[0],
+                    inputs[0].shape[1],
+                    GetInt(node, "output_height", -1),
+                    GetInt(node, "output_width", -1)
+                };
             }
             if (string.Equals(node.opType, "Transpose", StringComparison.Ordinal)) shape = InferTranspose(node, shape);
             if (string.Equals(node.opType, "Flatten", StringComparison.Ordinal)) shape = InferFlatten(node, shape);
@@ -3340,13 +3818,22 @@ namespace Aexis.Execution
 
             if (options.rejectDynamicShapes && HasDynamic(shape))
                 diagnostics.Add(Diagnostic(index, NodeName(node, index), node.opType, "dynamic-shape-not-static", "Output shape cannot be proven statically for " + node.opType + ".", "Supply a capacity-bounded GPU shape/index contract or lower this dynamic node before strict import.", true));
-            if (shape.Length > 4)
+            if (shape.Length > 4 && !TryGetBoundedHighRankRuntimeShape(shape, options, out _))
                 diagnostics.Add(Diagnostic(index, NodeName(node, index), node.opType, "unsupported-output-rank",
-                    "Output rank exceeds the P0 rank-4 texture descriptor contract.", "Lower or flatten this output to rank <= 4.", true));
+                    "Output rank exceeds the static rank-4 texture descriptor contract and has no bounded rank-5..8 arena mapping.",
+                    "Use a static batch-one rank-5..8 pointwise profile or lower this output to rank <=4.", true));
             if (HasZeroExtent(shape))
                 diagnostics.Add(Diagnostic(index, NodeName(node, index), node.opType, "empty-output-tensor",
                     "Output contains a zero extent with no P0 texture storage contract.", "Remove empty tensor branches before import.", true));
-            var batchAxis = InferOutputBatchAxis(node, inputs, shape, initializers, index, diagnostics);
+            // ONNX RandomUniform/RandomNormal have no activation source from which
+            // to inherit batch semantics. A declared [1,C,H,W] shape is normalized
+            // to the product's batch-one rank-3 Pack4 contract; [C,D,H,W] remains
+            // the independently supported rank-4 CDHW profile.
+            var batchAxis = boundedRecurrent
+                ? -1
+                : staticRandom && shape.Length == 4 && shape[0] == 1
+                    ? 0
+                    : InferOutputBatchAxis(node, inputs, shape, initializers, index, diagnostics);
             foreach (var output in node.outputs)
             {
                 if (string.IsNullOrEmpty(output)) continue;
@@ -3911,7 +4398,7 @@ namespace Aexis.Execution
                 dataType = type,
                 onnxDataType = onnxDataType != 0 ? onnxDataType : ToOnnxDataType(type),
                 shape = sourceShape,
-                runtimeShape = initializer ? ToRuntimeConstantShape(sourceShape) : Clone(sourceShape),
+                runtimeShape = initializer ? ToRuntimeConstantShape(sourceShape) : ToRuntimeTextureShape(sourceShape, -1),
                 batchAxis = -1,
                 isInitializer = initializer
             };
@@ -3943,7 +4430,7 @@ namespace Aexis.Execution
         {
             if (descriptor == null) return;
             descriptor.batchAxis = batchAxis;
-            descriptor.runtimeShape = RemoveAxis(descriptor.shape, batchAxis);
+            descriptor.runtimeShape = ToRuntimeTextureShape(descriptor.shape, batchAxis);
         }
 
         private static int InferOutputBatchAxis(
@@ -3954,6 +4441,10 @@ namespace Aexis.Execution
             int index,
             List<AexisOnnxLoweringDiagnostic> diagnostics)
         {
+            // ONNX RoiAlign replaces the batch axis with the statically bounded ROI
+            // axis. Preserve it as Texture2DArray depth for the Pack4 kernel.
+            if (string.Equals(node.opType, "RoiAlign", StringComparison.Ordinal))
+                return -1;
             var source = FindActivationInput(inputs);
             var batchAxis = source?.batchAxis ?? -1;
             if (batchAxis < 0 || outputShape == null || outputShape.Length == 0)
@@ -4330,6 +4821,345 @@ namespace Aexis.Execution
             if (!leftVector) output.Add(a[a.Length - 2]);
             if (!rightVector) output.Add(b[b.Length - 1]);
             return output.ToArray();
+        }
+
+        private static void ConfigureDeterministicRandomLikeContract(
+            OnnxNode node,
+            AexisGraphModel.Layer layer,
+            List<AexisOnnxTensorDescriptor> inputs,
+            List<AexisOnnxLoweringDiagnostic> diagnostics,
+            int index)
+        {
+            var source = inputs != null && inputs.Count == 1 ? inputs[0] : null;
+            if (!IsStrictFloat32Descriptor(source)
+                || source.shape == null || source.runtimeShape == null
+                || source.shape.Length != 4 || source.batchAxis != 0
+                || source.shape[0] != 1 || source.runtimeShape.Length != 3
+                || HasDynamic(source.shape) || HasZeroExtent(source.shape))
+            {
+                diagnostics.Add(Diagnostic(index, layer.name, node.opType, "unsupported-deterministic-random-input-profile",
+                    node.opType + " requires one static FP32 NCHW input [1,C,H,W] whose batch-one runtime shape is exact rank-3 Pack4 storage.",
+                    "Export a static batch-one FP32 NCHW source tensor; LinearMat, rank changes, and dynamic shape generation are rejected.", true));
+                return;
+            }
+
+            if (!TryGetExactDeterministicRandomSeed(node, out var seed))
+            {
+                diagnostics.Add(Diagnostic(index, layer.name, node.opType, "missing-or-invalid-deterministic-random-seed",
+                    node.opType + " requires an explicit finite integral seed in [-16777216, 16777216] so the GPU coordinate hash is exactly reproducible.",
+                    "Set the ONNX seed attribute to an exactly representable integral FP32 value; implicit nondeterministic ONNX seeds are rejected.", true));
+                return;
+            }
+
+            if (node.attributes.TryGetValue("dtype", out var dtypeAttribute)
+                && (dtypeAttribute == null || dtypeAttribute.type != 2 || dtypeAttribute.i != 1))
+            {
+                diagnostics.Add(Diagnostic(index, layer.name, node.opType, "unsupported-deterministic-random-dtype",
+                    node.opType + " emits FP32 Pack4 values only; the ONNX dtype attribute must be absent or FLOAT (1).",
+                    "Keep the random output FP32 and cast it through a separately verified texture-native Cast node when needed.", true));
+                return;
+            }
+
+            var parameter0 = 0f;
+            var parameter1 = 1f;
+            if (string.Equals(node.opType, "RandomUniformLike", StringComparison.Ordinal))
+            {
+                parameter0 = GetFloat(node, "low", 0f);
+                parameter1 = GetFloat(node, "high", 1f);
+                if (!IsFinite(parameter0) || !IsFinite(parameter1) || !(parameter1 > parameter0))
+                {
+                    diagnostics.Add(Diagnostic(index, layer.name, node.opType, "invalid-deterministic-uniform-range",
+                        "RandomUniformLike requires finite low/high attributes with high > low for the texture-native GPU profile.",
+                        "Export finite FP32 low and high attributes with high greater than low.", true));
+                    return;
+                }
+            }
+            else if (string.Equals(node.opType, "RandomNormalLike", StringComparison.Ordinal))
+            {
+                parameter0 = GetFloat(node, "mean", 0f);
+                parameter1 = GetFloat(node, "scale", 1f);
+                if (!IsFinite(parameter0) || !IsFinite(parameter1) || !(parameter1 > 0f))
+                {
+                    diagnostics.Add(Diagnostic(index, layer.name, node.opType, "invalid-deterministic-normal-parameters",
+                        "RandomNormalLike requires finite mean and a finite scale greater than zero for the texture-native GPU profile.",
+                        "Export a finite FP32 mean and positive finite scale.", true));
+                    return;
+                }
+            }
+
+            // The canonical factory key is RandomLike, so retain the exact ONNX
+            // operation separately. The runtime uses this value to select its real
+            // GPU shader mode after the import-time proof has completed.
+            layer.stringParams["aexis.random.operator"] = node.opType;
+            layer.intParams[0] = seed.ToString(CultureInfo.InvariantCulture);
+            layer.intParams[1] = parameter0.ToString("R", CultureInfo.InvariantCulture);
+            layer.intParams[2] = parameter1.ToString("R", CultureInfo.InvariantCulture);
+        }
+
+        private static void ConfigureDeterministicStaticRandomContract(
+            OnnxNode node,
+            AexisGraphModel.Layer layer,
+            List<AexisOnnxTensorDescriptor> inputs,
+            List<AexisOnnxLoweringDiagnostic> diagnostics,
+            int index)
+        {
+            if (inputs == null || inputs.Count != 0)
+            {
+                diagnostics.Add(Diagnostic(index, layer.name, node.opType, "unsupported-static-random-input-profile",
+                    node.opType + " is a zero-input operator; its output shape must come from the immutable ONNX shape attribute.",
+                    "Remove activation inputs and export a static shape attribute.", true));
+                return;
+            }
+            if (!TryGetExactDeterministicRandomSeed(node, out var seed))
+            {
+                diagnostics.Add(Diagnostic(index, layer.name, node.opType, "missing-or-invalid-deterministic-random-seed",
+                    node.opType + " requires an explicit finite integral seed in [-16777216, 16777216] so the GPU coordinate hash is exactly reproducible.",
+                    "Set the ONNX seed attribute to an exactly representable integral FP32 value; implicit nondeterministic ONNX seeds are rejected.", true));
+                return;
+            }
+            if (node.attributes.TryGetValue("dtype", out var dtypeAttribute)
+                && (dtypeAttribute == null || dtypeAttribute.type != 2 || dtypeAttribute.i != 1))
+            {
+                diagnostics.Add(Diagnostic(index, layer.name, node.opType, "unsupported-deterministic-random-dtype",
+                    node.opType + " emits FP32 Pack4 values only; the ONNX dtype attribute must be absent or FLOAT (1).",
+                    "Keep the random output FP32 and cast it through a separately verified texture-native Cast node when needed.", true));
+                return;
+            }
+            if (!node.attributes.TryGetValue("shape", out var shapeAttribute)
+                || shapeAttribute == null || shapeAttribute.type != 7)
+            {
+                diagnostics.Add(Diagnostic(index, layer.name, node.opType, "missing-static-random-shape",
+                    node.opType + " requires an immutable ONNX INT list shape attribute for the bounded Pack4 profile.",
+                    "Export a positive static rank-3 [C,H,W], batch-one [1,C,H,W], or rank-4 [C,D,H,W] shape attribute.", true));
+                return;
+            }
+
+            var shape = shapeAttribute.ints.ToArray();
+            if (shape.Length != 3 && shape.Length != 4)
+            {
+                diagnostics.Add(Diagnostic(index, layer.name, node.opType, "unsupported-static-random-rank",
+                    "The static deterministic Pack4 profile accepts only rank-3 [C,H,W], batch-one [1,C,H,W], or rank-4 [C,D,H,W] outputs.",
+                    "Export a positive static rank-3/4 output shape; rank-5 batch/depth shapes are outside the P0 arena contract.", true));
+                return;
+            }
+            for (var axis = 0; axis < shape.Length; axis++)
+            {
+                if (shape[axis] <= 0 || shape[axis] > int.MaxValue)
+                {
+                    diagnostics.Add(Diagnostic(index, layer.name, node.opType, "invalid-static-random-shape",
+                        "Static random output extents must be positive signed 32-bit values.",
+                        "Export a bounded positive shape that fits the texture arena contract.", true));
+                    return;
+                }
+            }
+
+            var runtimeShape = shape.Length == 4 && shape[0] == 1
+                ? new[] { shape[1], shape[2], shape[3] }
+                : shape;
+            var dims = runtimeShape.Length;
+            var channels = (int)runtimeShape[0];
+            var depth = dims == 4 ? (int)runtimeShape[1] : 1;
+            var height = (int)runtimeShape[dims == 4 ? 2 : 1];
+            var width = (int)runtimeShape[dims == 4 ? 3 : 2];
+            var parameter0 = string.Equals(node.opType, "RandomUniform", StringComparison.Ordinal)
+                ? GetFloat(node, "low", 0f)
+                : GetFloat(node, "mean", 0f);
+            var parameter1 = string.Equals(node.opType, "RandomUniform", StringComparison.Ordinal)
+                ? GetFloat(node, "high", 1f)
+                : GetFloat(node, "scale", 1f);
+            if (!IsFinite(parameter0) || !IsFinite(parameter1)
+                || (string.Equals(node.opType, "RandomUniform", StringComparison.Ordinal) && !(parameter1 > parameter0))
+                || (string.Equals(node.opType, "RandomNormal", StringComparison.Ordinal) && !(parameter1 > 0f)))
+            {
+                diagnostics.Add(Diagnostic(index, layer.name, node.opType, "invalid-static-random-parameters",
+                    string.Equals(node.opType, "RandomUniform", StringComparison.Ordinal)
+                        ? "RandomUniform requires finite low/high attributes with high > low."
+                        : "RandomNormal requires a finite mean and a finite scale greater than zero.",
+                    "Export finite deterministic RNG distribution attributes within the Pack4 profile.", true));
+                return;
+            }
+
+            layer.stringParams["aexis.random.operator"] = node.opType;
+            layer.intParams[0] = seed.ToString(CultureInfo.InvariantCulture);
+            layer.intParams[1] = parameter0.ToString("R", CultureInfo.InvariantCulture);
+            layer.intParams[2] = parameter1.ToString("R", CultureInfo.InvariantCulture);
+            layer.intParams[10] = dims.ToString(CultureInfo.InvariantCulture);
+            layer.intParams[11] = width.ToString(CultureInfo.InvariantCulture);
+            layer.intParams[12] = height.ToString(CultureInfo.InvariantCulture);
+            layer.intParams[13] = depth.ToString(CultureInfo.InvariantCulture);
+            layer.intParams[14] = channels.ToString(CultureInfo.InvariantCulture);
+        }
+
+        private static void ConfigureBoundedMultinomialContract(
+            OnnxNode node,
+            AexisGraphModel.Layer layer,
+            List<AexisOnnxTensorDescriptor> inputs,
+            List<AexisOnnxLoweringDiagnostic> diagnostics,
+            int index)
+        {
+            var source = inputs != null && inputs.Count == 1 ? inputs[0] : null;
+            if (!IsStrictFloat32Descriptor(source) || source.shape == null || source.shape.Length != 2
+                || HasDynamic(source.shape) || HasZeroExtent(source.shape)
+                || source.shape[0] <= 0 || source.shape[0] > AexisMultinomialLayer.MaxBatch
+                || source.shape[1] <= 1 || source.shape[1] > AexisMultinomialLayer.MaxClasses)
+            {
+                diagnostics.Add(Diagnostic(index, layer.name, node.opType, "unsupported-multinomial-logits-profile",
+                    "Multinomial requires static FP32 ONNX logits [batch=1..256,classes=2..4096]. The CommandBuffer profile represents this as Pack4 [w=1,h=batch,c=classes].",
+                    "Export static FP32 two-dimensional logits within the bounded Pack4 arena contract.", true));
+                return;
+            }
+            if (!node.attributes.TryGetValue("sample_size", out var sampleSizeAttribute)
+                || sampleSizeAttribute == null || sampleSizeAttribute.type != 2
+                || sampleSizeAttribute.i <= 0 || sampleSizeAttribute.i > AexisMultinomialLayer.MaxSamples)
+            {
+                diagnostics.Add(Diagnostic(index, layer.name, node.opType, "invalid-multinomial-sample-size",
+                    "Multinomial requires an explicit immutable sample_size in [1,256] for the fixed Pack4 output arena.",
+                    "Set the ONNX sample_size attribute to a positive integer no greater than 256.", true));
+                return;
+            }
+            if (!TryGetExactDeterministicRandomSeed(node, out var seed))
+            {
+                diagnostics.Add(Diagnostic(index, layer.name, node.opType, "missing-or-invalid-deterministic-random-seed",
+                    "Multinomial requires an explicit finite integral seed in [-16777216,16777216] for reproducible GPU sampling.",
+                    "Set the ONNX seed attribute to an exactly representable integral FP32 value.", true));
+                return;
+            }
+            if (node.attributes.TryGetValue("dtype", out var dtypeAttribute)
+                && (dtypeAttribute == null || dtypeAttribute.type != 2 || dtypeAttribute.i != 6))
+            {
+                diagnostics.Add(Diagnostic(index, layer.name, node.opType, "unsupported-multinomial-output-dtype",
+                    "The bounded GPU Multinomial profile emits logical INT32 indices in exact FP32 Pack4 lanes; dtype must be absent or INT32 (6).",
+                    "Export Multinomial with INT32 output. INT64 would require a separate exact texture representation.", true));
+                return;
+            }
+
+            layer.intParams[0] = sampleSizeAttribute.i.ToString(CultureInfo.InvariantCulture);
+            layer.intParams[1] = seed.ToString(CultureInfo.InvariantCulture);
+            layer.intParams[2] = source.shape[0].ToString(CultureInfo.InvariantCulture);
+            layer.intParams[3] = source.shape[1].ToString(CultureInfo.InvariantCulture);
+            layer.stringParams["aexis.multinomial.layout"] = "onnx[batch,classes]->pack4[w=1,h=batch,c=classes]";
+        }
+
+        private static void ConfigureBoundedRecurrentContract(
+            OnnxNode node,
+            AexisGraphModel.Layer layer,
+            List<AexisOnnxTensorDescriptor> inputs,
+            Dictionary<string, OnnxTensor> initializers,
+            List<AexisOnnxLoweringDiagnostic> diagnostics,
+            int index)
+        {
+            var gates = string.Equals(node.opType, "GRU", StringComparison.Ordinal) ? 3
+                : string.Equals(node.opType, "LSTM", StringComparison.Ordinal) ? 4 : 1;
+            if (node.inputs.Count != 4 || node.outputs.Count != 1 || inputs == null || inputs.Count != 4
+                || node.inputs.Any(string.IsNullOrWhiteSpace) || node.outputs.Any(string.IsNullOrWhiteSpace))
+            {
+                diagnostics.Add(Diagnostic(index, layer.name, node.opType, "unsupported-bounded-recurrent-arity",
+                    node.opType + " requires exactly X, W, R, B and one Y output for the bounded texture-native profile.",
+                    "Remove optional sequence_lens/initial state inputs and Y_h/Y_c outputs before export.", true));
+                return;
+            }
+            var source = inputs[0];
+            if (!IsStrictFloat32Descriptor(source) || source.isInitializer
+                || source.shape == null || source.shape.Length != 3 || HasDynamic(source.shape) || HasZeroExtent(source.shape)
+                || source.shape[0] <= 0 || source.shape[0] > 256 || source.shape[1] != 1
+                || source.shape[2] <= 0 || source.shape[2] > 256)
+            {
+                diagnostics.Add(Diagnostic(index, layer.name, node.opType, "unsupported-bounded-recurrent-input",
+                    node.opType + " requires static FP32 X[sequence<=256,1,input_size<=256].",
+                    "Export a forward batch-one sequence with the standard layout=0 X tensor; dynamic sequence lengths are not in the Pack4 arena profile.", true));
+                return;
+            }
+            var direction = GetString(node, "direction");
+            if (string.IsNullOrEmpty(direction)) direction = "forward";
+            if (!string.Equals(direction, "forward", StringComparison.Ordinal)
+                || GetInt(node, "layout", 0) != 0 || Math.Abs(GetFloat(node, "clip", 0f)) > 0f
+                || node.attributes.ContainsKey("activations") || node.attributes.ContainsKey("activation_alpha") || node.attributes.ContainsKey("activation_beta")
+                || (string.Equals(node.opType, "GRU", StringComparison.Ordinal) && GetInt(node, "linear_before_reset", 0) != 0)
+                || (string.Equals(node.opType, "LSTM", StringComparison.Ordinal) && GetInt(node, "input_forget", 0) != 0))
+            {
+                diagnostics.Add(Diagnostic(index, layer.name, node.opType, "unsupported-bounded-recurrent-attributes",
+                    "The bounded Pack4 recurrent profile accepts forward layout=0, no clip/custom activations, GRU linear_before_reset=0, and LSTM input_forget=0 only.",
+                    "Export default ONNX recurrent activations and direction, or retain this node outside the strict GPU profile.", true));
+                return;
+            }
+            if (!initializers.TryGetValue(node.inputs[1], out var inputWeights)
+                || !initializers.TryGetValue(node.inputs[2], out var recurrentWeights)
+                || !initializers.TryGetValue(node.inputs[3], out var bias))
+            {
+                diagnostics.Add(Diagnostic(index, layer.name, node.opType, "missing-bounded-recurrent-weights",
+                    "The bounded recurrent profile requires immutable FP32 W, R, and B initializers.",
+                    "Embed W/R/B in the ONNX model and remove optional runtime state inputs.", true));
+                return;
+            }
+
+            var inputSize = source.shape[2];
+            var hiddenSize = GetInt(node, "hidden_size", 0);
+            if (hiddenSize <= 0 || hiddenSize > 256
+                || inputWeights.dataType != TensorDataType.Float32 || recurrentWeights.dataType != TensorDataType.Float32 || bias.dataType != TensorDataType.Float32
+                || inputWeights.dims == null || recurrentWeights.dims == null || bias.dims == null
+                || inputWeights.dims.Length != 3 || recurrentWeights.dims.Length != 3 || bias.dims.Length != 2
+                || inputWeights.dims[0] != 1 || recurrentWeights.dims[0] != 1 || bias.dims[0] != 1
+                || inputWeights.dims[1] != gates * hiddenSize || inputWeights.dims[2] != inputSize
+                || recurrentWeights.dims[1] != gates * hiddenSize || recurrentWeights.dims[2] != hiddenSize
+                || bias.dims[1] != 2L * gates * hiddenSize
+                || !inputWeights.TryValidatePayload(out var inputWeightReason)
+                || !recurrentWeights.TryValidatePayload(out var recurrentWeightReason)
+                || !bias.TryValidatePayload(out var biasReason))
+            {
+                diagnostics.Add(Diagnostic(index, layer.name, node.opType, "invalid-bounded-recurrent-weights",
+                    "W must be [1,gates*hidden,input], R [1,gates*hidden,hidden], and B [1,2*gates*hidden] immutable FP32 tensors for hidden_size in [1,256].",
+                    "Export complete standard ONNX gate weights matching X and hidden_size; malformed payloads and non-FP32 weights are rejected.", true));
+                return;
+            }
+
+            if (!TryGetFloatValues(bias, out var sourceBias))
+            {
+                diagnostics.Add(Diagnostic(index, layer.name, node.opType, "invalid-bounded-recurrent-bias-payload",
+                    "ONNX recurrent B has no usable FP32 payload.", "Embed a complete FP32 B initializer.", true));
+                return;
+            }
+            var gateValues = checked(gates * hiddenSize);
+            var mergedBias = new float[gateValues];
+            for (var gateIndex = 0; gateIndex < gateValues; gateIndex++)
+                mergedBias[gateIndex] = sourceBias[gateIndex] + sourceBias[gateValues + gateIndex];
+
+            var mergedBiasName = "__aexis_recurrent_bias_" + index.ToString(CultureInfo.InvariantCulture) + "_" + SanitizeName(layer.name);
+            initializers[mergedBiasName] = new OnnxTensor
+            {
+                name = mergedBiasName,
+                dataType = TensorDataType.Float32,
+                onnxDataType = 1,
+                dims = new long[] { gateValues },
+                floatData = mergedBias
+            };
+            KeepOnlyFirstBottom(layer);
+            layer.intParams[0] = inputSize.ToString(CultureInfo.InvariantCulture);
+            layer.intParams[1] = hiddenSize.ToString(CultureInfo.InvariantCulture);
+            layer.intParams[2] = "0";
+            layer.intParams[3] = "0";
+            layer.intParams[4] = "0";
+            layer.stringParams["onnx.w"] = node.inputs[1];
+            layer.stringParams["onnx.r"] = node.inputs[2];
+            layer.stringParams["onnx.bias"] = mergedBiasName;
+            layer.stringParams["aexis.recurrent.operator"] = node.opType;
+        }
+
+        private static bool TryGetExactDeterministicRandomSeed(OnnxNode node, out int seed)
+        {
+            seed = 0;
+            if (node?.attributes == null || !node.attributes.TryGetValue("seed", out var attribute)
+                || attribute == null || attribute.type != 1 || !IsFinite(attribute.f))
+                return false;
+            var value = (double)attribute.f;
+            if (value < -16777216d || value > 16777216d || Math.Floor(value) != value)
+                return false;
+            seed = (int)value;
+            return true;
+        }
+
+        private static bool IsFinite(float value)
+        {
+            return !float.IsNaN(value) && !float.IsInfinity(value);
         }
 
         private static long[] InferEinsum(OnnxNode node, List<AexisOnnxTensorDescriptor> inputs)

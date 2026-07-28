@@ -1144,6 +1144,117 @@ void AexisPackRgbToPack4Gfpgan_Impl(uint3 id)
     _AexisOutArr[int3((int)id.x, (int)id.y, 0)] = float4(v.x, v.y, v.z, 0.0);
 }
 
+// P2 one-to-one depthwise CDHW convolution. The source and result are Pack4
+// Texture2DArray slices [z * packs + pack]; only immutable vectorized weights
+// use a StructuredBuffer. There is no activation buffer materialization.
+void AexisConvDepthWise3dPack4CDHW_Impl(uint3 id)
+{
+    uint outWidth, outHeight, outSlices;
+    _ConvOutArr.GetDimensions(outWidth, outHeight, outSlices);
+    if (id.x >= outWidth || id.y >= outHeight || id.z >= outSlices)
+        return;
+
+    int packCount = max(1, _OutPacks);
+    int outZ = (int)id.z / packCount;
+    int outputPack = (int)id.z - outZ * packCount;
+    if (outZ < 0 || outZ >= _OutD || outputPack < 0 || outputPack >= packCount)
+        return;
+
+    float4 sum = _DwConvB4[outputPack];
+    int kernelPlane = _KernelWVar * _KernelHVar;
+    int kernelVolume = kernelPlane * _KernelDVar;
+    for (int kz = 0; kz < _KernelDVar; kz++)
+    {
+        int inputZ = outZ * _StrideDVar - _PadFrontVar + kz * _DilationDVar;
+        if (inputZ < 0 || inputZ >= _InD)
+            continue;
+        for (int ky = 0; ky < _KernelHVar; ky++)
+        {
+            int inputY = (int)id.y * _StrideHVar - _PadTopVar + ky * _DilationHVar;
+            if (inputY < 0 || inputY >= _InH)
+                continue;
+            for (int kx = 0; kx < _KernelWVar; kx++)
+            {
+                int inputX = (int)id.x * _StrideWVar - _PadLeftVar + kx * _DilationWVar;
+                if (inputX < 0 || inputX >= _InW)
+                    continue;
+                int kernelIndex = (kz * kernelPlane) + (ky * _KernelWVar) + kx;
+                float4 weights = _DwConvW4[outputPack * kernelVolume + kernelIndex];
+                sum += _ConvInArr[int3(inputX, inputY, inputZ * packCount + outputPack)] * weights;
+            }
+        }
+    }
+
+    sum = AexisApplyActivation(sum);
+    [unroll]
+    for (int lane = 0; lane < 4; lane++)
+        if (outputPack * 4 + lane >= _OutC)
+            AexisWriteLane(sum, lane, 0.0);
+    _ConvOutArr[int3((int)id.x, (int)id.y, (int)id.z)] = sum;
+}
+
+// P2 one-to-one depthwise CDHW transposed convolution. Activations remain
+// Pack4 Texture2DArray slices [z * packs + pack]; only immutable vectorized
+// weights/bias are structured buffers.
+void AexisDeconvolutionDepthWise3dPack4CDHW_Impl(uint3 id)
+{
+    uint outWidth, outHeight, outSlices;
+    _ConvOutArr.GetDimensions(outWidth, outHeight, outSlices);
+    if (id.x >= outWidth || id.y >= outHeight || id.z >= outSlices)
+        return;
+
+    int packCount = max(1, _OutPacks);
+    int outZ = (int)id.z / packCount;
+    int outputPack = (int)id.z - outZ * packCount;
+    if (outZ < 0 || outZ >= _OutD || outputPack < 0 || outputPack >= packCount)
+        return;
+
+    float4 sum = _DwConvB4[outputPack];
+    int kernelPlane = _KernelWVar * _KernelHVar;
+    int kernelVolume = kernelPlane * _KernelDVar;
+    int borderedZ = outZ + _PadFrontVar;
+    int borderedY = (int)id.y + _PadTopVar;
+    int borderedX = (int)id.x + _PadLeftVar;
+    for (int kz = 0; kz < _KernelDVar; kz++)
+    {
+        int inputZNumerator = borderedZ - kz * _DilationDVar;
+        if (inputZNumerator < 0 || (inputZNumerator % _StrideDVar) != 0)
+            continue;
+        int inputZ = inputZNumerator / _StrideDVar;
+        if (inputZ < 0 || inputZ >= _InD)
+            continue;
+        for (int ky = 0; ky < _KernelHVar; ky++)
+        {
+            int inputYNumerator = borderedY - ky * _DilationHVar;
+            if (inputYNumerator < 0 || (inputYNumerator % _StrideHVar) != 0)
+                continue;
+            int inputY = inputYNumerator / _StrideHVar;
+            if (inputY < 0 || inputY >= _InH)
+                continue;
+            for (int kx = 0; kx < _KernelWVar; kx++)
+            {
+                int inputXNumerator = borderedX - kx * _DilationWVar;
+                if (inputXNumerator < 0 || (inputXNumerator % _StrideWVar) != 0)
+                    continue;
+                int inputX = inputXNumerator / _StrideWVar;
+                if (inputX < 0 || inputX >= _InW)
+                    continue;
+
+                int kernelIndex = (kz * kernelPlane) + (ky * _KernelWVar) + kx;
+                float4 weights = _DwConvW4[outputPack * kernelVolume + kernelIndex];
+                sum += _ConvInArr[int3(inputX, inputY, inputZ * packCount + outputPack)] * weights;
+            }
+        }
+    }
+
+    sum = AexisApplyActivation(sum);
+    [unroll]
+    for (int lane = 0; lane < 4; lane++)
+        if (outputPack * 4 + lane >= _OutC)
+            AexisWriteLane(sum, lane, 0.0);
+    _ConvOutArr[int3((int)id.x, (int)id.y, (int)id.z)] = sum;
+}
+
 void AexisGfpganStyleModulation_Impl(uint3 id)
 {
     int outputChannel = (int)id.x;

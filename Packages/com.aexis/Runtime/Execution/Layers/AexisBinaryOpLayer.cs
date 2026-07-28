@@ -325,6 +325,49 @@ namespace Aexis.Execution
                 return;
             }
 
+            if (TryResolveLinearMatScalarArrayBinaryPath(
+                    textureBlobs,
+                    textureShapes,
+                    layer.bottomNames[0],
+                    layer.bottomNames[1],
+                    out var scalarArrayLinear,
+                    out var scalarArray,
+                    out var scalarArrayShape,
+                    out var scalarArrayStorageShape,
+                    out var linearIsA))
+            {
+                RenderTexture finalTexture = null;
+                try
+                {
+                    finalTexture = owner.RentTempMat(
+                        scalarArrayStorageShape.w,
+                        scalarArrayStorageShape.h,
+                        AexisGraphSession.ResolveLinearMatTextureFormat());
+                    owner.Ops.BinaryOpLinearMatScalarArray(
+                        scalarArrayLinear.texture,
+                        scalarArray.texture,
+                        linearIsA,
+                        opType,
+                        finalTexture);
+                    AexisGraphSession.SetTextureBlob(
+                        textureBlobs,
+                        textureShapes,
+                        layer.topNames[0],
+                        finalTexture,
+                        scalarArrayShape,
+                        scalarArrayStorageShape);
+                    finalTexture = null;
+                }
+                finally
+                {
+                    if (finalTexture != null)
+                        owner.ReturnTempArray(finalTexture);
+                }
+
+                owner.Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                return;
+            }
+
             canUseTextureBinary = !owner.ForceBufferBinaryOpAll
                 && owner.TryGetPack4Texture(layer.bottomNames[0], textureBlobs, textureShapes, bufferBlobs, bufferViews, out aTex, out aTexShape)
                 && owner.TryGetPack4Texture(layer.bottomNames[1], textureBlobs, textureShapes, bufferBlobs, bufferViews, out bTex, out bTexShape);
@@ -1255,6 +1298,55 @@ namespace Aexis.Execution
             return false;
         }
 
+        private static bool TryResolveLinearMatScalarArrayBinaryPath(
+            Dictionary<string, AexisGraphSession.TensorRef> textureBlobs,
+            Dictionary<string, AexisGraphSession.BufferShape> textureShapes,
+            string aName,
+            string bName,
+            out AexisGraphSession.TensorRef linear,
+            out AexisGraphSession.TensorRef scalarArray,
+            out AexisGraphSession.BufferShape logicalShape,
+            out AexisGraphSession.BufferShape storageShape,
+            out bool linearIsA)
+        {
+            linear = null;
+            scalarArray = null;
+            logicalShape = default;
+            storageShape = default;
+            linearIsA = false;
+
+            if (!AexisGraphSession.TryGetExistingTextureContract(textureBlobs, textureShapes, aName, out var aTex, out var aContract)
+                || !AexisGraphSession.TryGetExistingTextureContract(textureBlobs, textureShapes, bName, out var bTex, out var bContract)
+                || !AexisGraphSession.BufferShapeEquals(aContract.LogicalShape, bContract.LogicalShape))
+            {
+                return false;
+            }
+
+            if (AexisGraphSession.IsStrictLinearMatTexture(aTex)
+                && IsScalarLinearArrayTexture(bTex, bContract.LogicalShape, bContract.StorageShape))
+            {
+                linear = aTex;
+                scalarArray = bTex;
+                logicalShape = aContract.LogicalShape;
+                storageShape = aContract.StorageShape;
+                linearIsA = true;
+                return true;
+            }
+
+            if (AexisGraphSession.IsStrictLinearMatTexture(bTex)
+                && IsScalarLinearArrayTexture(aTex, aContract.LogicalShape, aContract.StorageShape))
+            {
+                linear = bTex;
+                scalarArray = aTex;
+                logicalShape = bContract.LogicalShape;
+                storageShape = bContract.StorageShape;
+                linearIsA = false;
+                return true;
+            }
+
+            return false;
+        }
+
         private static bool TryResolvePack4LinearMixedBinaryPath(
             Dictionary<string, AexisGraphSession.CmdTensorRef> blobs,
             Dictionary<string, AexisGraphSession.BufferShape> shapes,
@@ -1314,6 +1406,55 @@ namespace Aexis.Execution
                 logicalShape = bShape;
                 storageShape = bContract.StorageShape;
                 pack4IsA = false;
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool TryResolveLinearMatScalarArrayBinaryPath(
+            Dictionary<string, AexisGraphSession.CmdTensorRef> blobs,
+            Dictionary<string, AexisGraphSession.BufferShape> shapes,
+            string aName,
+            string bName,
+            out AexisGraphSession.CmdTensorRef linear,
+            out AexisGraphSession.CmdTensorRef scalarArray,
+            out AexisGraphSession.BufferShape logicalShape,
+            out AexisGraphSession.BufferShape storageShape,
+            out bool linearIsA)
+        {
+            linear = null;
+            scalarArray = null;
+            logicalShape = default;
+            storageShape = default;
+            linearIsA = false;
+
+            if (!AexisGraphSession.TryGetExistingCmdTextureContract(blobs, shapes, aName, out var aTex, out var aContract)
+                || !AexisGraphSession.TryGetExistingCmdTextureContract(blobs, shapes, bName, out var bTex, out var bContract)
+                || !AexisGraphSession.BufferShapeEquals(aContract.LogicalShape, bContract.LogicalShape))
+            {
+                return false;
+            }
+
+            if (AexisGraphSession.IsStrictLinearMatTexture(aTex)
+                && IsScalarLinearArrayTexture(bTex, bContract.LogicalShape, bContract.StorageShape))
+            {
+                linear = aTex;
+                scalarArray = bTex;
+                logicalShape = aContract.LogicalShape;
+                storageShape = aContract.StorageShape;
+                linearIsA = true;
+                return true;
+            }
+
+            if (AexisGraphSession.IsStrictLinearMatTexture(bTex)
+                && IsScalarLinearArrayTexture(aTex, aContract.LogicalShape, aContract.StorageShape))
+            {
+                linear = bTex;
+                scalarArray = aTex;
+                logicalShape = bContract.LogicalShape;
+                storageShape = bContract.StorageShape;
+                linearIsA = false;
                 return true;
             }
 
@@ -2055,6 +2196,20 @@ namespace Aexis.Execution
                 return true;
             }
 
+            if (TryResolveLinearMatScalarArrayBinaryPath(
+                    context.textureBlobs,
+                    context.textureShapes,
+                    layer.bottomNames[0],
+                    layer.bottomNames[1],
+                    out _,
+                    out _,
+                    out _,
+                    out _,
+                    out _))
+            {
+                return true;
+            }
+
             canUseTextureBinary = !owner.ForceBufferBinaryOpAll
                 && owner.TryGetPack4Texture(layer.bottomNames[0], context.textureBlobs, context.textureShapes, context.bufferBlobs, context.bufferViews, out aTex, out aTexShape)
                 && owner.TryGetPack4Texture(layer.bottomNames[1], context.textureBlobs, context.textureShapes, context.bufferBlobs, context.bufferViews, out bTex, out bTexShape);
@@ -2230,6 +2385,38 @@ namespace Aexis.Execution
                                                         blobs[layer.topNames[0]] = AexisGraphSession.CreateCmdTensorRef(outArr, aShape, storageShape, owned: true);
                                                         if (shapes != null)
                                                             shapes[layer.topNames[0]] = aShape;
+                                                    }
+                                                    else if (TryResolveLinearMatScalarArrayBinaryPath(
+                                                        blobs,
+                                                        shapes,
+                                                        layer.bottomNames[0],
+                                                        layer.bottomNames[1],
+                                                        out var scalarArrayLinear,
+                                                        out var scalarArray,
+                                                        out var scalarArrayShape,
+                                                        out var scalarArrayStorageShape,
+                                                        out var linearIsA))
+                                                    {
+                                                        var outLinear = owner.RentTempMat(
+                                                            cmd,
+                                                            scalarArrayStorageShape.w,
+                                                            scalarArrayStorageShape.h,
+                                                            AexisGraphSession.ResolveLinearMatTextureFormat());
+                                                        owner.Ops.BinaryOpLinearMatScalarArray(
+                                                            cmd,
+                                                            scalarArrayLinear.texture,
+                                                            scalarArray.texture,
+                                                            linearIsA,
+                                                            opType,
+                                                            outLinear);
+                                                        blobs[layer.topNames[0]] = AexisGraphSession.CreateCmdTensorRef(
+                                                            outLinear,
+                                                            scalarArrayShape,
+                                                            scalarArrayStorageShape,
+                                                            owned: true,
+                                                            blobName: layer.topNames[0]);
+                                                        if (shapes != null)
+                                                            shapes[layer.topNames[0]] = scalarArrayShape;
                                                     }
                                                     else if (TryResolvePack4LinearMixedBinaryPath(
                                                         blobs,

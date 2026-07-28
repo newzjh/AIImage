@@ -108,6 +108,16 @@ namespace Aexis.Execution
                 case "PReLU":
                     AppendNamed(layer, "onnx.slope", tensors, output, true);
                     break;
+                case "RNN":
+                case "GRU":
+                case "LSTM":
+                    // The lowering pass has already checked standard ONNX gate
+                    // shapes and merged the W/R bias halves into one immutable
+                    // bias tensor matching AexisRecurrentLayer's GPU ABI.
+                    AppendNamed(layer, "onnx.w", tensors, output, true);
+                    AppendNamed(layer, "onnx.r", tensors, output, true);
+                    AppendNamed(layer, "onnx.bias", tensors, output, true);
+                    break;
                 case "MemoryData":
                     AppendNamedAsFloat(layer, "onnx.tensor", tensors, output, true);
                     break;

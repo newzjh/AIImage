@@ -192,6 +192,29 @@ void AexisBinaryOpLinearMatFixedInputScalar_Impl(uint3 id)
     _LinearOut0[coord] = AexisApplyBinaryOpLinearScalar(a, b);
 }
 
+// Legacy attention produces a scalar rank-two matrix as a one-slice
+// Texture2DArray. This keeps its residual with an RFloat LinearMat entirely
+// texture-backed while preserving operand order for non-commutative BinaryOps.
+void AexisBinaryOpLinearMatScalarArray_Impl(uint3 id)
+{
+    uint w, h;
+    _LinearOut0.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h)
+        return;
+
+    uint scalarW, scalarH, scalarD;
+    _BinaryLinearIn1Arr.GetDimensions(scalarW, scalarH, scalarD);
+    if (scalarD == 0 || id.x >= scalarW || id.y >= scalarH)
+        return;
+
+    int2 coord = int2((int)id.x, (int)id.y);
+    float linearValue = _LinearIn0[coord];
+    float scalarValue = _BinaryLinearIn1Arr[int3(coord, 0)].x;
+    float a = _BinaryLinearMatScalarArrayMode == 2 ? scalarValue : linearValue;
+    float b = _BinaryLinearMatScalarArrayMode == 2 ? linearValue : scalarValue;
+    _LinearOut0[coord] = AexisApplyBinaryOpLinearScalar(a, b);
+}
+
 void AexisBinaryOpPack4LinearMixed_Impl(uint3 id)
 {
     uint w, h, d;

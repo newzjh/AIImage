@@ -169,14 +169,11 @@ namespace Aexis.Execution
         public const string Contract = "aiimage.operator-capabilities/v3";
         public const string PreflightContract = "aiimage.model-preflight/v2";
 
-        // These are native ncnn built-ins present in the reference registry but
-        // outside the verified P0 Pack4 contract. Keep them in the capability
-        // document so a raw .param name never degrades to an ambiguous unknown
-        // layer or a buffer fallback.
+        // Kept for raw registry names whose runtime intentionally has no
+        // texture-native profile. P2 recurrent operators are no longer here:
+        // they have a bounded Pack4 CommandBuffer implementation below.
         private static readonly HashSet<string> UnsupportedOperators = new HashSet<string>(StringComparer.Ordinal)
         {
-            "ConvolutionDepthWise3D", "DeconvolutionDepthWise1D", "DeconvolutionDepthWise3D",
-            "GRU", "InverseSpectrogram", "LSTM", "RNN", "Spectrogram", "StatisticsPooling"
         };
 
         private static readonly HashSet<string> P1VisualOperators = new HashSet<string>(StringComparer.Ordinal)
@@ -194,7 +191,7 @@ namespace Aexis.Execution
         private static readonly HashSet<string> SentisOperators = new HashSet<string>(StringComparer.Ordinal)
         {
             "Shape", "Size", "Range", "ConstantOfShape", "Expand", "ArgMax", "ArgMin", "Where",
-            "TopK", "NonZero", "OneHot", "CumSum", "Compress", "Gather", "GatherElements", "GatherND",
+            "TopK", "Nms", "NonMaxSuppression", "NonZero", "OneHot", "CumSum", "Compress", "Gather", "GatherElements", "GatherND",
             "Scatter", "ScatterElements", "ScatterND", "Trilu"
         };
 
@@ -214,8 +211,8 @@ namespace Aexis.Execution
         private static readonly HashSet<string> TextureAndCommandBufferOperators = new HashSet<string>(StringComparer.Ordinal)
         {
             "AbsVal", "aten::to", "BatchNorm", "Bias", "BinaryOp", "Cast", "Clip", "Concat", "Convolution", "InstanceNorm", "MVN",
-            "Convolution1D", "Convolution3D", "ConvolutionDepthWise", "Crop", "Deconvolution",
-            "Deconvolution3D", "DeconvolutionDepthWise", "Eltwise", "ExpandDims", "Flatten", "GELU", "Squeeze",
+            "Convolution1D", "Convolution3D", "ConvolutionDepthWise", "ConvolutionDepthWise3D", "Crop", "Deconvolution",
+            "Deconvolution3D", "DeconvolutionDepthWise", "DeconvolutionDepthWise3D", "Eltwise", "ExpandDims", "Flatten", "GELU", "Squeeze",
             "Embed", "Gemm", "GroupNorm", "InnerProduct", "Interp", "LayerNorm", "MatMul", "Packing", "Padding",
             "MaxPoolingInd", "MaxUnPooling", "Permute", "PixelShuffle", "Pooling", "Pooling1D", "Pooling3D", "PReLU", "LRN", "Quantize", "Dequantize",
             "Requantize", "Reduction", "ReLU", "Reorg", "Reshape", "Scale", "ShuffleChannel", "Sigmoid", "Slice", "Softmax",
@@ -223,11 +220,13 @@ namespace Aexis.Execution
             "ArgMax", "ArgMin", "Where", "TopK", "OneHot", "CumSum", "Gather", "GatherElements", "pnnx.Expression",
             "AbsVal", "TanH", "Exp", "Log", "BNLL", "Power", "Threshold", "ThresholdedRelu", "ELU", "Erf", "HardSigmoid",
             "HardSwish", "Mish", "SELU", "Shrink", "Softplus", "Softsign", "IsInf", "IsNaN", "CELU"
-            , "CopyTo", "NonZero", "Compress", "GatherND", "Scatter", "ScatterElements", "ScatterND"
-            , "ConvolutionDepthWise1D", "Deconvolution1D", "ExtractPatches", "Softsign", "IsInf", "IsNaN", "Trilu"
+            , "CopyTo", "Nms", "NonMaxSuppression", "NonZero", "Compress", "GatherND", "Scatter", "ScatterElements", "ScatterND"
+            , "ConvolutionDepthWise1D", "Deconvolution1D", "DeconvolutionDepthWise1D", "ExtractPatches", "Softsign", "IsInf", "IsNaN", "Trilu"
             , "RotaryEmbed", "MultiHeadAttention", "DeepFillV2ContextualAttention"
             , "GridSample", "DeformableConv2D", "Fold", "Flip", "GLU", "Einsum", "Diag", "SPP"
             , "ROIAlign", "ROIPooling", "PSROIPooling", "Proposal", "DetectionOutput", "YoloDetectionOutput", "Yolov3DetectionOutput", "YoloDetectOut", "Yolov3DetectOut"
+            , "RandomLike", "RandomUniformLike", "RandomNormalLike", "RandomUniform", "RandomNormal", "Bernoulli", "Multinomial", "StatisticsPooling", "StatsPooling", "Spectrogram", "InverseSpectrogram", "InvSpectrogram"
+            , "RNN", "GRU", "LSTM"
         };
 
         // These operators have a loaded-runtime verifier which proves the exact node
@@ -235,8 +234,8 @@ namespace Aexis.Execution
         // and the concrete CommandBuffer Pack4 execution path.
         private static readonly HashSet<string> RuntimeVerifiedProfileOperators = new HashSet<string>(StringComparer.Ordinal)
         {
-            "Convolution", "Convolution1D", "ConvolutionDepthWise", "ConvolutionDepthWise1D", "Convolution3D",
-            "Deconvolution", "Deconvolution1D", "DeconvolutionDepthWise", "Deconvolution3D",
+            "Convolution", "Convolution1D", "ConvolutionDepthWise", "ConvolutionDepthWise1D", "ConvolutionDepthWise3D", "Convolution3D",
+            "Deconvolution", "Deconvolution1D", "DeconvolutionDepthWise1D", "DeconvolutionDepthWise", "DeconvolutionDepthWise3D", "Deconvolution3D",
             "Eltwise", "Concat", "BinaryOp", "Interp", "PixelShuffle", "UnaryOp", "AbsVal", "TanH",
             "Exp", "Log", "BNLL", "Power", "Threshold", "ThresholdedRelu", "ELU", "Erf", "HardSigmoid", "HardSwish", "Mish",
             "SELU", "Shrink", "Softplus", "Softsign", "IsInf", "IsNaN", "CELU", "Swish", "Clip", "GELU",
@@ -246,11 +245,13 @@ namespace Aexis.Execution
             "Packing", "Cast", "MatMul", "Softmax", "SDPA", "MultiHeadAttention", "NonZero", "Compress",
             "GatherND", "Scatter", "ScatterElements", "ScatterND", "CumSum", "CumulativeSum", "ReLU", "Sigmoid", "Trilu",
             "RotaryEmbed", "DeepFillV2ContextualAttention", "ShortConv", "GatedDeltaRule",
-            "Shape", "Size", "Range", "ConstantOfShape", "Expand", "Where", "Gather", "GatherElements",
+            "Shape", "Size", "Range", "ConstantOfShape", "Expand", "Where", "Gather", "GatherElements", "Nms", "NonMaxSuppression",
             "ArgMax", "ArgMin", "TopK", "OneHot", "aten::to", "Crop", "GroupNorm", "Padding",
             "Quantize", "Dequantize", "Requantize", "Reorg", "Scale", "Unfold", "ExtractPatches"
             , "GridSample", "DeformableConv2D", "Fold", "Flip", "GLU", "Einsum", "Diag", "SPP"
             , "ROIAlign", "ROIPooling", "PSROIPooling", "Proposal", "DetectionOutput", "YoloDetectionOutput", "Yolov3DetectionOutput", "YoloDetectOut", "Yolov3DetectOut"
+            , "RandomLike", "RandomUniformLike", "RandomNormalLike", "RandomUniform", "RandomNormal", "Bernoulli", "Multinomial", "StatisticsPooling", "StatsPooling", "Spectrogram", "InverseSpectrogram", "InvSpectrogram"
+            , "RNN", "GRU", "LSTM"
         };
 
         private static readonly Dictionary<string, string[]> RequiredParameters = new Dictionary<string, string[]>(StringComparer.Ordinal)
@@ -260,10 +261,13 @@ namespace Aexis.Execution
             { "Convolution1D", new[] { "0:num_output", "1:kernel_w", "6:weight_data_size" } },
             { "ConvolutionDepthWise1D", new[] { "0:num_output", "1:kernel_w", "6:weight_data_size" } },
             { "Convolution3D", new[] { "0:num_output", "1:kernel_w", "6:weight_data_size" } },
+            { "ConvolutionDepthWise3D", new[] { "0:num_output", "1:kernel_w", "6:weight_data_size", "7:group" } },
             { "Deconvolution", new[] { "0:num_output", "1:kernel_w", "6:weight_data_size" } },
             { "DeconvolutionDepthWise", new[] { "0:num_output", "1:kernel_w", "6:weight_data_size" } },
+            { "DeconvolutionDepthWise3D", new[] { "0:num_output", "1:kernel_w", "6:weight_data_size", "7:group" } },
             { "Deconvolution3D", new[] { "0:num_output", "1:kernel_w", "6:weight_data_size" } },
             { "Deconvolution1D", new[] { "0:num_output", "1:kernel_w", "6:weight_data_size" } },
+            { "DeconvolutionDepthWise1D", new[] { "0:num_output", "1:kernel_w", "6:weight_data_size", "7:group" } },
             { "Pooling3D", new[] { "0:pooling_type", "1:kernel_w" } },
             { "Bias", new[] { "0:bias_data_size" } },
             { "PReLU", new[] { "0:num_slope" } },
@@ -274,6 +278,7 @@ namespace Aexis.Execution
             { "Quantize", new[] { "0:scale_data_size" } },
             { "Dequantize", new[] { "0:scale_data_size", "1:bias_data_size" } },
             { "Requantize", new[] { "0:scale_in_data_size", "1:scale_out_data_size", "2:bias_data_size" } },
+            { "Multinomial", new[] { "0:sample_size", "1:seed" } },
             { "Reorg", new[] { "0:stride", "1:mode" } },
             { "Unfold", new[] { "1:kernel_w", "11:kernel_h" } },
             { "ExtractPatches", new[] { "1:kernel_w", "11:kernel_h" } },
@@ -290,6 +295,12 @@ namespace Aexis.Execution
             { "DetectionOutput", new[] { "0:num_class", "3:keep_top_k" } },
             { "YoloDetectionOutput", new[] { "0:num_class", "1:num_box" } },
             { "Yolov3DetectionOutput", new[] { "0:num_class", "1:num_box" } },
+            { "RandomLike", new[] { "0:seed" } },
+            { "RNN", new[] { "0:input_size", "1:hidden_size", "2:direction", "3:initial_state", "4:state_outputs" } },
+            { "GRU", new[] { "0:input_size", "1:hidden_size", "2:direction", "3:initial_state", "4:state_outputs" } },
+            { "LSTM", new[] { "0:input_size", "1:hidden_size", "2:direction", "3:initial_state", "4:state_outputs" } },
+            { "Nms", new[] { "0:capacity", "1:max_output_boxes_per_class", "2:center_point_box", "3:iou_threshold", "4:score_threshold" } },
+            { "NonMaxSuppression", new[] { "0:capacity", "1:max_output_boxes_per_class", "2:center_point_box", "3:iou_threshold", "4:score_threshold" } },
             { "YoloDetectOut", new[] { "0:num_class", "1:num_box" } },
             { "Yolov3DetectOut", new[] { "0:num_class", "1:num_box" } },
         };
@@ -300,7 +311,7 @@ namespace Aexis.Execution
             var registered = AexisLayerFactory.GetRegisteredLayerTypes();
             for (var i = 0; i < registered.Count; i++)
                 operatorNames.Add(registered[i].ToString());
-            foreach (var alias in new[] { "CumulativeSum", "ConvolutionDepthWise1D", "Deconvolution1D" })
+            foreach (var alias in new[] { "CumulativeSum", "ConvolutionDepthWise1D", "ConvolutionDepthWise3D", "Deconvolution1D", "DeconvolutionDepthWise1D", "DeconvolutionDepthWise3D", "StatisticsPooling", "InverseSpectrogram" })
                 operatorNames.Add(alias);
             // AexisLayerTypeKey is deliberately limited to 16 bytes, so keys such
             // as MultiHeadAttention cannot round-trip through ToString(). Keep the
@@ -437,7 +448,9 @@ namespace Aexis.Execution
                 int8 = hasInt8QuantizedKernel && hasTexturePath && !isUnsupported,
                 layouts = ResolveLayouts(operatorName),
                 ranks = ResolveRanks(operatorName),
-                verifiedModels = hasVerifiedCommandBufferPack4
+                verifiedModels = operatorName == "ROIAlign"
+                    ? new[] { "command-buffer-pack4-roialign-multi-roi-golden" }
+                    : hasVerifiedCommandBufferPack4
                     ? new[] { "pack4-command-buffer-smoke" }
                     : Array.Empty<string>(),
                 status = status,
@@ -458,7 +471,9 @@ namespace Aexis.Execution
                 case "Convolution3D": return "Conv3D";
                 case "Deconvolution": return "ConvTranspose2D";
                 case "Deconvolution1D": return "ConvTranspose1D";
+                case "DeconvolutionDepthWise1D": return "DepthwiseConvTranspose1D";
                 case "DeconvolutionDepthWise": return "DepthwiseConvTranspose2D";
+                case "DeconvolutionDepthWise3D": return "DepthwiseConvTranspose3D";
                 case "Deconvolution3D": return "ConvTranspose3D";
                 case "InnerProduct": return "FullyConnected";
                 case "BinaryOp": return "BinaryElementwise";
@@ -467,12 +482,19 @@ namespace Aexis.Execution
                 case "pnnx.Expression": return "Expression";
                 case "aten::to": return "Cast";
                 case "CumulativeSum": return "CumSum";
+                case "Nms": return "NonMaxSuppression";
+                case "StatisticsPooling":
+                case "StatsPooling": return "TemporalStatisticsPooling";
+                case "InverseSpectrogram":
+                case "InvSpectrogram": return "InverseSpectrogram";
                 default: return operatorName;
             }
         }
 
         private static string[] ResolveLayouts(string operatorName)
         {
+            if (operatorName == "Multinomial")
+                return new[] { "Packed4" };
             if (operatorName == "Convolution3D" || operatorName == "Deconvolution3D" || operatorName == "Pooling3D")
                 return new[] { "CDHW", "Packed4" };
             if (operatorName == "Interp")
@@ -492,8 +514,18 @@ namespace Aexis.Execution
                 return new[] { 4 };
             if (operatorName == "Convolution1D")
                 return new[] { 2 };
-            if (operatorName == "ConvolutionDepthWise1D" || operatorName == "Deconvolution1D")
+            if (operatorName == "StatisticsPooling" || operatorName == "StatsPooling")
                 return new[] { 2 };
+            if (operatorName == "Spectrogram" || operatorName == "InverseSpectrogram" || operatorName == "InvSpectrogram")
+                return new[] { 2 };
+            if (operatorName == "RNN" || operatorName == "GRU" || operatorName == "LSTM")
+                return new[] { 3 };
+            if (operatorName == "Multinomial")
+                return new[] { 2, 3 };
+            if (operatorName == "ConvolutionDepthWise1D" || operatorName == "Deconvolution1D" || operatorName == "DeconvolutionDepthWise1D")
+                return new[] { 2 };
+            if (operatorName == "ConvolutionDepthWise3D" || operatorName == "DeconvolutionDepthWise3D")
+                return new[] { 4 };
             if (operatorName == "Pooling1D")
                 return new[] { 3 };
             if (operatorName == "ShuffleChannel")
@@ -515,6 +547,8 @@ namespace Aexis.Execution
             if (operatorName == "NonZero" || operatorName == "Compress"
                 || operatorName == "Scatter" || operatorName == "ScatterElements")
                 return new[] { 1 };
+            if (operatorName == "Nms" || operatorName == "NonMaxSuppression")
+                return new[] { 2 };
             if (operatorName == "GatherND" || operatorName == "ScatterND")
                 return new[] { 1, 2 };
             if (operatorName == "Trilu")
@@ -562,6 +596,21 @@ namespace Aexis.Execution
             if (operatorName == "Pooling1D")
                 return "Texture-native ncnn Pooling1D for dims=3,height=1 Pack4 tensors. Max/average, global, adaptive out_w, "
                     + "pad_mode full/valid/SAME_UPPER/SAME_LOWER, asymmetric explicit padding, and average include/exclude-pad semantics are supported.";
+            if (operatorName == "StatisticsPooling" || operatorName == "StatsPooling")
+                return "CommandBuffer LinearMat statistics pooling for a static rank-2 [frames,channels] FP32 texture. "
+                    + "It writes per-channel mean and optional population standard deviation to a bounded FP32 LinearMat output entirely on GPU. "
+                    + "Only include_std=0|1 and finite non-negative epsilon are accepted; dynamic sequence lengths and buffer materialization are rejected.";
+            if (operatorName == "Spectrogram" || operatorName == "InverseSpectrogram" || operatorName == "InvSpectrogram")
+                return "CommandBuffer LinearMat real DFT/iDFT profile with static rank-2 FP32 audio textures. "
+                    + "n_fft is even and bounded to 256, hop is positive, channels are explicit, and full-frame coverage is required. "
+                    + "Spectrogram emits one-sided complex bins; inverse overlap-averages the matching texture profile entirely on GPU. "
+                    + "Window functions, center padding, dynamic lengths, and buffer materialization are rejected.";
+            if (operatorName == "RNN" || operatorName == "GRU" || operatorName == "LSTM")
+                return "Bounded FP32 CommandBuffer Pack4 recurrent profile with immutable gate weights and zero initial state. "
+                    + "It accepts only a forward rank-3 [sequence<=256,1,input_channels] Texture2DArray and writes [sequence,1,hidden<=256] "
+                    + "without activation buffers, CPU state, readback, bidirectional execution, sequence lengths, or optional state outputs.";
+            if (operatorName == "Multinomial")
+                return "Bounded deterministic categorical sampling over a static FP32 Pack4 logits texture. ONNX [batch,classes] is represented as logical/storage [dims=3,w=1,h=batch,c=classes]; results use exact FP32 Pack4 lanes with logical Int32 indices. Fixed seed, batch<=256, classes<=4096, sample_size<=256, and sampling with replacement are mandatory. FP16/BF16, dynamic sizes, activation buffers, CPU sampling, and readback-driven state are rejected.";
             if (operatorName == "ExtractPatches")
                 return "Texture-native ExtractPatches for exact rank-3 Pack4 or rank-4 Fold-D storage. ONNX ExtractImagePatches lowers static FP32 NHWC batch=1 with SAME/VALID padding through real Pack4 permutations; dynamic shapes and unsupported layouts fail preflight.";
             if (operatorName == "LayerNorm" || operatorName == "Softmax" || operatorName == "Reduction"
@@ -587,6 +636,8 @@ namespace Aexis.Execution
                     + "GPU-driven depth requires a capacity-bounded GPU shape tensor; the current backend rejects it at plan time and never reads back depth.";
             if (operatorName == "NonZero" || operatorName == "Compress")
                 return "Fixed-capacity LinearMat texture compaction. A second GPU-resident count output is mandatory; P0 admits the bounded value/count pair only as terminal graph outputs, rejects every ordinary value consumer, and never materializes the result to a ComputeBuffer.";
+            if (operatorName == "Nms" || operatorName == "NonMaxSuppression")
+                return "Static batch-one ONNX NonMaxSuppression with exact FP32 LinearMat box/score textures, a fixed padded [capacity,3] Int32 index texture, and a second GPU-resident Int32 count texture. Selection is deterministic on GPU; unbounded output, runtime threshold inputs, ordinary consumers that ignore count, and CPU/readback paths are rejected.";
             if (operatorName == "GatherND")
                 return "LinearMat texture profile: rank-1 data, batch_dims=0, rank-2 [N,1] Int32 indices, and index_depth=1. Other GatherND layouts are rejected before dispatch.";
             if (operatorName == "ScatterND")
@@ -778,6 +829,8 @@ namespace Aexis.Execution
                 case "MemoryData":
                 case "Range":
                 case "ConstantOfShape":
+                case "RandomUniform":
+                case "RandomNormal":
                     minInputs = maxInputs = 0;
                     break;
                 case "Concat":
@@ -846,6 +899,11 @@ namespace Aexis.Execution
                     minInputs = maxInputs = 2;
                     minOutputs = maxOutputs = 2;
                     break;
+                case "Nms":
+                case "NonMaxSuppression":
+                    minInputs = maxInputs = 2;
+                    minOutputs = maxOutputs = 2;
+                    break;
                 case "Scatter":
                 case "ScatterElements":
                 case "ScatterND":
@@ -911,7 +969,7 @@ namespace Aexis.Execution
                 || operatorName == "Gemm" || operatorName == "InnerProduct" || operatorName == "BatchNorm" || operatorName == "InstanceNorm"
                 || operatorName == "Bias" || operatorName == "LayerNorm" || operatorName == "RMSNorm" || operatorName == "GroupNorm" || operatorName == "Scale"
                 || operatorName == "Quantize" || operatorName == "Dequantize" || operatorName == "Requantize" || operatorName == "MultiHeadAttention"
-                || operatorName == "MemoryData";
+                || operatorName == "MemoryData" || operatorName == "RNN" || operatorName == "GRU" || operatorName == "LSTM";
         }
 
         private static string ResolveWeightContract(string operatorName)
@@ -921,6 +979,8 @@ namespace Aexis.Execution
                 return "immutable-packed-kernel-and-optional-bias";
             if (operatorName == "Gemm" || operatorName == "InnerProduct")
                 return "immutable-packed-matrix-and-optional-bias";
+            if (operatorName == "RNN" || operatorName == "GRU" || operatorName == "LSTM")
+                return "immutable-gate-input-recurrent-weights-and-bias";
             if (operatorName == "MemoryData")
                 return "immutable-texture-constant";
             return "immutable-channel-constants";
@@ -939,6 +999,103 @@ namespace Aexis.Execution
             const string LayoutShape = "logical [dims,w,h,d,c]; storage explicitly records LinearMat or Pack4 Texture2DArray physical mapping; descriptor alias requires unchanged storage/layout/dtype";
             switch (operatorName)
             {
+                case "RNN":
+                case "GRU":
+                case "LSTM":
+                    return new[]
+                    {
+                        new AexisOperatorCapabilityProfile
+                        {
+                            backend = AexisOperatorCapabilityBackend.CommandBuffer,
+                            layouts = new[] { "Packed4" },
+                            dtypes = new[] { "FP32" },
+                            inputRanks = new[] { 3 },
+                            outputRanks = new[] { 3 },
+                            shapeProfile = "input logical/storage [dims=3,w=sequence<=256,h=1,d=1,c=input_size<=256]; output [dims=3,w=sequence,h=1,d=1,c=hidden_size<=256]; Texture2DArray slices=ceil(channels/4)",
+                            supportedParameters = new[] { "forward direction", "zero implicit initial state", "one sequence output", "immutable gate W/R/bias", "RNN tanh", "GRU reset-after-matmul disabled", "LSTM IOFC gates" },
+                            rejectedParameters = new[] { "bidirectional", "reverse", "initial_h/initial_c", "sequence_lens", "peepholes", "clip", "linear_before_reset", "state output", "FP16", "activation ComputeBuffer", "CPU state/readback" }
+                        }
+                    };
+                case "RandomUniform":
+                case "RandomNormal":
+                    return new[]
+                    {
+                        new AexisOperatorCapabilityProfile
+                        {
+                            backend = AexisOperatorCapabilityBackend.CommandBuffer,
+                            layouts = new[] { "Packed4" },
+                            dtypes = new[] { "FP32" },
+                            inputRanks = Array.Empty<int>(),
+                            outputRanks = new[] { 3, 4 },
+                            shapeProfile = "zero-input static output; immutable dims=3|4,w,h,d,c and seed; storage Texture2DArray slices=depth*ceil(channels/4)",
+                            supportedParameters = new[] { "explicit integral immutable seed", "static rank-3/4 Pack4 shape", "finite uniform low<high or normal mean/scale>0", "zero Pack4 tail lanes" },
+                            rejectedParameters = new[] { "implicit seed", "rank<3/rank>4", "dynamic output shape", "FP16", "activation ComputeBuffer", "CPU RNG", "readback-driven state" }
+                        }
+                    };
+                case "RandomLike":
+                case "RandomUniformLike":
+                case "RandomNormalLike":
+                case "Bernoulli":
+                    return new[]
+                    {
+                        new AexisOperatorCapabilityProfile
+                        {
+                            backend = AexisOperatorCapabilityBackend.CommandBuffer,
+                            layouts = new[] { "Packed4" },
+                            dtypes = new[] { "FP32" },
+                            inputRanks = new[] { 3, 4 },
+                            outputRanks = new[] { 3, 4 },
+                            shapeProfile = "one exact Pack4 Texture2DArray input/output; logical rank-3 CHW or rank-4 CDHW; storage slices=depth*ceil(channels/4)",
+                            supportedParameters = new[] { "explicit integral immutable seed", "RandomUniformLike finite low<high", "RandomNormalLike finite mean and scale>0", "Bernoulli FP32 probability source", "zero Pack4 tail lanes" },
+                            rejectedParameters = new[] { "implicit seed", "non-FP32 dtype", "LinearMat", "activation ComputeBuffer", "CPU RNG", "readback-driven state" }
+                        }
+                    };
+                case "Multinomial":
+                    return new[]
+                    {
+                        new AexisOperatorCapabilityProfile
+                        {
+                            backend = AexisOperatorCapabilityBackend.CommandBuffer,
+                            layouts = new[] { "Packed4" },
+                            dtypes = new[] { "FP32" },
+                            inputRanks = new[] { 3 },
+                            outputRanks = new[] { 3 },
+                            shapeProfile = "ONNX [batch,classes] maps to exact Pack4 logical/storage [dims=3,w=1,h=batch<=256,d=1,c=classes<=4096]; output [dims=3,w=1,h=batch,d=1,c=sample_size<=256] with exact FP32 lanes and logical Int32 category ids",
+                            supportedParameters = new[] { "explicit integral immutable seed", "static sample_size", "sampling with replacement", "FP32 logits", "zero output Pack4 tail lanes" },
+                            rejectedParameters = new[] { "implicit seed", "replacement=false", "FP16/BF16", "dynamic batch/classes/sample_size", "activation ComputeBuffer", "CPU RNG", "readback-driven state" }
+                        }
+                    };
+                case "Nms":
+                case "NonMaxSuppression":
+                    return new[]
+                    {
+                        new AexisOperatorCapabilityProfile
+                        {
+                            backend = AexisOperatorCapabilityBackend.CommandBuffer,
+                            layouts = new[] { "Linear", "Packed4" },
+                            dtypes = new[] { "FP32" },
+                            inputRanks = new[] { 2 },
+                            outputRanks = new[] { 1, 2 },
+                            shapeProfile = "boxes logical/storage [dims=2,w=4,h=num_boxes,d=1,c=1] and scores [dims=2,w=num_boxes,h=num_classes,d=1,c=1] as exact RFloat LinearMat; output padded [capacity,3] plus Int32 count[1] as RFloat textures",
+                            supportedParameters = new[] { "ONNX static batch=1", "immutable max_output_boxes_per_class/iou_threshold/score_threshold", "capacity contract", "center_point_box=0|1", "deterministic score tie lower-index-first" },
+                            rejectedParameters = new[] { "dynamic thresholds", "batch>1", "unbounded output", "count readback", "count-unaware consumer", "activation ComputeBuffer" }
+                        }
+                    };
+                case "ROIAlign":
+                    return new[]
+                    {
+                        new AexisOperatorCapabilityProfile
+                        {
+                            backend = AexisOperatorCapabilityBackend.CommandBuffer,
+                            layouts = new[] { "NCHW", "Packed4" },
+                            dtypes = new[] { "FP32" },
+                            inputRanks = new[] { 2, 3 },
+                            outputRanks = new[] { 4 },
+                            shapeProfile = "feature logical/storage [dims=3,w,h,d=1,c]; ROI logical/storage [dims=2,w=4,h=num_rois,d=1,c=1]; output [dims=4,w=pooled_w,h=pooled_h,d=num_rois,c] as Texture2DArray slices=num_rois*ceil(c/4)",
+                            supportedParameters = new[] { "ONNX static batch=1", "static FP32 rois[num_rois,4]", "immutable zero INT32/INT64 batch_indices", "mode=avg", "coordinate_transformation_mode=half_pixel", "sampling_ratio>=0" },
+                            rejectedParameters = new[] { "dynamic ROI count", "batch_indices activation", "batch_indices!=0", "batch>1", "mode=max", "non-half-pixel coordinate transform", "CPU/readback count" }
+                        }
+                    };
                 case "pnnx.Expression":
                     return new[]
                     {
@@ -1396,7 +1553,10 @@ namespace Aexis.Execution
                 inputByBlob[declaredInputs[i].blob] = declaredInputs[i];
 
             AexisTextureExecutionPlan texturePlan = null;
-            if (request.textureInputs != null && (request.textureInputs.Length > 0 || request.nodeVerifier != null))
+            // An explicitly supplied empty input list denotes a statically closed
+            // graph (for example seeded RandomUniform). It needs the same plan
+            // proof as a graph with external Pack4 textures.
+            if (request.textureInputs != null && (request.textureInputs.Length > 0 || request.strict || request.nodeVerifier != null))
             {
                 texturePlan = AexisTextureExecutionPlanner.Analyze(model, new AexisTextureExecutionPlanRequest
                 {
@@ -1426,7 +1586,7 @@ namespace Aexis.Execution
                     continue;
                 }
 
-                var operatorName = !string.IsNullOrWhiteSpace(layer.typeName) ? layer.typeName : layer.type.ToString();
+                var operatorName = ResolveCapabilityOperatorName(layer);
                 if (!AexisOperatorCapabilities.TryGet(operatorName, out var capability))
                 {
                     var issue = CreateIssue(index, layer.name, operatorName, string.Empty, "unregistered-operator", "No factory/capability entry exists for this operator.", "Add a texture-native implementation and capability entry, or re-export with a supported operator.");
@@ -1521,7 +1681,7 @@ namespace Aexis.Execution
                 missingDependencies = missingDependencies.ToArray(),
                 strictEligible = missingNodes.Count == 0 && missingParameters.Count == 0 && missingDependencies.Count == 0 && nodes.All(node => node.strictEligible),
             };
-            if (request.textureInputs != null && request.textureInputs.Length > 0)
+            if (request.textureInputs != null && (request.textureInputs.Length > 0 || request.strict))
             {
                 report.texturePlan = texturePlan;
                 report.strictEligible &= texturePlan != null && texturePlan.strictEligible;
@@ -1533,6 +1693,28 @@ namespace Aexis.Execution
                 + " texturePlan=" + (report.texturePlan == null ? "not-requested" : (report.texturePlan.strictEligible ? "eligible" : "rejected"))
                 + " strictEligible=" + (report.strictEligible ? "true" : "false");
             return report;
+        }
+
+        private static string ResolveCapabilityOperatorName(AexisGraphModel.Layer layer)
+        {
+            var operatorName = !string.IsNullOrWhiteSpace(layer?.typeName) ? layer.typeName : layer?.type.ToString();
+            if (!string.Equals(operatorName, "RandomLike", StringComparison.Ordinal)
+                || layer?.stringParams == null
+                || !layer.stringParams.TryGetValue("aexis.random.operator", out var randomOperator)
+                || string.IsNullOrWhiteSpace(randomOperator))
+                return operatorName;
+
+            switch (randomOperator)
+            {
+                case "RandomUniform":
+                case "RandomNormal":
+                case "RandomUniformLike":
+                case "RandomNormalLike":
+                case "Bernoulli":
+                    return randomOperator;
+                default:
+                    return operatorName;
+            }
         }
 
         public static string ToStableJson(AexisModelPreflightReport report, bool prettyPrint = true)

@@ -5,6 +5,8 @@
 #pragma kernel AexisConv3dPack4CDHW16x4
 #pragma kernel AexisConv3dPack4CDHWTile3x3
 #pragma kernel AexisConv3dPack4CDHWZ2
+#pragma kernel AexisConvDepthWise3dPack4CDHW
+#pragma kernel AexisDeconvolutionDepthWise3dPack4CDHW
 #pragma kernel AexisConvDepthWise
 #pragma kernel AexisDeconvolutionBuf
 #pragma kernel AexisDeconvolution3dPack4CDHW
@@ -37,6 +39,9 @@
 #pragma kernel AexisConcatPack4CDHW
 #pragma kernel AexisConcatSequencePack4CDHW
 #pragma kernel AexisAppendSequencePack4CDHW
+#pragma kernel AexisDeterministicRandomPack4
+#pragma kernel AexisStaticRandomPack4
+#pragma kernel AexisMultinomialPack4
 #pragma kernel AexisBuildSdInpaintInput9Pack4
 #pragma kernel AexisInterpPack4
 #pragma kernel AexisInterpPack4Nearest
@@ -78,6 +83,7 @@
 #pragma kernel AexisCompressLinearMat
 #pragma kernel AexisGatherNDLinearMat
 #pragma kernel AexisScatterLinearMat
+#pragma kernel AexisNonMaxSuppressionPack4
 #pragma kernel AexisScalePack4
 #pragma kernel AexisAddBiasPack4
 #pragma kernel AexisBatchNormPack4
@@ -101,12 +107,16 @@
 #pragma kernel AexisSoftmaxChannelPack4
 #pragma kernel AexisSoftmaxLinearMat2D
 #pragma kernel AexisSoftmaxPack4LinearMat2D
+#pragma kernel AexisStatisticsPoolingPack4
+#pragma kernel AexisSpectrogramPack4
+#pragma kernel AexisInverseSpectrogramPack4
 #pragma kernel AexisUnaryOpPack4
 #pragma kernel AexisUnaryOpLinearMat
 #pragma kernel AexisTriluPack4
 #pragma kernel AexisTriluLinearMat
 #pragma kernel AexisBinaryOpLinearMat
 #pragma kernel AexisBinaryOpLinearMatFixedInputScalar
+#pragma kernel AexisBinaryOpLinearMatScalarArray
 #pragma kernel AexisBinaryOpPack4
 #pragma kernel AexisBinaryOpPack4LinearMixed
 #pragma kernel AexisBinaryOpPack4LinearMixedArray
@@ -265,8 +275,119 @@
 #pragma kernel AexisSdpaAttentionPack4CDHW
 #pragma kernel AexisShortConvPack4
 #pragma kernel AexisGatedDeltaRulePack4
+#pragma kernel AexisRecurrentPack4
 
 #include "Includes/AexisUnifiedBindings.Pack4.hlsl"
+
+// StatisticsPooling deliberately keeps the scalar LinearMat boundary explicit:
+// each activation remains a GPU texture and every accumulation happens in the
+// CommandBuffer kernel. No texture-to-buffer materialization is involved.
+Texture2D<float> _StatsPoolingIn;
+RWTexture2D<float> _StatsPoolingOut;
+int _StatsPoolingFrames;
+int _StatsPoolingChannels;
+int _StatsPoolingIncludeStd;
+float _StatsPoolingEpsilon;
+
+Texture2D<float> _SpectrogramIn;
+RWTexture2D<float> _SpectrogramOut;
+int _SpectrogramNfft;
+int _SpectrogramHop;
+int _SpectrogramChannels;
+int _SpectrogramFrames;
+
+[numthreads(8, 8, 1)]
+void AexisStatisticsPoolingPack4(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x != 0)
+        return;
+
+    int statisticsPerChannel = _StatsPoolingIncludeStd != 0 ? 2 : 1;
+    int outputRow = (int)id.y;
+    if (outputRow >= _StatsPoolingChannels * statisticsPerChannel)
+        return;
+
+    int statistic = outputRow / _StatsPoolingChannels;
+    int channel = outputRow - statistic * _StatsPoolingChannels;
+    float sum = 0.0;
+    float sumSquares = 0.0;
+    [loop]
+    for (int frame = 0; frame < _StatsPoolingFrames; ++frame)
+    {
+        float value = _StatsPoolingIn.Load(int3(frame, channel, 0));
+        sum += value;
+        sumSquares += value * value;
+    }
+
+    float mean = sum / (float)_StatsPoolingFrames;
+    float valueOut = statistic == 0
+        ? mean
+        : sqrt(max(0.0, sumSquares / (float)_StatsPoolingFrames - mean * mean) + _StatsPoolingEpsilon);
+    _StatsPoolingOut[int2(0, outputRow)] = valueOut;
+}
+
+[numthreads(8, 8, 1)]
+void AexisSpectrogramPack4(uint3 id : SV_DispatchThreadID)
+{
+    int componentColumn = (int)id.x;
+    int outputRow = (int)id.y;
+    int bins = _SpectrogramNfft / 2 + 1;
+    if (componentColumn >= bins * 2 || outputRow >= _SpectrogramFrames * _SpectrogramChannels)
+        return;
+
+    int bin = componentColumn / 2;
+    int component = componentColumn & 1;
+    int frame = outputRow / _SpectrogramChannels;
+    int channel = outputRow - frame * _SpectrogramChannels;
+    float realPart = 0.0;
+    float imaginaryPart = 0.0;
+    [loop]
+    for (int sample = 0; sample < _SpectrogramNfft; ++sample)
+    {
+        float value = _SpectrogramIn.Load(int3(frame * _SpectrogramHop + sample, channel, 0));
+        float phase = 6.28318530717958647692 * (float)(bin * sample) / (float)_SpectrogramNfft;
+        realPart += value * cos(phase);
+        imaginaryPart -= value * sin(phase);
+    }
+    _SpectrogramOut[int2(componentColumn, outputRow)] = component == 0 ? realPart : imaginaryPart;
+}
+
+[numthreads(8, 8, 1)]
+void AexisInverseSpectrogramPack4(uint3 id : SV_DispatchThreadID)
+{
+    int sampleIndex = (int)id.x;
+    int channel = (int)id.y;
+    int outputSamples = _SpectrogramNfft + _SpectrogramHop * (_SpectrogramFrames - 1);
+    if (sampleIndex >= outputSamples || channel >= _SpectrogramChannels)
+        return;
+
+    float accumulated = 0.0;
+    int contributions = 0;
+    int half = _SpectrogramNfft / 2;
+    [loop]
+    for (int frame = 0; frame < _SpectrogramFrames; ++frame)
+    {
+        int localSample = sampleIndex - frame * _SpectrogramHop;
+        if (localSample < 0 || localSample >= _SpectrogramNfft)
+            continue;
+
+        int row = frame * _SpectrogramChannels + channel;
+        float value = _SpectrogramIn.Load(int3(0, row, 0));
+        float nyquist = _SpectrogramIn.Load(int3(half * 2, row, 0));
+        value += (localSample & 1) == 0 ? nyquist : -nyquist;
+        [loop]
+        for (int bin = 1; bin < half; ++bin)
+        {
+            float realPart = _SpectrogramIn.Load(int3(bin * 2, row, 0));
+            float imaginaryPart = _SpectrogramIn.Load(int3(bin * 2 + 1, row, 0));
+            float phase = 6.28318530717958647692 * (float)(bin * localSample) / (float)_SpectrogramNfft;
+            value += 2.0 * (realPart * cos(phase) - imaginaryPart * sin(phase));
+        }
+        accumulated += value / (float)_SpectrogramNfft;
+        contributions++;
+    }
+    _SpectrogramOut[int2(sampleIndex, channel)] = contributions > 0 ? accumulated / (float)contributions : 0.0;
+}
 
 // Recurrent NCNN operators. These bindings are texture-only for
 // activations and caches; the only StructuredBuffer use is immutable debug-free
@@ -295,6 +416,157 @@ int _RecurrentKeyDim;
 int _RecurrentValueDim;
 int _RecurrentToken;
 float _RecurrentEpsilon;
+
+// Bounded RNN/GRU/LSTM profile. These are immutable model weights, not
+// activations. Every changing value is held in shader-local state or Pack4 RTs.
+Texture2DArray<float4> _RecurrentInputArr;
+RWTexture2DArray<float4> _RecurrentOutputArr;
+StructuredBuffer<float> _RecurrentInputWeights;
+StructuredBuffer<float> _RecurrentStateWeights;
+StructuredBuffer<float> _RecurrentBias;
+int _RecurrentKind;
+int _RecurrentSequenceLength;
+int _RecurrentInputSize;
+int _RecurrentHiddenSize;
+
+// Bounded categorical sampling is stateless. Logits and sampled indices stay in
+// Pack4 texture arrays; indices are represented exactly as FP32 lanes while the
+// graph descriptor records their logical Int32 type.
+Texture2DArray<float4> _MultinomialLogitsArr;
+RWTexture2DArray<float4> _MultinomialOutputArr;
+int _MultinomialSeed;
+int _MultinomialBatch;
+int _MultinomialClasses;
+int _MultinomialSamples;
+
+float RecurrentActivationSigmoid(float value)
+{
+    return 1.0 / (1.0 + exp(clamp(-value, -60.0, 60.0)));
+}
+
+float RecurrentActivationTanh(float value)
+{
+    return tanh(clamp(value, -16.0, 16.0));
+}
+
+float RecurrentLoadInputValue(int token, int channel)
+{
+    float4 packed = _RecurrentInputArr.Load(int4(token, 0, channel / 4, 0));
+    return packed[channel & 3];
+}
+
+float RecurrentInputDot(int gate, int output, int token)
+{
+    float sum = 0.0;
+    int baseIndex = (gate * _RecurrentHiddenSize + output) * _RecurrentInputSize;
+    [loop]
+    for (int inputIndex = 0; inputIndex < _RecurrentInputSize; ++inputIndex)
+        sum += _RecurrentInputWeights[baseIndex + inputIndex] * RecurrentLoadInputValue(token, inputIndex);
+    return sum;
+}
+
+float RecurrentStateDot(int gate, int output, float state[256], bool resetBeforeMultiply, float resetValue)
+{
+    float sum = 0.0;
+    int baseIndex = (gate * _RecurrentHiddenSize + output) * _RecurrentHiddenSize;
+    [loop]
+    for (int stateIndex = 0; stateIndex < _RecurrentHiddenSize; ++stateIndex)
+    {
+        float value = state[stateIndex];
+        if (resetBeforeMultiply)
+            value *= resetValue;
+        sum += _RecurrentStateWeights[baseIndex + stateIndex] * value;
+    }
+    return sum;
+}
+
+[numthreads(1, 1, 1)]
+void AexisRecurrentPack4(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x != 0 || id.y != 0 || id.z != 0)
+        return;
+
+    // The verifier and Ops bindings cap all dimensions at 256. A single GPU
+    // invocation deliberately serializes the recurrence, so each time step sees
+    // the exact prior hidden/cell state without an inter-thread barrier or CPU sync.
+    float state[256];
+    float nextState[256];
+    float cell[256];
+    float nextCell[256];
+    [loop]
+    for (int initial = 0; initial < _RecurrentHiddenSize; ++initial)
+    {
+        state[initial] = 0.0;
+        cell[initial] = 0.0;
+    }
+
+    [loop]
+    for (int token = 0; token < _RecurrentSequenceLength; ++token)
+    {
+        [loop]
+        for (int output = 0; output < _RecurrentHiddenSize; ++output)
+        {
+            if (_RecurrentKind == 0)
+            {
+                float preactivation = RecurrentInputDot(0, output, token)
+                    + RecurrentStateDot(0, output, state, false, 1.0)
+                    + _RecurrentBias[output];
+                nextState[output] = RecurrentActivationTanh(preactivation);
+            }
+            else if (_RecurrentKind == 1)
+            {
+                float update = RecurrentActivationSigmoid(RecurrentInputDot(0, output, token)
+                    + RecurrentStateDot(0, output, state, false, 1.0)
+                    + _RecurrentBias[output]);
+                float reset = RecurrentActivationSigmoid(RecurrentInputDot(1, output, token)
+                    + RecurrentStateDot(1, output, state, false, 1.0)
+                    + _RecurrentBias[_RecurrentHiddenSize + output]);
+                float candidate = RecurrentActivationTanh(RecurrentInputDot(2, output, token)
+                    + RecurrentStateDot(2, output, state, true, reset)
+                    + _RecurrentBias[2 * _RecurrentHiddenSize + output]);
+                nextState[output] = (1.0 - update) * candidate + update * state[output];
+            }
+            else
+            {
+                float inputGate = RecurrentActivationSigmoid(RecurrentInputDot(0, output, token)
+                    + RecurrentStateDot(0, output, state, false, 1.0)
+                    + _RecurrentBias[output]);
+                float outputGate = RecurrentActivationSigmoid(RecurrentInputDot(1, output, token)
+                    + RecurrentStateDot(1, output, state, false, 1.0)
+                    + _RecurrentBias[_RecurrentHiddenSize + output]);
+                float forgetGate = RecurrentActivationSigmoid(RecurrentInputDot(2, output, token)
+                    + RecurrentStateDot(2, output, state, false, 1.0)
+                    + _RecurrentBias[2 * _RecurrentHiddenSize + output]);
+                float candidate = RecurrentActivationTanh(RecurrentInputDot(3, output, token)
+                    + RecurrentStateDot(3, output, state, false, 1.0)
+                    + _RecurrentBias[3 * _RecurrentHiddenSize + output]);
+                nextCell[output] = forgetGate * cell[output] + inputGate * candidate;
+                nextState[output] = outputGate * RecurrentActivationTanh(nextCell[output]);
+            }
+        }
+
+        [loop]
+        for (int output = 0; output < _RecurrentHiddenSize; ++output)
+        {
+            state[output] = nextState[output];
+            if (_RecurrentKind == 2)
+                cell[output] = nextCell[output];
+        }
+
+        int packs = (_RecurrentHiddenSize + 3) / 4;
+        [loop]
+        for (int pack = 0; pack < packs; ++pack)
+        {
+            int first = pack * 4;
+            float4 packed = 0.0;
+            if (first < _RecurrentHiddenSize) packed.x = state[first];
+            if (first + 1 < _RecurrentHiddenSize) packed.y = state[first + 1];
+            if (first + 2 < _RecurrentHiddenSize) packed.z = state[first + 2];
+            if (first + 3 < _RecurrentHiddenSize) packed.w = state[first + 3];
+            _RecurrentOutputArr[int3(token, 0, pack)] = packed;
+        }
+    }
+}
 
 float RecurrentLoad2(Texture2DArray<float4> tex, int logicalWidth, int row, int index)
 {
@@ -520,6 +792,7 @@ int _BinaryPack4BufferScalarMode;
 int _BinaryPack4ChannelVectorMode;
 int _BinaryPack4ChannelVectorPacks;
 int _BinaryPack4LinearMixedMode;
+int _BinaryLinearMatScalarArrayMode;
 int _BinaryScalarSingleBroadcastMode;
 Texture2DArray<float4> _CodeFormerSoftOneHotArr;
 Texture2D<float> _CodeFormerSoftOneHotLinear;
@@ -549,6 +822,21 @@ RWTexture2DArray<float4> _P1OutArr;
 StructuredBuffer<float> _P1Weights;
 StructuredBuffer<float> _P1Bias;
 StructuredBuffer<float> _P1DetectionBiases;
+
+// NMS index tensors use exact FP32 LinearMat textures.  They are deliberately
+// Texture2D rather than Pack4 arrays: RentTempMat owns an RFloat 2D surface and
+// the logical [capacity,3] rows are individual scalar texels.
+Texture2D<float> _NmsBoxesArr;
+Texture2D<float> _NmsScoresArr;
+RWTexture2D<float> _NmsOutputArr;
+RWTexture2D<float> _NmsCountArr;
+int _NmsNumBoxes;
+int _NmsNumClasses;
+int _NmsCapacity;
+int _NmsMaxOutputPerClass;
+int _NmsCenterPointBox;
+float _NmsIouThreshold;
+float _NmsScoreThreshold;
 
 int _P1In0W;
 int _P1In0H;
@@ -673,6 +961,9 @@ void AexisCopyToPack4_Impl(uint3 id);
 void AexisConcatPack4CDHW_Impl(uint3 id);
 void AexisConcatSequencePack4CDHW_Impl(uint3 id);
 void AexisAppendSequencePack4CDHW_Impl(uint3 id);
+void AexisDeterministicRandomPack4_Impl(uint3 id);
+void AexisStaticRandomPack4_Impl(uint3 id);
+void AexisMultinomialPack4_Impl(uint3 id);
 void AexisBuildSdInpaintInput9Pack4_Impl(uint3 id);
 void AexisInterpPack4CDHW_Impl(uint3 id);
 void AexisInterpPack4_Impl(uint3 id);
@@ -715,6 +1006,7 @@ void AexisNonZeroLinearMat_Impl(uint3 id);
 void AexisCompressLinearMat_Impl(uint3 id);
 void AexisGatherNDLinearMat_Impl(uint3 id);
 void AexisScatterLinearMat_Impl(uint3 id);
+void AexisNonMaxSuppressionPack4_Impl(uint3 id);
 void AexisScalePack4_Impl(uint3 id);
 void AexisAddBiasPack4_Impl(uint3 id);
 void AexisBatchNormPack4_Impl(uint3 id);
@@ -731,6 +1023,8 @@ void AexisConvDepthWise_Impl(uint3 id);
 void AexisConv3dBuf_Impl(uint3 id);
 void AexisConv3dPack4CDHW16x4_Impl(uint3 id);
 void AexisConv3dPack4CDHWZ2_Impl(uint3 id);
+void AexisConvDepthWise3dPack4CDHW_Impl(uint3 id);
+void AexisDeconvolutionDepthWise3dPack4CDHW_Impl(uint3 id);
 void AexisConv3dPack4CDHWTile3x3_Impl(uint3 id);
 void AexisPack4ChannelsToWidth_Impl(uint3 id);
 void AexisPack4SpatialToPack4Linear_Impl(uint3 id);
@@ -776,6 +1070,7 @@ void AexisTriluPack4_Impl(uint3 id);
 void AexisTriluLinearMat_Impl(uint3 id);
 void AexisBinaryOpLinearMat_Impl(uint3 id);
 void AexisBinaryOpLinearMatFixedInputScalar_Impl(uint3 id);
+void AexisBinaryOpLinearMatScalarArray_Impl(uint3 id);
 void AexisBinaryOpPack4_Impl(uint3 id);
 void AexisBinaryOpPack4LinearMixed_Impl(uint3 id);
 void AexisBinaryOpPack4LinearMixedArray_Impl(uint3 id);
@@ -1255,6 +1550,12 @@ int _ConcatPack4CDHWOutC;
 int _ConcatSequencePack4CDHWAH;
 int _ConcatSequencePack4CDHWBH;
 int _AppendSequencePack4CDHWOffset;
+int _RandomMode;
+int _RandomSeed;
+int _RandomPacks;
+int _RandomChannels;
+float _RandomParam0;
+float _RandomParam1;
 
 [numthreads(8,8,1)]
 void AexisConcatPack4CDHW(uint3 id : SV_DispatchThreadID)
@@ -1272,6 +1573,24 @@ void AexisConcatSequencePack4CDHW(uint3 id : SV_DispatchThreadID)
 void AexisAppendSequencePack4CDHW(uint3 id : SV_DispatchThreadID)
 {
     AexisAppendSequencePack4CDHW_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void AexisDeterministicRandomPack4(uint3 id : SV_DispatchThreadID)
+{
+    AexisDeterministicRandomPack4_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void AexisStaticRandomPack4(uint3 id : SV_DispatchThreadID)
+{
+    AexisStaticRandomPack4_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void AexisMultinomialPack4(uint3 id : SV_DispatchThreadID)
+{
+    AexisMultinomialPack4_Impl(id);
 }
 
 
@@ -1796,6 +2115,18 @@ void AexisConv3x3(uint3 id : SV_DispatchThreadID)
 void AexisConvDepthWise(uint3 id : SV_DispatchThreadID)
 {
     AexisConvDepthWise_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void AexisConvDepthWise3dPack4CDHW(uint3 id : SV_DispatchThreadID)
+{
+    AexisConvDepthWise3dPack4CDHW_Impl(id);
+}
+
+[numthreads(8,8,1)]
+void AexisDeconvolutionDepthWise3dPack4CDHW(uint3 id : SV_DispatchThreadID)
+{
+    AexisDeconvolutionDepthWise3dPack4CDHW_Impl(id);
 }
 
 [numthreads(8,8,1)]
@@ -2769,6 +3100,12 @@ void AexisBinaryOpLinearMatFixedInputScalar(uint3 id : SV_DispatchThreadID)
 }
 
 [numthreads(8,8,1)]
+void AexisBinaryOpLinearMatScalarArray(uint3 id : SV_DispatchThreadID)
+{
+    AexisBinaryOpLinearMatScalarArray_Impl(id);
+}
+
+[numthreads(8,8,1)]
 void AexisBinaryOpPack4(uint3 id : SV_DispatchThreadID)
 {
     AexisBinaryOpPack4_Impl(id);
@@ -2946,6 +3283,12 @@ void AexisP1YoloDetectionOutputPack4(uint3 id : SV_DispatchThreadID)
 void AexisP1EinsumPack4(uint3 id : SV_DispatchThreadID)
 {
     AexisP1EinsumPack4_Impl(id);
+}
+
+[numthreads(1,1,1)]
+void AexisNonMaxSuppressionPack4(uint3 id : SV_DispatchThreadID)
+{
+    AexisNonMaxSuppressionPack4_Impl(id);
 }
 
 [numthreads(8,8,1)]

@@ -97,6 +97,163 @@ void AexisAppendSequencePack4CDHW_Impl(uint3 id)
     _AppendSequenceOutArr[int3(id.x, destinationY, id.z)] = _AppendSequenceInArr[int3(id.x, id.y, id.z)];
 }
 
+// Stateless coordinate hashing makes the generated stream independent of dispatch
+// partitioning. The declared seed and logical channel count are the complete RNG
+// contract; Pack4 padding lanes are always zeroed.
+uint AexisRandomHash(uint value)
+{
+    value ^= value >> 16;
+    value *= 0x7feb352du;
+    value ^= value >> 15;
+    value *= 0x846ca68bu;
+    value ^= value >> 16;
+    return value;
+}
+
+float AexisRandomUniform(uint coordinate)
+{
+    return (float)(AexisRandomHash(coordinate) & 0x00ffffffu) * (1.0 / 16777216.0);
+}
+
+void AexisDeterministicRandomPack4_Impl(uint3 id)
+{
+    uint width, height, depth;
+    _TexOut0Arr.GetDimensions(width, height, depth);
+    if (id.x >= width || id.y >= height || id.z >= depth)
+        return;
+
+    int packs = max(1, _RandomPacks);
+    int channelPack = (int)id.z % packs;
+    float4 source = _TexIn0Arr[int3(id)];
+    float4 output = 0.0;
+    [unroll]
+    for (int lane = 0; lane < 4; lane++)
+    {
+        int channel = channelPack * 4 + lane;
+        if (channel >= _RandomChannels)
+            continue;
+        uint coordinate = (uint)_RandomSeed
+            ^ ((uint)id.x * 0x9e3779b9u)
+            ^ ((uint)id.y * 0x85ebca6bu)
+            ^ ((uint)id.z * 0xc2b2ae35u)
+            ^ ((uint)lane * 0x27d4eb2du);
+        float randomValue = AexisRandomUniform(coordinate);
+        float value = 0.0;
+        if (_RandomMode == 0)
+            value = _RandomParam0 + randomValue * (_RandomParam1 - _RandomParam0);
+        else if (_RandomMode == 1)
+        {
+            float second = max(1e-7, AexisRandomUniform(coordinate ^ 0xa511e9b3u));
+            value = _RandomParam0 + _RandomParam1 * sqrt(-2.0 * log(max(1e-7, randomValue))) * cos(6.28318530718 * second);
+        }
+        else
+            value = randomValue < saturate(source[lane]) ? 1.0 : 0.0;
+        AexisWriteLane(output, lane, value);
+    }
+    _TexOut0Arr[int3(id)] = output;
+}
+
+void AexisStaticRandomPack4_Impl(uint3 id)
+{
+    uint width, height, depth;
+    _TexOut0Arr.GetDimensions(width, height, depth);
+    if (id.x >= width || id.y >= height || id.z >= depth)
+        return;
+
+    int packs = max(1, _RandomPacks);
+    int channelPack = (int)id.z % packs;
+    float4 output = 0.0;
+    [unroll]
+    for (int lane = 0; lane < 4; ++lane)
+    {
+        int channel = channelPack * 4 + lane;
+        if (channel >= _RandomChannels)
+            continue;
+        uint coordinate = (uint)_RandomSeed
+            ^ ((uint)id.x * 0x9e3779b9u)
+            ^ ((uint)id.y * 0x85ebca6bu)
+            ^ ((uint)id.z * 0xc2b2ae35u)
+            ^ ((uint)lane * 0x27d4eb2du);
+        float randomValue = AexisRandomUniform(coordinate);
+        float value = _RandomMode == 0
+            ? _RandomParam0 + randomValue * (_RandomParam1 - _RandomParam0)
+            : _RandomParam0 + _RandomParam1 * sqrt(-2.0 * log(max(1e-7, randomValue)))
+                * cos(6.28318530718 * max(1e-7, AexisRandomUniform(coordinate ^ 0xa511e9b3u)));
+        AexisWriteLane(output, lane, value);
+    }
+    _TexOut0Arr[int3(id)] = output;
+}
+
+float AexisMultinomialLogit(int batch, int category)
+{
+    float4 packed = _MultinomialLogitsArr[int3(0, batch, category / 4)];
+    return packed[category & 3];
+}
+
+// One invocation owns all four lanes of a sampled-index pack. This is important:
+// it makes the output race-free while preserving deterministic seed/coordinate
+// semantics independently of the graphics API dispatch partitioning.
+void AexisMultinomialPack4_Impl(uint3 id)
+{
+    int samplePack = (int)id.z;
+    int batch = (int)id.y;
+    int sampleBase = samplePack * 4;
+    if (id.x != 0 || batch < 0 || batch >= _MultinomialBatch || sampleBase >= _MultinomialSamples)
+        return;
+
+    float maxLogit = -3.402823466e+38f;
+    [loop]
+    for (int category = 0; category < _MultinomialClasses; ++category)
+    {
+        float value = AexisMultinomialLogit(batch, category);
+        if (isfinite(value))
+            maxLogit = max(maxLogit, value);
+    }
+
+    float normalizer = 0.0;
+    [loop]
+    for (int category = 0; category < _MultinomialClasses; ++category)
+    {
+        float value = AexisMultinomialLogit(batch, category);
+        if (isfinite(value) && maxLogit > -3.4e+38f)
+            normalizer += exp(clamp(value - maxLogit, -80.0, 0.0));
+    }
+
+    float4 result = 0.0;
+    [unroll]
+    for (int lane = 0; lane < 4; ++lane)
+    {
+        int sample = sampleBase + lane;
+        if (sample >= _MultinomialSamples)
+            continue;
+
+        uint coordinate = (uint)_MultinomialSeed
+            ^ ((uint)batch * 0x9e3779b9u)
+            ^ ((uint)sample * 0x85ebca6bu)
+            ^ ((uint)_MultinomialClasses * 0xc2b2ae35u);
+        float target = AexisRandomUniform(coordinate) * normalizer;
+        float cumulative = 0.0;
+        int selected = 0;
+        if (normalizer > 0.0)
+        {
+            [loop]
+            for (int category = 0; category < _MultinomialClasses; ++category)
+            {
+                float value = AexisMultinomialLogit(batch, category);
+                if (isfinite(value))
+                    cumulative += exp(clamp(value - maxLogit, -80.0, 0.0));
+                if (cumulative > target || category == _MultinomialClasses - 1)
+                {
+                    selected = category;
+                    break;
+                }
+            }
+        }
+        AexisWriteLane(result, lane, (float)selected);
+    }
+    _MultinomialOutputArr[int3(0, batch, samplePack)] = result;
+}
+
 void AexisBuildSdInpaintInput9Pack4_Impl(uint3 id)
 {
     uint w, h, d;

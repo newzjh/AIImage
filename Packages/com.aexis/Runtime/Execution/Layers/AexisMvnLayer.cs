@@ -54,8 +54,20 @@ namespace Aexis.Execution
             Validate(shape, src.width, src.height, src.packs, layer);
             var groups = layer.GetInt(1, 0) != 0 ? 1 : shape.c;
             var depth = shape.dims == 4 ? shape.d : 1;
-            var statsA = owner.RentTempArray(context.commandBuffer, groups, 1, 1, RenderTextureFormat.ARGBFloat);
-            var statsB = owner.RentTempArray(context.commandBuffer, groups, 1, 1, RenderTextureFormat.ARGBFloat);
+            var statsA = owner.RentTempArrayExactFormat(
+                context.commandBuffer,
+                groups,
+                1,
+                1,
+                RenderTextureFormat.ARGBFloat,
+                AexisGraphSession.GetStrictPack4ScratchIdentity(layer, "mvn-stats-a"));
+            var statsB = owner.RentTempArrayExactFormat(
+                context.commandBuffer,
+                groups,
+                1,
+                1,
+                RenderTextureFormat.ARGBFloat,
+                AexisGraphSession.GetStrictPack4ScratchIdentity(layer, "mvn-stats-b"));
             var output = owner.RentTempArray(context.commandBuffer, src.width, src.height, depth * src.packs, src.texture.format);
             owner.Ops.GroupNormPack4Tex(context.commandBuffer, src.texture, shape.w, shape.h, depth, shape.c, src.packs, groups, layer.GetFloat(2, 0.0001f), pack.dummyAffine, pack.dummyAffine, statsA, statsB, output, true, layer.GetInt(0, 0) != 0);
             owner.ReturnTempArray(context.commandBuffer, statsA);

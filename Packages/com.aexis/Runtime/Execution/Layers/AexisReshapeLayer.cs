@@ -621,7 +621,15 @@ namespace Aexis.Execution
                 return false;
 
             var storageShape = AexisGraphSession.ResolveLinearMatStorageShape(outShape);
-            var output = owner.RentTempMat(cmd, storageShape.w, storageShape.h, src.texture.format);
+            // Strict LinearMat storage is an explicit FP32 Texture2D contract.
+            // Do not inherit an RHalf source format here: the execution plan
+            // declares this physical conversion as RFloat and the reshape kernel
+            // must bind that same planned RT.
+            var output = owner.RentTempMatExactFormat(
+                cmd,
+                storageShape.w,
+                storageShape.h,
+                AexisGraphSession.ResolveLinearMatTextureFormat());
             owner.Ops.ReshapeLinearMat2D(cmd, src.texture, src.texture.width, src.texture.height, output);
             blobs[layer.topNames[0]] = new AexisGraphSession.CmdTensorRef
             {
@@ -1058,7 +1066,11 @@ namespace Aexis.Execution
                 return false;
 
             var storageShape = AexisGraphSession.ResolveLinearMatStorageShape(outShape);
-            var outRt = owner.RentTempMat(cmd, storageShape.w, storageShape.h, AexisGraphSession.ResolveLinearMatTextureFormat());
+            var outRt = owner.RentTempMatExactFormat(
+                cmd,
+                storageShape.w,
+                storageShape.h,
+                AexisGraphSession.ResolveLinearMatTextureFormat());
             owner.Ops.ReshapePack4ToLinearMat(
                 cmd,
                 src.texture,

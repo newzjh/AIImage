@@ -4380,14 +4380,18 @@ public static class NcnnDebugRunner
                                 if (value != 0f) nonZeroCount++;
                                 maxAbs = Mathf.Max(maxAbs, Mathf.Abs(value));
                             }
-                            var selectedIndices = new[] { 0, 1, 2, 3, 1024, patchCount - 1 };
-                            for (var index = 0; index < selectedIndices.Length; index++)
+                            // Atlas size follows the input aspect ratio; a fixed preview row can be out of range.
+                            if (patchCount > 0 && values.Length >= patchCount * 768)
                             {
-                                var patchIndex = selectedIndices[index];
-                                var row = new JArray();
-                                for (var feature = 0; feature < 16; feature++)
-                                    row.Add(values[patchIndex * 768 + feature]);
-                                selected[patchIndex.ToString(CultureInfo.InvariantCulture)] = row;
+                                var selectedIndices = new[] { 0, 1, 2, 3, Math.Min(1024, patchCount - 1), patchCount - 1 };
+                                for (var index = 0; index < selectedIndices.Length; index++)
+                                {
+                                    var patchIndex = selectedIndices[index];
+                                    var row = new JArray();
+                                    for (var feature = 0; feature < 16; feature++)
+                                        row.Add(values[patchIndex * 768 + feature]);
+                                    selected[patchIndex.ToString(CultureInfo.InvariantCulture)] = row;
+                                }
                             }
                             valid = outputCount == patchCount * 768 && finiteCount == outputCount && nonZeroCount > 0;
                         }
@@ -5386,7 +5390,7 @@ public static class NcnnDebugRunner
             {
                 // A fixed texture value is sufficient for this dispatch regression:
                 // it covers the actual encoder graph through MatMul_911 while
-                // keeping all activations in Pack4 RT / CommandBuffer storage.
+                // keeping all activations in texture-backed CommandBuffer storage.
                 ops.FillScalarTexture(commandBuffer, new[] { 0f, 0f, 0f, 0f }, input);
                 var inputShape = new AexisGraphSession.BufferShape(3, 512, 512, 1, 3);
                 output = encoder.ForwardPack4(
@@ -5411,10 +5415,10 @@ public static class NcnnDebugRunner
                     || !plan.dispatchAllowed
                     || matMul == null
                     || !matMul.accepted
-                    || !string.Equals(matMul.executionPath, "command-buffer-pack4:inner-product-pack4-linear-mat", StringComparison.Ordinal))
+                    || !string.Equals(matMul.executionPath, "command-buffer-pack4:inner-product-linear-mat", StringComparison.Ordinal))
                 {
                     throw new InvalidOperationException(
-                        "CodeFormer MatMul_911 did not admit the verified CommandBuffer Pack4LinearMat path. "
+                        "CodeFormer MatMul_911 did not admit the verified CommandBuffer LinearMat texture path. "
                         + (plan?.summary ?? "plan unavailable"));
                 }
 
@@ -5431,7 +5435,7 @@ public static class NcnnDebugRunner
                 encoder.ReturnTempArray(commandBuffer, input);
                 input = null;
                 Graphics.ExecuteCommandBuffer(commandBuffer);
-                Debug.Log("[NcnnDebugRunner] CodeFormer encoder MatMul_911 CommandBuffer Pack4 regression passed");
+                Debug.Log("[NcnnDebugRunner] CodeFormer encoder MatMul_911 CommandBuffer LinearMat regression passed");
             }
             finally
             {

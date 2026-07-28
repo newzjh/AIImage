@@ -91,8 +91,17 @@ void AexisInterpPack4Nearest_Impl(uint3 id)
     float sourceY = _InterpCoordinateTransformMode != 0
         ? (float)id.y / syScale
         : ((float)id.y + 0.5) / syScale - 0.5;
-    int sx = min((int)(_InterpCoordinateTransformMode != 0 ? floor(sourceX) : ceil(sourceX - 0.5)), (int)iw - 1);
-    int sy = min((int)(_InterpCoordinateTransformMode != 0 ? floor(sourceY) : ceil(sourceY - 0.5)), (int)ih - 1);
+    // ONNX half_pixel + round_prefer_floor: exactly-half source coordinates
+    // select the lower source index.  Using ceil(source - 0.5) is vulnerable
+    // to scale-factor rounding at the tie, so bias the round boundary by one
+    // representable profile epsilon before flooring instead.
+    const float kRoundPreferFloorEpsilon = 1e-6;
+    int sx = min((int)(_InterpCoordinateTransformMode != 0
+        ? floor(sourceX)
+        : floor(sourceX + 0.5 - kRoundPreferFloorEpsilon)), (int)iw - 1);
+    int sy = min((int)(_InterpCoordinateTransformMode != 0
+        ? floor(sourceY)
+        : floor(sourceY + 0.5 - kRoundPreferFloorEpsilon)), (int)ih - 1);
     sx = max(0, sx);
     sy = max(0, sy);
     _InterpOutArr[int3((int)id.x, (int)id.y, p)] = _InterpInArr[int3(sx, sy, p)];

@@ -93,11 +93,15 @@ namespace Aexis.Execution
         public static readonly AexisLayerTypeKey Crop = AexisLayerTypeKey.FromString("Crop");
         public static readonly AexisLayerTypeKey Convolution = AexisLayerTypeKey.FromString("Convolution");
         public static readonly AexisLayerTypeKey Convolution3D = AexisLayerTypeKey.FromString("Convolution3D");
+        // Keep P2 names within the 16-byte serialized layer key contract.
+        public static readonly AexisLayerTypeKey ConvDw3D = AexisLayerTypeKey.FromString("ConvDw3D");
         public static readonly AexisLayerTypeKey Convolution1D = AexisLayerTypeKey.FromString("Convolution1D");
         public static readonly AexisLayerTypeKey ConvolutionDepthWise = AexisLayerTypeKey.FromString("ConvolutionDepthWise");
         public static readonly AexisLayerTypeKey Deconvolution = AexisLayerTypeKey.FromString("Deconvolution");
         public static readonly AexisLayerTypeKey Deconvolution3D = AexisLayerTypeKey.FromString("Deconvolution3D");
         public static readonly AexisLayerTypeKey DeconvolutionDepthWise = AexisLayerTypeKey.FromString("DeconvolutionDepthWise");
+        public static readonly AexisLayerTypeKey DeconvDw3D = AexisLayerTypeKey.FromString("DeconvDw3D");
+        public static readonly AexisLayerTypeKey DeconvDw1D = AexisLayerTypeKey.FromString("DeconvDw1D");
         public static readonly AexisLayerTypeKey Interp = AexisLayerTypeKey.FromString("Interp");
         public static readonly AexisLayerTypeKey Dropout = AexisLayerTypeKey.FromString("Dropout");
         public static readonly AexisLayerTypeKey Eltwise = AexisLayerTypeKey.FromString("Eltwise");
@@ -184,6 +188,9 @@ namespace Aexis.Execution
         public static readonly AexisLayerTypeKey ArgMin = AexisLayerTypeKey.FromString("ArgMin");
         public static readonly AexisLayerTypeKey Where = AexisLayerTypeKey.FromString("Where");
         public static readonly AexisLayerTypeKey TopK = AexisLayerTypeKey.FromString("TopK");
+        // NonMaxSuppression exceeds the fixed 16-byte type key.  The ONNX spelling
+        // is canonicalized to this short runtime key by AexisLayerFactory.
+        public static readonly AexisLayerTypeKey Nms = AexisLayerTypeKey.FromString("Nms");
         public static readonly AexisLayerTypeKey NonZero = AexisLayerTypeKey.FromString("NonZero");
         public static readonly AexisLayerTypeKey OneHot = AexisLayerTypeKey.FromString("OneHot");
         public static readonly AexisLayerTypeKey CumSum = AexisLayerTypeKey.FromString("CumSum");
@@ -208,6 +215,16 @@ namespace Aexis.Execution
         public static readonly AexisLayerTypeKey ThresholdedRelu = AexisLayerTypeKey.FromString("ThresholdedRelu");
         public static readonly AexisLayerTypeKey MVN = AexisLayerTypeKey.FromString("MVN");
         public static readonly AexisLayerTypeKey Pooling1D = AexisLayerTypeKey.FromString("Pooling1D");
+        public static readonly AexisLayerTypeKey RandomLike = AexisLayerTypeKey.FromString("RandomLike");
+        public static readonly AexisLayerTypeKey Multinomial = AexisLayerTypeKey.FromString("Multinomial");
+        // The public NCNN-style name exceeds the serialized type key limit.
+        // AexisLayerFactory preserves that spelling while dispatching this key.
+        public static readonly AexisLayerTypeKey StatsPooling = AexisLayerTypeKey.FromString("StatsPooling");
+        public static readonly AexisLayerTypeKey Spectrogram = AexisLayerTypeKey.FromString("Spectrogram");
+        public static readonly AexisLayerTypeKey InvSpectrogram = AexisLayerTypeKey.FromString("InvSpectrogram");
+        public static readonly AexisLayerTypeKey RNN = AexisLayerTypeKey.FromString("RNN");
+        public static readonly AexisLayerTypeKey GRU = AexisLayerTypeKey.FromString("GRU");
+        public static readonly AexisLayerTypeKey LSTM = AexisLayerTypeKey.FromString("LSTM");
     }
 
     [Serializable]

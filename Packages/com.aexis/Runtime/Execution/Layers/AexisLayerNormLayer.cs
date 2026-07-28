@@ -340,8 +340,21 @@ namespace Aexis.Execution
                 ComputeTexture outArr = null;
                 try
                 {
-                    var kernelInput = MaterializePack4WidthInput(owner, cmd, src, srcShape, outFormat, ref materializedInput);
-                    outArr = owner.RentTempArray(cmd, srcShape.w, srcShape.h, sliceCount, outFormat);
+                    var kernelInput = MaterializePack4WidthInput(
+                        owner,
+                        cmd,
+                        src,
+                        srcShape,
+                        outFormat,
+                        ref materializedInput,
+                        ScratchResource(layer, "layernorm-packed-input"));
+                    outArr = owner.RentTempArray(
+                        cmd,
+                        srcShape.w,
+                        srcShape.h,
+                        sliceCount,
+                        outFormat,
+                        ScratchResource(layer, "layernorm-packed-output"));
                     owner.Ops.LayerNormPack4WidthTex(
                         cmd,
                         kernelInput,
@@ -585,7 +598,8 @@ namespace Aexis.Execution
             AexisGraphSession.CmdTensorRef source,
             AexisGraphSession.BufferShape logicalShape,
             RenderTextureFormat pack4Format,
-            ref ComputeTexture materialized)
+            ref ComputeTexture materialized,
+            string plannedResourceName)
         {
             if (owner == null)
                 throw new ArgumentNullException(nameof(owner));
@@ -601,7 +615,13 @@ namespace Aexis.Execution
             var sliceCount = logicalShape.dims >= 4
                 ? Mathf.Max(1, logicalShape.d) * Mathf.Max(1, Mathf.CeilToInt(Mathf.Max(1, logicalShape.c) / 4f))
                 : Mathf.Max(1, Mathf.CeilToInt(Mathf.Max(1, logicalShape.c) / 4f));
-            materialized = owner.RentTempArray(cmd, logicalShape.w, logicalShape.h, sliceCount, pack4Format);
+            materialized = owner.RentTempArray(
+                cmd,
+                logicalShape.w,
+                logicalShape.h,
+                sliceCount,
+                pack4Format,
+                plannedResourceName);
             owner.Ops.ReshapeLinearMatToPack4(
                 cmd,
                 source.texture,
@@ -614,6 +634,11 @@ namespace Aexis.Execution
                 logicalShape.dims,
                 materialized);
             return materialized;
+        }
+
+        private static string ScratchResource(AexisGraphModel.Layer layer, string suffix)
+        {
+            return AexisGraphSession.GetStrictPack4ScratchIdentity(layer, suffix);
         }
     }
 }

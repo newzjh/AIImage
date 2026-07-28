@@ -48,6 +48,9 @@ namespace Aexis.Execution
         public string executionPath;
         public string reason;
         public AexisTexturePlanTensorDescriptor[] outputs = Array.Empty<AexisTexturePlanTensorDescriptor>();
+        // Kernel-local Pack4 RTs must be declared by the loaded-runtime verifier.
+        // They participate in the same static liveness/arena proof as graph outputs.
+        public AexisTexturePlanTensorDescriptor[] scratch = Array.Empty<AexisTexturePlanTensorDescriptor>();
     }
 
     [Serializable]
@@ -73,6 +76,11 @@ namespace Aexis.Execution
         public string[] int4WeightOnlyOperators = Array.Empty<string>();
         public string[] int4WeightOnlyLayerNames = Array.Empty<string>();
         public bool int4WeightOnlyLayerSelectionExplicit;
+        // Model-bound FP32 Pack4 activation producers inside an otherwise FP16
+        // profile. This mirrors the loaded runtime's precision-sensitive and
+        // explicitly configured activation decisions; it is not a fallback or
+        // a second backend.
+        public string[] fp32ActivationLayerNames = Array.Empty<string>();
         // Optional execution boundary for a graph prefix. Layers after the first
         // producer of this blob are not dispatched and must not block a strict plan.
         // An unknown blob deliberately preserves complete-graph validation.
@@ -95,6 +103,7 @@ namespace Aexis.Execution
         public string executionPath;
         public AexisTexturePlanTensorDescriptor[] inputs;
         public AexisTexturePlanTensorDescriptor[] outputs;
+        public AexisTexturePlanTensorDescriptor[] scratch;
     }
 
     [Serializable]
@@ -118,6 +127,43 @@ namespace Aexis.Execution
     }
 
     [Serializable]
+    public sealed class AexisTextureExecutionPlanResource
+    {
+        // A resource represents one physical Pack4 Texture2DArray allocation.  View
+        // nodes retain the source alias group and therefore never add a second resource.
+        public string aliasGroup;
+        public string representativeBlob;
+        public AexisTexturePlanTensorDescriptor descriptor;
+        public int firstLayerIndex;
+        public int lastLayerIndex;
+        public bool persistent;
+        public bool temporary;
+        // Persistent graph outputs are allocated by the compiled arena but are
+        // handed to the CommandBuffer result owner rather than released at the
+        // graph boundary. External inputs are never arena-owned.
+        public bool producedByGraph;
+        // Caller-supplied textures can be carried through descriptor aliases, but
+        // their storage must never acquire a CommandBuffer arena allocation.
+        public bool externalInput;
+        public bool scratch;
+        // Temporary resources with identical storage descriptors may share this slot
+        // when their inclusive liveness ranges do not overlap.
+        public int allocationSlot;
+        public long estimatedBytes;
+    }
+
+    [Serializable]
+    public sealed class AexisTextureExecutionPlanMemory
+    {
+        public AexisTextureExecutionPlanResource[] resources;
+        public long peakLiveBytes;
+        public int peakLiveLayerIndex;
+        public long persistentBytes;
+        public long temporaryArenaBytes;
+        public long totalArenaBytes;
+    }
+
+    [Serializable]
     public sealed class AexisTextureExecutionPlan
     {
         public int schemaVersion;
@@ -133,6 +179,9 @@ namespace Aexis.Execution
         public AexisTextureExecutionPlanDiagnostic[] diagnostics;
         public bool strictEligible;
         public bool dispatchAllowed;
+        // The memory plan is metadata only. Runtime allocation remains texture-native
+        // through AexisGraphSession's CommandBuffer temporary RT pool.
+        public AexisTextureExecutionPlanMemory memory;
         public string summary;
     }
 
@@ -184,8 +233,8 @@ namespace Aexis.Execution
     // Metadata-only planner. It does not allocate textures, materialize buffers, or record dispatches.
     public static class AexisTextureExecutionPlanner
     {
-        public const int SchemaVersion = 1;
-        public const string Contract = "aiimage.strict-texture-execution-plan/v1";
+        public const int SchemaVersion = 2;
+        public const string Contract = "aiimage.strict-texture-execution-plan/v2";
 
         private static readonly string[] RejectedComputationPaths =
         {
@@ -239,7 +288,7 @@ namespace Aexis.Execution
                     continue;
                 }
 
-                var operatorName = string.IsNullOrWhiteSpace(layer.typeName) ? layer.type.ToString() : layer.typeName;
+                var operatorName = ResolveCapabilityOperatorName(layer);
                 AexisOperatorCapabilities.TryGet(operatorName, out var capability);
                 var inputs = ResolveInputs(layer, descriptors);
                 // The Qwen decoder declares all KV-cache slots as one graph Input,
@@ -256,6 +305,7 @@ namespace Aexis.Execution
                     capabilityStatus = capability?.status ?? AexisOperatorCapabilityStatus.Unsupported,
                     inputs = inputs.Select(input => input == null ? null : CloneDescriptor(input, input.blob)).ToArray(),
                     outputs = Array.Empty<AexisTexturePlanTensorDescriptor>(),
+                    scratch = Array.Empty<AexisTexturePlanTensorDescriptor>(),
                     executionPath = "rejected"
                 };
 
@@ -268,7 +318,9 @@ namespace Aexis.Execution
 
                 if (request.strict
                     && (string.Equals(operatorName, "NonZero", StringComparison.Ordinal)
-                        || string.Equals(operatorName, "Compress", StringComparison.Ordinal))
+                        || string.Equals(operatorName, "Compress", StringComparison.Ordinal)
+                        || string.Equals(operatorName, "Nms", StringComparison.Ordinal)
+                        || string.Equals(operatorName, "NonMaxSuppression", StringComparison.Ordinal))
                     && TryFindOutputConsumer(layers, index, layer.topNames, out var consumedBlob, out var consumerIndex, out var consumerName))
                 {
                     diagnostics.Add(CreateDiagnostic(
@@ -336,6 +388,7 @@ namespace Aexis.Execution
                     || IsMaxPoolingIndexInput(operatorName, inputIndex, input, request)
                     || IsFixedTextureInputUpload(operatorName, inputIndex, input, request)
                     || IsQwenFp32AttentionKvCacheInput(layer, operatorName, inputIndex, input, request)
+                    || IsVerifiedFp32ActivationIslandTexture(layer, input, request)
                     || IsVerifiedLinearMatTexture(input, request)).All(value => value);
                 var quantizesOperator = IsInt8WeightOnlyOperator(request, layer.name, operatorName)
                     || IsInt4WeightOnlyOperator(request, layer.name, operatorName);
@@ -364,6 +417,19 @@ namespace Aexis.Execution
                     && (!requiresInt8WeightKernel || capability.int8);
                 var isConditionalCapability = string.Equals(capability?.status, AexisOperatorCapabilityStatus.SupportedByProfile, StringComparison.Ordinal)
                     || string.Equals(capability?.status, AexisOperatorCapabilityStatus.Partial, StringComparison.Ordinal);
+                // Capability profiles describe the model's requested activation
+                // contract. A descriptor from the explicit FP32 Pack4 set is a
+                // physical-storage promotion inside that same FP16 contract. Use
+                // a normalized copy only for profile selection; the real runtime
+                // verifier below still receives the unmodified FP32 descriptor.
+                var profileInputs = inputs.Select(input =>
+                {
+                    if (!IsVerifiedFp32ActivationIslandTexture(layer, input, request))
+                        return input;
+                    var normalized = CloneDescriptor(input, input.blob);
+                    normalized.dtype = ResolvePhysicalTextureDtype(request.targetDtype);
+                    return normalized;
+                }).ToArray();
                 var profileMatchReason = string.Empty;
                 var profileTargetCompatible = isConditionalCapability
                     && (!requiresInt8WeightKernel || capability.int8)
@@ -373,20 +439,37 @@ namespace Aexis.Execution
                         request.targetBackend,
                         request.targetDtype,
                         request.targetLayout,
-                        inputs,
+                        profileInputs,
                         out _,
                         out profileMatchReason);
                 var verifiedOutputs = Array.Empty<AexisTexturePlanTensorDescriptor>();
+                var verifiedScratch = Array.Empty<AexisTexturePlanTensorDescriptor>();
                 var verifiedPath = string.Empty;
                 var verificationReason = string.Empty;
                 var verifiedUsesDescriptorAlias = false;
                 var profileVerified = !strictCapability
                     && inputsMatchTarget
                     && profileTargetCompatible
-                    && TryAcceptRuntimeVerifiedNode(layer, inputs, request, out verifiedOutputs, out verifiedPath, out verifiedUsesDescriptorAlias, out verificationReason);
+                    && TryAcceptRuntimeVerifiedNode(layer, inputs, request, out verifiedOutputs, out verifiedScratch, out verifiedPath, out verifiedUsesDescriptorAlias, out verificationReason);
                 if (strictCapability && inputsMatchTarget)
                 {
                     var outputs = CreateComputedOutputs(layer, inputs[0], request);
+                    if (!TryValidateTextureCapacities(outputs, out var outputCapacityReason))
+                    {
+                        diagnostics.Add(CreateDiagnostic(
+                            request,
+                            index,
+                            layer,
+                            capability,
+                            operatorName,
+                            "output-texture-descriptor-capacity-exceeded",
+                            outputCapacityReason,
+                            outputs,
+                            true,
+                            "Use an output shape whose Pack4 texture-array storage fits the active graphics device."));
+                        nodes.Add(node);
+                        continue;
+                    }
                     node.accepted = true;
                     node.executionPath = "command-buffer-pack4";
                     node.outputs = outputs;
@@ -394,10 +477,27 @@ namespace Aexis.Execution
                 }
                 else if (profileVerified)
                 {
+                    if (!TryValidateTextureCapacities(verifiedOutputs, out var outputCapacityReason))
+                    {
+                        diagnostics.Add(CreateDiagnostic(
+                            request,
+                            index,
+                            layer,
+                            capability,
+                            operatorName,
+                            "output-texture-descriptor-capacity-exceeded",
+                            outputCapacityReason,
+                            verifiedOutputs,
+                            true,
+                            "Use an output shape whose Pack4 texture-array storage fits the active graphics device."));
+                        nodes.Add(node);
+                        continue;
+                    }
                     node.accepted = true;
                     node.usesDescriptorAlias = verifiedUsesDescriptorAlias;
                     node.executionPath = verifiedPath;
                     node.outputs = verifiedOutputs;
+                    node.scratch = verifiedScratch;
                     RegisterOutputs(descriptors, verifiedOutputs);
                 }
                 else if (request.debugOracleRelaxed
@@ -406,6 +506,22 @@ namespace Aexis.Execution
                     && inputs.Count > 0)
                 {
                     var outputs = CreateComputedOutputs(layer, inputs[0], request);
+                    if (!TryValidateTextureCapacities(outputs, out var outputCapacityReason))
+                    {
+                        diagnostics.Add(CreateDiagnostic(
+                            request,
+                            index,
+                            layer,
+                            capability,
+                            operatorName,
+                            "output-texture-descriptor-capacity-exceeded",
+                            outputCapacityReason,
+                            outputs,
+                            true,
+                            "Use an output shape whose Pack4 texture-array storage fits the active graphics device."));
+                        nodes.Add(node);
+                        continue;
+                    }
                     node.accepted = true;
                     node.acceptedByDebugOracle = true;
                     node.executionPath = "debug-oracle-relaxed";
@@ -441,6 +557,7 @@ namespace Aexis.Execution
             var blocking = diagnostics.Any(diagnostic => diagnostic.blocking);
             var strictEligible = !blocking && nodes.All(node => node.accepted && !node.acceptedByDebugOracle);
             var dispatchAllowed = !blocking && (!request.strict || strictEligible || request.debugOracleRelaxed);
+            var memory = BuildMemoryPlan(nodes);
             return new AexisTextureExecutionPlan
             {
                 schemaVersion = SchemaVersion,
@@ -456,8 +573,248 @@ namespace Aexis.Execution
                 diagnostics = diagnostics.ToArray(),
                 strictEligible = strictEligible,
                 dispatchAllowed = dispatchAllowed,
-                summary = "nodes=" + nodes.Count + " | diagnostics=" + diagnostics.Count + " | int8_weight_only=" + request.int8WeightOnly + " | strict_eligible=" + strictEligible + " | dispatch_allowed=" + dispatchAllowed
+                memory = memory,
+                summary = "nodes=" + nodes.Count + " | diagnostics=" + diagnostics.Count + " | int8_weight_only=" + request.int8WeightOnly + " | strict_eligible=" + strictEligible + " | dispatch_allowed=" + dispatchAllowed + " | peak_rt_bytes=" + memory.peakLiveBytes + " | arena_rt_bytes=" + memory.totalArenaBytes
             };
+        }
+
+        private sealed class ResourceDraft
+        {
+            public AexisTextureExecutionPlanResource resource;
+            public int producerLayerIndex = -1;
+            // An input first observed at the graph boundary remains caller-owned
+            // even if a later descriptor-alias output retains its alias group.
+            public bool externalInput;
+            public bool forceTemporary;
+            // A terminal descriptor-alias does not allocate another texture, but
+            // it does transfer ownership of its source physical texture to the
+            // graph result. Keep that one alias group alive past execution.
+            public bool forcePersistent;
+        }
+
+        private sealed class TemporaryArenaSlot
+        {
+            public int slot;
+            public string signature;
+            public int lastLayerIndex;
+            public long bytes;
+        }
+
+        private static AexisTextureExecutionPlanMemory BuildMemoryPlan(IReadOnlyList<AexisTextureExecutionPlanNode> nodes)
+        {
+            var drafts = new Dictionary<string, ResourceDraft>(StringComparer.Ordinal);
+            var lastInputUse = new Dictionary<string, int>(StringComparer.Ordinal);
+            for (var nodeIndex = 0; nodeIndex < (nodes?.Count ?? 0); nodeIndex++)
+            {
+                var node = nodes[nodeIndex];
+                if (node == null || !node.accepted)
+                    continue;
+                foreach (var input in node.inputs ?? Array.Empty<AexisTexturePlanTensorDescriptor>())
+                {
+                    if (input != null && !string.IsNullOrWhiteSpace(input.blob))
+                        lastInputUse[input.blob] = nodeIndex;
+                }
+            }
+            for (var nodeIndex = 0; nodeIndex < (nodes?.Count ?? 0); nodeIndex++)
+            {
+                var node = nodes[nodeIndex];
+                if (node == null || !node.accepted)
+                    continue;
+                TouchResources(drafts, node.inputs, nodeIndex, false);
+                // Descriptor aliases retain the producer's Pack4 texture and only
+                // extend its liveness. Treating an alias as a new graph-produced
+                // RT makes the arena demand a bind that no CommandBuffer layer can
+                // perform, even though no allocation is semantically valid.
+                TouchResources(
+                    drafts,
+                    node.outputs,
+                    nodeIndex,
+                    !node.usesDescriptorAlias,
+                    isScratch: false,
+                    isTerminalOutput: descriptor => descriptor != null
+                        && (!lastInputUse.TryGetValue(descriptor.blob ?? string.Empty, out var lastUse)
+                            || lastUse <= nodeIndex));
+                TouchResources(drafts, node.scratch, nodeIndex, true, true);
+            }
+
+            var resources = drafts.Values
+                .Select(draft => FinalizeResource(draft))
+                .OrderBy(resource => resource.firstLayerIndex)
+                .ThenBy(resource => resource.aliasGroup, StringComparer.Ordinal)
+                .ToArray();
+            AssignStaticTemporarySlots(resources);
+
+            long peakLiveBytes = 0;
+            var peakLiveLayerIndex = -1;
+            var maxLayerIndex = resources.Length == 0 ? -1 : resources.Max(resource => resource.lastLayerIndex);
+            for (var layerIndex = 0; layerIndex <= maxLayerIndex; layerIndex++)
+            {
+                long liveBytes = 0;
+                foreach (var resource in resources)
+                {
+                    if (resource.firstLayerIndex <= layerIndex && resource.lastLayerIndex >= layerIndex)
+                        liveBytes = checked(liveBytes + resource.estimatedBytes);
+                }
+                if (liveBytes > peakLiveBytes)
+                {
+                    peakLiveBytes = liveBytes;
+                    peakLiveLayerIndex = layerIndex;
+                }
+            }
+
+            var persistentBytes = resources
+                .Where(resource => resource.persistent && !resource.externalInput)
+                .Sum(resource => resource.estimatedBytes);
+            var temporaryArenaBytes = resources
+                .Where(resource => resource.temporary)
+                .GroupBy(resource => resource.allocationSlot)
+                .Sum(slot => slot.Max(resource => resource.estimatedBytes));
+            return new AexisTextureExecutionPlanMemory
+            {
+                resources = resources,
+                peakLiveBytes = peakLiveBytes,
+                peakLiveLayerIndex = peakLiveLayerIndex,
+                persistentBytes = persistentBytes,
+                temporaryArenaBytes = temporaryArenaBytes,
+                totalArenaBytes = checked(persistentBytes + temporaryArenaBytes)
+            };
+        }
+
+        private static void TouchResources(
+            Dictionary<string, ResourceDraft> drafts,
+            IEnumerable<AexisTexturePlanTensorDescriptor> descriptors,
+            int layerIndex,
+            bool isOutput,
+            bool isScratch = false,
+            Func<AexisTexturePlanTensorDescriptor, bool> isTerminalOutput = null)
+        {
+            foreach (var descriptor in descriptors ?? Array.Empty<AexisTexturePlanTensorDescriptor>())
+            {
+                if (descriptor == null || !descriptor.textureBacked)
+                    continue;
+                var aliasGroup = string.IsNullOrWhiteSpace(descriptor.aliasGroup)
+                    ? "blob:" + (descriptor.blob ?? string.Empty)
+                    : descriptor.aliasGroup;
+                if (!drafts.TryGetValue(aliasGroup, out var draft))
+                {
+                    draft = new ResourceDraft
+                    {
+                        resource = new AexisTextureExecutionPlanResource
+                        {
+                            aliasGroup = aliasGroup,
+                            representativeBlob = descriptor.blob ?? string.Empty,
+                            descriptor = CloneDescriptor(descriptor, descriptor.blob),
+                            firstLayerIndex = layerIndex,
+                            lastLayerIndex = layerIndex,
+                            allocationSlot = -1,
+                            // Initialise this at first sight so a later alias of
+                            // identical physical storage cannot replace the
+                            // producer blob used by allocation diagnostics.
+                            estimatedBytes = EstimateTextureBytes(descriptor)
+                        }
+                    };
+                    drafts.Add(aliasGroup, draft);
+                }
+                else
+                {
+                    draft.resource.firstLayerIndex = Math.Min(draft.resource.firstLayerIndex, layerIndex);
+                    draft.resource.lastLayerIndex = Math.Max(draft.resource.lastLayerIndex, layerIndex);
+                    var descriptorBytes = EstimateTextureBytes(descriptor);
+                    if (descriptorBytes > draft.resource.estimatedBytes)
+                    {
+                        draft.resource.descriptor = CloneDescriptor(descriptor, descriptor.blob);
+                        draft.resource.representativeBlob = descriptor.blob ?? draft.resource.representativeBlob;
+                    }
+                }
+                if (!isOutput && draft.producerLayerIndex < 0)
+                    draft.externalInput = true;
+                if (isOutput && draft.producerLayerIndex < 0)
+                    draft.producerLayerIndex = layerIndex;
+                if (isTerminalOutput?.Invoke(descriptor) == true)
+                    draft.forcePersistent = true;
+                if (isScratch)
+                    draft.forceTemporary = true;
+                if (isScratch)
+                    draft.resource.scratch = true;
+            }
+        }
+
+        private static AexisTextureExecutionPlanResource FinalizeResource(ResourceDraft draft)
+        {
+            var resource = draft.resource;
+            resource.estimatedBytes = EstimateTextureBytes(resource.descriptor);
+            resource.producedByGraph = draft.producerLayerIndex >= 0;
+            resource.externalInput = draft.externalInput;
+            // Inputs, KV cache slots, and terminal graph values stay alive beyond this
+            // CommandBuffer. Every other descriptor is a temporary Pack4 RT.
+            resource.persistent = !draft.forceTemporary && (draft.forcePersistent
+                || draft.producerLayerIndex < 0
+                || resource.aliasGroup.StartsWith("input:", StringComparison.Ordinal)
+                || resource.representativeBlob.StartsWith("cache_", StringComparison.Ordinal)
+                || (draft.producerLayerIndex >= 0 && resource.lastLayerIndex == draft.producerLayerIndex));
+            resource.temporary = !resource.persistent;
+            return resource;
+        }
+
+        private static void AssignStaticTemporarySlots(IReadOnlyList<AexisTextureExecutionPlanResource> resources)
+        {
+            var slots = new List<TemporaryArenaSlot>();
+            var nextSlot = 0;
+            foreach (var resource in resources)
+            {
+                if (resource.externalInput)
+                {
+                    resource.allocationSlot = -1;
+                    continue;
+                }
+                if (resource.persistent)
+                {
+                    resource.allocationSlot = nextSlot++;
+                    continue;
+                }
+
+                var signature = StorageSignature(resource.descriptor);
+                var reusable = slots
+                    .Where(slot => slot.lastLayerIndex < resource.firstLayerIndex
+                        && string.Equals(slot.signature, signature, StringComparison.Ordinal)
+                        && slot.bytes >= resource.estimatedBytes)
+                    .OrderBy(slot => slot.bytes)
+                    .FirstOrDefault();
+                if (reusable == null)
+                {
+                    reusable = new TemporaryArenaSlot
+                    {
+                        slot = nextSlot++,
+                        signature = signature,
+                        bytes = resource.estimatedBytes
+                    };
+                    slots.Add(reusable);
+                }
+                reusable.lastLayerIndex = resource.lastLayerIndex;
+                resource.allocationSlot = reusable.slot;
+            }
+        }
+
+        private static string StorageSignature(AexisTexturePlanTensorDescriptor descriptor)
+        {
+            var storage = descriptor?.storageShape ?? Array.Empty<int>();
+            return (descriptor?.dtype ?? string.Empty) + "|" + (descriptor?.layout ?? string.Empty) + "|" + string.Join(",", storage);
+        }
+
+        private static long EstimateTextureBytes(AexisTexturePlanTensorDescriptor descriptor)
+        {
+            if (!TryToBufferShape(descriptor?.storageShape, out var storage))
+                return 0;
+            var packs = Math.Max(1, (storage.c + 3) / 4);
+            var bytesPerTexel = string.Equals(descriptor.dtype, "FP16", StringComparison.OrdinalIgnoreCase) ? 8L : 16L;
+            try
+            {
+                return checked((long)storage.w * storage.h * storage.d * packs * bytesPerTexel);
+            }
+            catch (OverflowException)
+            {
+                return long.MaxValue;
+            }
         }
 
         private static int ResolvePlannedLayerCount(
@@ -614,6 +971,9 @@ namespace Aexis.Execution
             }
 
             node.accepted = true;
+            // Input publishes the caller-owned Pack4 texture under the graph
+            // blob name. It is a descriptor alias, never a graph RT allocation.
+            node.usesDescriptorAlias = true;
             node.executionPath = "external-pack4-input";
             node.outputs = outputs.ToArray();
             RegisterOutputs(descriptors, node.outputs);
@@ -778,7 +1138,9 @@ namespace Aexis.Execution
             // LinearMat tensors use RFloat texture storage even in FP16 graphs.
             // A view only carries the same native texture descriptor forward, so
             // accept that verified storage contract without materializing it.
-            if ((!MatchesTarget(source, request) && !IsVerifiedLinearMatTexture(source, request))
+            if ((!MatchesTarget(source, request)
+                    && !IsVerifiedFp32ActivationIslandTexture(layer, source, request)
+                    && !IsVerifiedLinearMatTexture(source, request))
                 || string.IsNullOrWhiteSpace(source.aliasGroup))
             {
                 reason = "The source lacks a matching Pack4 descriptor or alias group.";
@@ -942,7 +1304,10 @@ namespace Aexis.Execution
                 layout = request.targetLayout,
                 dtype = ResolvePhysicalTextureDtype(request.targetDtype),
                 logicalDtype = string.Equals(request.targetDtype, "BF16", StringComparison.OrdinalIgnoreCase) ? "BFloat16" : source.logicalDtype,
-                aliasGroup = "computed:" + (layer.name ?? layer.typeName ?? "layer") + ":" + index,
+                // Blob names are graph-unique; layer names are not guaranteed to be.
+                // Keying allocations by the latter would incorrectly alias adjacent
+                // anonymous/repeated layers and under-report the Pack4 RT arena.
+                aliasGroup = "computed:" + (topName ?? (layer.name ?? layer.typeName ?? "layer") + ":" + index),
                 textureBacked = true
             }).ToArray();
         }
@@ -1004,11 +1369,13 @@ namespace Aexis.Execution
             IReadOnlyList<AexisTexturePlanTensorDescriptor> inputs,
             AexisTextureExecutionPlanRequest request,
             out AexisTexturePlanTensorDescriptor[] outputs,
+            out AexisTexturePlanTensorDescriptor[] scratch,
             out string executionPath,
             out bool usesDescriptorAlias,
             out string reason)
         {
             outputs = Array.Empty<AexisTexturePlanTensorDescriptor>();
+            scratch = Array.Empty<AexisTexturePlanTensorDescriptor>();
             executionPath = null;
             usesDescriptorAlias = false;
             reason = null;
@@ -1062,6 +1429,7 @@ namespace Aexis.Execution
                 if (output == null
                     || (!MatchesTarget(output, request)
                         && !IsMaxPoolingIndexOutput(layer, index, output, request)
+                        && !IsVerifiedFp32ActivationIslandTexture(layer, output, request)
                         && !IsVerifiedLinearMatTexture(output, request))
                     || !string.Equals(output.blob, topNames[index], StringComparison.Ordinal))
                 {
@@ -1070,10 +1438,43 @@ namespace Aexis.Execution
                 }
             }
 
+            foreach (var descriptor in verification.scratch ?? Array.Empty<AexisTexturePlanTensorDescriptor>())
+            {
+                if (!IsValidDeclaredScratch(descriptor, request))
+                {
+                    reason = "The loaded-runtime verifier declared scratch outside the Pack4 texture-only arena contract.";
+                    return false;
+                }
+            }
+
             outputs = verification.outputs.Select(output => CloneDescriptor(output, output.blob)).ToArray();
+            scratch = (verification.scratch ?? Array.Empty<AexisTexturePlanTensorDescriptor>())
+                .Select(descriptor => CloneDescriptor(descriptor, descriptor.blob))
+                .ToArray();
             executionPath = verification.executionPath;
             usesDescriptorAlias = verification.usesDescriptorAlias;
             return true;
+        }
+
+        private static bool IsValidDeclaredScratch(
+            AexisTexturePlanTensorDescriptor descriptor,
+            AexisTextureExecutionPlanRequest request)
+        {
+            if (descriptor == null || !descriptor.textureBacked
+                || string.IsNullOrWhiteSpace(descriptor.blob)
+                || string.IsNullOrWhiteSpace(descriptor.aliasGroup)
+                || !descriptor.aliasGroup.StartsWith("scratch:", StringComparison.Ordinal)
+                || !TryToBufferShape(descriptor.logicalShape, out var logical)
+                || !TryToBufferShape(descriptor.storageShape, out var storage)
+                || logical.dims < 1 || logical.dims > 4
+                || storage.dims < 1 || storage.dims > 4
+                || !string.Equals(descriptor.layout, request?.targetLayout, StringComparison.OrdinalIgnoreCase)
+                || (!string.Equals(descriptor.dtype, "FP16", StringComparison.OrdinalIgnoreCase)
+                    && !string.Equals(descriptor.dtype, "FP32", StringComparison.OrdinalIgnoreCase)))
+            {
+                return false;
+            }
+            return TryValidateTextureCapacities(new[] { descriptor }, out _);
         }
 
         private static bool HasRuntimeAliasEvidence(
@@ -1202,6 +1603,35 @@ namespace Aexis.Execution
                 && string.Equals(descriptor.dtype, ResolvePhysicalTextureDtype(request.targetDtype), StringComparison.OrdinalIgnoreCase)
                 && TryToBufferShape(descriptor.logicalShape, out _)
                 && TryToBufferShape(descriptor.storageShape, out _);
+        }
+
+        private static bool IsVerifiedFp32ActivationIslandTexture(
+            AexisGraphModel.Layer consumer,
+            AexisTexturePlanTensorDescriptor descriptor,
+            AexisTextureExecutionPlanRequest request)
+        {
+            if (descriptor == null
+                || !descriptor.textureBacked
+                || !string.Equals(request?.targetDtype, "FP16", StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(descriptor.layout, request?.targetLayout, StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(descriptor.dtype, "FP32", StringComparison.OrdinalIgnoreCase)
+                || !TryToBufferShape(descriptor.logicalShape, out _)
+                || !TryToBufferShape(descriptor.storageShape, out var storage)
+                || storage.dims < 3
+                || string.IsNullOrWhiteSpace(descriptor.aliasGroup))
+            {
+                return false;
+            }
+
+            // The FP32 activation must be produced by a named member of this
+            // exact model island. External FP32 textures remain rejected.
+            foreach (var producer in request.fp32ActivationLayerNames ?? Array.Empty<string>())
+            {
+                if (!string.IsNullOrWhiteSpace(producer)
+                    && descriptor.aliasGroup.StartsWith("computed:" + producer + ":", StringComparison.Ordinal))
+                    return true;
+            }
+            return false;
         }
 
         private static bool IsFixedTextureInputUpload(
@@ -1397,6 +1827,28 @@ namespace Aexis.Execution
                 && TryToBufferShape(descriptor.logicalShape, out _)
                 && TryToBufferShape(descriptor.storageShape, out _)
                 && TryToBufferShape(descriptor.sourceLogicalShape, out _);
+        }
+
+        private static string ResolveCapabilityOperatorName(AexisGraphModel.Layer layer)
+        {
+            var operatorName = string.IsNullOrWhiteSpace(layer?.typeName) ? layer?.type.ToString() : layer.typeName;
+            if (!string.Equals(operatorName, "RandomLike", StringComparison.Ordinal)
+                || layer?.stringParams == null
+                || !layer.stringParams.TryGetValue("aexis.random.operator", out var randomOperator)
+                || string.IsNullOrWhiteSpace(randomOperator))
+                return operatorName;
+
+            switch (randomOperator)
+            {
+                case "RandomUniform":
+                case "RandomNormal":
+                case "RandomUniformLike":
+                case "RandomNormalLike":
+                case "Bernoulli":
+                    return randomOperator;
+                default:
+                    return operatorName;
+            }
         }
 
         private static AexisTextureExecutionPlanDiagnostic CreateDiagnostic(

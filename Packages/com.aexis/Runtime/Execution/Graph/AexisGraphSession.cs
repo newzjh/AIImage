@@ -249,6 +249,29 @@ namespace Aexis.Execution
             public bool owned;
         }
 
+        [Serializable]
+        public sealed class CommandBufferRtArenaMetrics
+        {
+            public bool enabled;
+            public int plannedTemporaryResources;
+            public int plannedPersistentResources;
+            public int plannedSlots;
+            public int boundResources;
+            public int allocatedSlots;
+            public int releasedResources;
+            // Strict mode rejects this before recording an allocation. It remains
+            // observable so debug-oracle execution cannot be misreported as a
+            // fully compiled graph arena.
+            public int unplannedTextureAllocations;
+            public bool allPlannedResourcesBound;
+            public bool allBoundResourcesReleased;
+            // Filled only when the strict lifetime proof fails. Keeping the
+            // planned blob and interval makes an arena mismatch actionable
+            // without inspecting CommandBuffer internals or reading back data.
+            public string[] activeResourceDiagnostics = Array.Empty<string>();
+            public string[] unboundResourceDiagnostics = Array.Empty<string>();
+        }
+
         public sealed class ConvPack : IDisposable
         {
             public int outC;
@@ -1580,6 +1603,26 @@ namespace Aexis.Execution
             public float epsilon = 1e-6f;
             public void Dispose() { }
         }
+
+        // The P2 recurrent profile keeps only immutable gate weights in GPU
+        // buffers. Sequence activations and the externally-visible state remain
+        // Pack4 Texture2DArrays throughout command-buffer execution.
+        public sealed class RecurrentPack : IDisposable
+        {
+            public int kind;
+            public int inputSize;
+            public int hiddenSize;
+            public ComputeBuffer inputWeights;
+            public ComputeBuffer recurrentWeights;
+            public ComputeBuffer bias;
+
+            public void Dispose()
+            {
+                try { AexisGpuResourceTracker.ReleaseBuffer(inputWeights, "AexisGraphSession.RecurrentPack.Dispose"); inputWeights?.Dispose(); } catch { }
+                try { AexisGpuResourceTracker.ReleaseBuffer(recurrentWeights, "AexisGraphSession.RecurrentPack.Dispose"); recurrentWeights?.Dispose(); } catch { }
+                try { AexisGpuResourceTracker.ReleaseBuffer(bias, "AexisGraphSession.RecurrentPack.Dispose"); bias?.Dispose(); } catch { }
+            }
+        }
         internal bool UsesInt8WeightsForLayer(AexisGraphModel.Layer layer) => UsesInt8WeightOnlyForLayer(layer);
 
         public bool UsesInt4WeightOnlyForLayer(AexisGraphModel.Layer layer)
@@ -1643,6 +1686,7 @@ namespace Aexis.Execution
         // index values. Callers must explicitly declare those logical dtypes here.
         public IDictionary<string, string> StrictTextureInputLogicalDtypes { get; } = new Dictionary<string, string>(StringComparer.Ordinal);
         public AexisTextureExecutionPlan LastTextureExecutionPlan { get; private set; }
+        public CommandBufferRtArenaMetrics LastCommandBufferRtArena { get; private set; }
         public bool DisallowBufferAccess { get; set; }
         public bool DisallowBufferOutputs { get; set; }
         public bool DisallowBufferToTextureMaterialization { get; set; }
@@ -1681,7 +1725,9 @@ namespace Aexis.Execution
         private const int FallbackMaxTextureSize = 16384;
         private string _currentExecutingLayerName;
         private string _currentExecutingLayerTypeName;
+        private int _currentExecutingLayerIndex = -1;
         private AexisLayerBufferContext _currentBufferContext;
+        private CommandBufferRtArena _activeCommandBufferRtArena;
 
         public void ApplyModelManifest(ModelManifest manifest)
         {
@@ -1779,7 +1825,8 @@ namespace Aexis.Execution
         private void EnsureCommandBufferTextureExecutionPlan(
             Dictionary<string, ComputeTexture> textureInputs,
             Dictionary<string, BufferShape> textureInputShapes,
-            ISet<string> fixedBufferInputBlobs = null)
+            ISet<string> fixedBufferInputBlobs = null,
+            string stopAfterTopName = null)
         {
             if (Model == null)
                 throw new InvalidOperationException("model not loaded");
@@ -1822,7 +1869,7 @@ namespace Aexis.Execution
                 });
             }
 
-            CompleteTextureExecutionPlan(inputs, IsExplicitDebugOracleExecution);
+            CompleteTextureExecutionPlan(inputs, IsExplicitDebugOracleExecution, stopAfterTopName);
         }
 
         // Immediate execution uses the same CommandBuffer Pack4 admission gate. This
@@ -1902,11 +1949,76 @@ namespace Aexis.Execution
                 int4WeightOnlyOperators = ModelManifest?.quantization?.quantizedOperators ?? Array.Empty<string>(),
                 int4WeightOnlyLayerNames = explicitInt4LayerNames,
                 int4WeightOnlyLayerSelectionExplicit = explicitInt4LayerNames != null,
+                fp32ActivationLayerNames = GetFp32ActivationLayerNamesForPlan(),
                 stopAfterTopName = stopAfterTopName,
                 inputs = inputs.ToArray(),
                 nodeVerifier = VerifyStrictCommandBufferPack4Node
             });
             AexisTextureExecutionPlanner.ThrowIfDispatchRejected(LastTextureExecutionPlan);
+        }
+
+        private string[] GetFp32ActivationLayerNamesForPlan()
+        {
+            if (!UsesFp16ActivationStorage || Model?.layers == null)
+            {
+                return Array.Empty<string>();
+            }
+
+            var names = new List<string>();
+            var previousName = _currentExecutingLayerName;
+            var previousTypeName = _currentExecutingLayerTypeName;
+            var previousIndex = _currentExecutingLayerIndex;
+            try
+            {
+                for (var index = 0; index < Model.layers.Count; index++)
+                {
+                    var layer = Model.layers[index];
+                    if (string.IsNullOrWhiteSpace(layer?.name))
+                        continue;
+
+                    _currentExecutingLayerName = layer.name;
+                    _currentExecutingLayerTypeName = layer.typeName;
+                    _currentExecutingLayerIndex = index;
+                    if (RequiresFp32IndexSelectionInputStorage()
+                        || RequiresFp32SensitiveInputStorage()
+                        || UsesFp32ActivationIsland()
+                        || (RequiresFp32AccumulatorOutput(layer.typeName)
+                            && ModelManifest?.precision?.sensitiveOutputDataType == TensorDataType.Float32))
+                    {
+                        names.Add(layer.name);
+                    }
+                }
+            }
+            finally
+            {
+                _currentExecutingLayerName = previousName;
+                _currentExecutingLayerTypeName = previousTypeName;
+                _currentExecutingLayerIndex = previousIndex;
+            }
+            return names.Distinct(StringComparer.Ordinal).ToArray();
+        }
+
+        internal void BeginCommandBufferRtArena(CommandBuffer commandBuffer)
+        {
+            if (_activeCommandBufferRtArena != null)
+                throw new InvalidOperationException("A CommandBuffer RT arena is already active for this session.");
+            if (LastTextureExecutionPlan == null || !LastTextureExecutionPlan.dispatchAllowed)
+                throw new InvalidOperationException("A verified texture execution plan is required before binding the CommandBuffer RT arena.");
+
+            _activeCommandBufferRtArena = new CommandBufferRtArena(this, commandBuffer, LastTextureExecutionPlan);
+            LastCommandBufferRtArena = _activeCommandBufferRtArena.Metrics;
+        }
+
+        internal void CompleteCommandBufferRtArena()
+        {
+            _activeCommandBufferRtArena?.Complete();
+        }
+
+        internal void EndCommandBufferRtArena()
+        {
+            var arena = _activeCommandBufferRtArena;
+            _activeCommandBufferRtArena = null;
+            arena?.Dispose();
         }
 
         public AexisModelPreflightReport AnalyzeLoadedModelPreflight(AexisModelPreflightRequest request)
@@ -2000,14 +2112,37 @@ namespace Aexis.Execution
                     return VerifyStrictCommandBufferConvolutionDepthWise1D(layer, inputs, request);
                 case "Convolution3D":
                     return VerifyStrictCommandBufferConvolution3D(layer, inputs, request);
+                case "ConvolutionDepthWise3D":
+                case "ConvDw3D":
+                    return VerifyStrictCommandBufferConvolutionDepthWise3D(layer, inputs, request);
                 case "Deconvolution":
                     return VerifyStrictCommandBufferDeconvolution(layer, inputs, request, depthWiseLayer: false);
                 case "Deconvolution1D":
                     return VerifyStrictCommandBufferDeconvolution1D(layer, inputs, request);
+                case "DeconvolutionDepthWise1D":
+                case "DeconvDw1D":
+                    return VerifyStrictCommandBufferDeconvolutionDepthWise1D(layer, inputs, request);
                 case "DeconvolutionDepthWise":
                     return VerifyStrictCommandBufferDeconvolution(layer, inputs, request, depthWiseLayer: true);
                 case "Deconvolution3D":
                     return VerifyStrictCommandBufferDeconvolution3D(layer, inputs, request);
+                case "DeconvolutionDepthWise3D":
+                case "DeconvDw3D":
+                    return VerifyStrictCommandBufferDeconvolutionDepthWise3D(layer, inputs, request);
+                case "StatisticsPooling":
+                case "StatsPooling":
+                    return VerifyStrictCommandBufferStatisticsPooling(layer, inputs, request);
+                case "Spectrogram":
+                    return VerifyStrictCommandBufferSpectrogram(layer, inputs, request, inverse: false);
+                case "InverseSpectrogram":
+                case "InvSpectrogram":
+                    return VerifyStrictCommandBufferSpectrogram(layer, inputs, request, inverse: true);
+                case "RNN":
+                    return VerifyStrictCommandBufferRecurrent(layer, inputs, request, AexisRecurrentKind.Rnn);
+                case "GRU":
+                    return VerifyStrictCommandBufferRecurrent(layer, inputs, request, AexisRecurrentKind.Gru);
+                case "LSTM":
+                    return VerifyStrictCommandBufferRecurrent(layer, inputs, request, AexisRecurrentKind.Lstm);
                 case "Embed":
                     return VerifyStrictCommandBufferEmbed(layer, inputs, request);
                 case "Eltwise":
@@ -2157,6 +2292,15 @@ namespace Aexis.Execution
                 case "YoloDetectOut":
                 case "Yolov3DetectOut":
                     return VerifyStrictCommandBufferP1Vision(layer, inputs, request);
+                case "RandomUniformLike":
+                case "RandomNormalLike":
+                case "RandomUniform":
+                case "RandomNormal":
+                case "Bernoulli":
+                case "RandomLike":
+                    return VerifyStrictCommandBufferDeterministicRandom(layer, inputs, request);
+                case "Multinomial":
+                    return VerifyStrictCommandBufferMultinomial(layer, inputs, request);
                 case "Softmax":
                     return VerifyStrictCommandBufferSoftmax(layer, inputs, request);
                 case "SDPA":
@@ -2171,6 +2315,8 @@ namespace Aexis.Execution
                     return VerifyStrictCommandBufferGatedDeltaRule(layer, inputs, request);
                 case "DeepFillV2ContextualAttention":
                     return VerifyStrictCommandBufferDeepFillV2ContextualAttention(layer, inputs, request);
+                case "Nms":
+                    return VerifyStrictCommandBufferNonMaxSuppression(layer, inputs, request);
                 case "NonZero":
                 case "Compress":
                 case "GatherND":
@@ -2344,6 +2490,31 @@ namespace Aexis.Execution
             return AcceptStrictCommandBufferPack4Node(layer, output, request, "command-buffer-pack4:convolution3d-cdhw");
         }
 
+        private AexisTextureExecutionPlanNodeVerification VerifyStrictCommandBufferConvolutionDepthWise3D(
+            AexisGraphModel.Layer layer,
+            IReadOnlyList<AexisTexturePlanTensorDescriptor> inputs,
+            AexisTextureExecutionPlanRequest request)
+        {
+            if (!TryGetSingleStrictCdhwPlanShape(inputs, out var input, out var reason))
+                return RejectStrictCommandBufferPack4Node(reason);
+            if (!_conv.TryGetValue(layer.name, out var conv) || conv == null)
+                return RejectStrictCommandBufferPack4Node("Packed 3D depthwise convolution weights were not loaded for this layer.");
+            if (input.c != conv.inC)
+                return RejectStrictCommandBufferPack4Node("Input channels do not match the loaded 3D depthwise convolution profile.");
+            if (!TryValidateCommandBuffer3dDepthWiseConvProfile(conv, out var profileReason))
+                return RejectStrictCommandBufferPack4Node("CommandBuffer 3D depthwise convolution profile rejected: " + profileReason);
+
+            var output = new BufferShape(
+                4,
+                ComputeConvOut(input.w, conv.kernelW, conv.dilationW, conv.strideW, conv.padLeft, conv.padRight),
+                ComputeConvOut(input.h, conv.kernelH, conv.dilationH, conv.strideH, conv.padTop, conv.padBottom),
+                ComputeConvOut(input.d, conv.kernelD, conv.dilationD, conv.strideD, conv.padFront, conv.padBehind),
+                conv.outC);
+            if (output.w <= 0 || output.h <= 0 || output.d <= 0)
+                return RejectStrictCommandBufferPack4Node("The 3D depthwise convolution profile resolves a non-positive CDHW output extent.");
+            return AcceptStrictCommandBufferPack4Node(layer, output, request, "command-buffer-pack4:depthwise-convolution3d-cdhw");
+        }
+
         private AexisTextureExecutionPlanNodeVerification VerifyStrictCommandBufferDeconvolution3D(
             AexisGraphModel.Layer layer,
             IReadOnlyList<AexisTexturePlanTensorDescriptor> inputs,
@@ -2367,6 +2538,37 @@ namespace Aexis.Execution
             if (output.w <= 0 || output.h <= 0 || output.d <= 0)
                 return RejectStrictCommandBufferPack4Node("The 3D deconvolution profile resolves a non-positive CDHW output extent.");
             return AcceptStrictCommandBufferPack4Node(layer, output, request, "command-buffer-pack4:deconvolution3d-cdhw");
+        }
+
+        private AexisTextureExecutionPlanNodeVerification VerifyStrictCommandBufferDeconvolutionDepthWise3D(
+            AexisGraphModel.Layer layer,
+            IReadOnlyList<AexisTexturePlanTensorDescriptor> inputs,
+            AexisTextureExecutionPlanRequest request)
+        {
+            if (!TryGetSingleStrictCdhwPlanShape(inputs, out var input, out var reason))
+                return RejectStrictCommandBufferPack4Node(reason);
+            if (!_deconv.TryGetValue(layer.name, out var deconv) || deconv == null || deconv.packedWeight4 == null || deconv.packedBias4 == null)
+                return RejectStrictCommandBufferPack4Node("Packed 3D depthwise deconvolution weights were not loaded for this layer.");
+            if (input.c != deconv.inC || deconv.group != deconv.inC || deconv.inC != deconv.outC)
+                return RejectStrictCommandBufferPack4Node("Only one-to-one group=inC=outC CDHW depthwise deconvolution is implemented.");
+            if (deconv.kernelW <= 0 || deconv.kernelH <= 0 || deconv.kernelD <= 0
+                || deconv.strideW <= 0 || deconv.strideH <= 0 || deconv.strideD <= 0
+                || deconv.dilationW <= 0 || deconv.dilationH <= 0 || deconv.dilationD <= 0
+                || deconv.padLeft < 0 || deconv.padRight < 0 || deconv.padTop < 0 || deconv.padBottom < 0 || deconv.padFront < 0 || deconv.padBehind < 0
+                || deconv.outputPadRight < 0 || deconv.outputPadBottom < 0 || deconv.outputPadBehind < 0
+                || deconv.weightSize != deconv.outC * deconv.kernelW * deconv.kernelH * deconv.kernelD)
+                return RejectStrictCommandBufferPack4Node("Depthwise 3D deconvolution parameters do not satisfy the immutable CDHW profile.");
+            if (!IsCommandBufferConvActivationSupported(deconv.activationType))
+                return RejectStrictCommandBufferPack4Node("Depthwise 3D deconvolution activation supports only none, ReLU, LeakyReLU, or Sigmoid.");
+
+            var output = new BufferShape(4,
+                ComputeDeconvOut(input.w, deconv.kernelW, deconv.dilationW, deconv.strideW, deconv.padLeft, deconv.padRight, deconv.outputPadRight),
+                ComputeDeconvOut(input.h, deconv.kernelH, deconv.dilationH, deconv.strideH, deconv.padTop, deconv.padBottom, deconv.outputPadBottom),
+                ComputeDeconvOut(input.d, deconv.kernelD, deconv.dilationD, deconv.strideD, deconv.padFront, deconv.padBehind, deconv.outputPadBehind),
+                deconv.outC);
+            if (output.w <= 0 || output.h <= 0 || output.d <= 0)
+                return RejectStrictCommandBufferPack4Node("The depthwise 3D deconvolution profile resolves a non-positive CDHW output extent.");
+            return AcceptStrictCommandBufferPack4Node(layer, output, request, "command-buffer-pack4:depthwise-deconvolution3d-cdhw");
         }
 
         private static AexisTextureExecutionPlanNodeVerification VerifyStrictCommandBufferPooling3D(
@@ -2400,6 +2602,26 @@ namespace Aexis.Execution
                 reason = "activation supports only none, ReLU, LeakyReLU, or Sigmoid";
             else if (conv.weightSize != conv.outC * conv.inC * conv.kernelW * conv.kernelH * conv.kernelD)
                 reason = "weight_data_size does not match the group=1 OIDHW profile";
+            return reason == null;
+        }
+
+        private static bool TryValidateCommandBuffer3dDepthWiseConvProfile(ConvPack conv, out string reason)
+        {
+            reason = null;
+            if (conv == null || conv.packedDepthWiseWeight4 == null || conv.packedBias4 == null)
+                reason = "immutable Pack4 depthwise weights/bias are unavailable";
+            else if (conv.group != conv.inC || conv.inC != conv.outC)
+                reason = "only one-to-one group=inC=outC depthwise CDHW convolution is implemented";
+            else if (conv.inC <= 0 || conv.kernelW <= 0 || conv.kernelH <= 0 || conv.kernelD <= 0
+                || conv.strideW <= 0 || conv.strideH <= 0 || conv.strideD <= 0
+                || conv.dilationW <= 0 || conv.dilationH <= 0 || conv.dilationD <= 0)
+                reason = "channels, kernel, stride, and dilation must be positive on W/H/D";
+            else if (conv.padLeft < 0 || conv.padRight < 0 || conv.padTop < 0 || conv.padBottom < 0 || conv.padFront < 0 || conv.padBehind < 0)
+                reason = "negative or auto padding is unsupported";
+            else if (!IsCommandBufferConvActivationSupported(conv.activationType))
+                reason = "activation supports only none, ReLU, LeakyReLU, or Sigmoid";
+            else if (conv.weightSize != conv.outC * conv.kernelW * conv.kernelH * conv.kernelD)
+                reason = "weight_data_size does not match the one-to-one depthwise CDHW profile";
             return reason == null;
         }
 
@@ -2566,6 +2788,162 @@ namespace Aexis.Execution
             if (outputWidth <= 0)
                 return RejectStrictCommandBufferPack4Node("Deconvolution1D produces a non-positive output width.");
             return AcceptStrictCommandBufferPack4Node(layer, new BufferShape(2, outputWidth, deconv.outC, 1, 1), request, "command-buffer-pack4:deconvolution1d");
+        }
+
+        private AexisTextureExecutionPlanNodeVerification VerifyStrictCommandBufferDeconvolutionDepthWise1D(
+            AexisGraphModel.Layer layer,
+            IReadOnlyList<AexisTexturePlanTensorDescriptor> inputs,
+            AexisTextureExecutionPlanRequest request)
+        {
+            if (!TryGetSingleStrictPlanShape(inputs, out var input, out var reason))
+                return RejectStrictCommandBufferPack4Node(reason);
+            if (input.dims != 2 || input.d != 1 || input.c != 1 || input.w <= 0)
+                return RejectStrictCommandBufferPack4Node("DeconvolutionDepthWise1D requires native logical dims=2 [width,channels].");
+            if (layer.GetInt(28, 0) != 0 || layer.GetInt(20, 0) != 0)
+                return RejectStrictCommandBufferPack4Node("DeconvolutionDepthWise1D requires immutable weights and output_w=0.");
+            if (!HasStrictLinearMatStorage(inputs[0], input) && !HasStrictScalar2DPack4Storage(inputs[0], input))
+                return RejectStrictCommandBufferPack4Node("DeconvolutionDepthWise1D requires exact LinearMat or scalar rank-2 texture storage.");
+            if (!_deconv.TryGetValue(layer.name, out var deconv) || deconv == null
+                || deconv.rawWeight == null || deconv.rawBias == null
+                || deconv.inC <= 0 || deconv.inC != deconv.outC || deconv.group != deconv.inC
+                || input.h != deconv.inC || deconv.kernelW <= 0 || deconv.kernelH != 1
+                || deconv.strideW <= 0 || deconv.dilationW <= 0 || deconv.padLeft < 0 || deconv.padRight < 0
+                || deconv.weightSize != deconv.outC * deconv.kernelW)
+                return RejectStrictCommandBufferPack4Node("DeconvolutionDepthWise1D parameters do not satisfy the immutable one-to-one Pack4 profile.");
+            if (!IsCommandBufferConvActivationSupported(deconv.activationType))
+                return RejectStrictCommandBufferPack4Node("DeconvolutionDepthWise1D activation supports only none, ReLU, LeakyReLU, or Sigmoid.");
+            var outputWidth = ComputeDeconvOut(input.w, deconv.kernelW, deconv.dilationW, deconv.strideW, deconv.padLeft, deconv.padRight, deconv.outputPadRight);
+            if (outputWidth <= 0)
+                return RejectStrictCommandBufferPack4Node("DeconvolutionDepthWise1D produces a non-positive output width.");
+            var verification = AcceptStrictCommandBufferPack4Node(
+                layer,
+                new BufferShape(2, outputWidth, deconv.outC, 1, 1),
+                request,
+                "command-buffer-pack4:depthwise-deconvolution1d");
+            if (!verification.accepted)
+                return verification;
+
+            // The rank-2 LinearMat boundary is converted into an exact Pack4 array,
+            // processed by the texture kernel, then converted back. Both conversion
+            // intermediates are bounded by the loaded immutable profile and must be
+            // in the compiled RT arena rather than allocated opportunistically.
+            var scratchDtype = ResolvePhysicalTextureDtype(request.targetDtype);
+            verification.scratch = new[]
+            {
+                CreateStrictPack4ScratchDescriptor(layer, "packed-input", new BufferShape(3, input.w, 1, 1, deconv.inC), request, scratchDtype),
+                CreateStrictPack4ScratchDescriptor(layer, "packed-output", new BufferShape(3, outputWidth, 1, 1, deconv.outC), request, scratchDtype)
+            };
+            return verification;
+        }
+
+        private static AexisTextureExecutionPlanNodeVerification VerifyStrictCommandBufferStatisticsPooling(
+            AexisGraphModel.Layer layer,
+            IReadOnlyList<AexisTexturePlanTensorDescriptor> inputs,
+            AexisTextureExecutionPlanRequest request)
+        {
+            if (!TryGetSingleStrictPlanShape(inputs, out var input, out var reason))
+                return RejectStrictCommandBufferPack4Node(reason);
+            if (input.dims != 2 || input.w <= 0 || input.h <= 0 || input.d != 1 || input.c != 1)
+                return RejectStrictCommandBufferPack4Node("StatisticsPooling requires a static rank-2 [frames,channels] input.");
+            if (!HasStrictLinearMatStorage(inputs[0], input))
+                return RejectStrictCommandBufferPack4Node("StatisticsPooling requires exact FP32 LinearMat texture storage.");
+
+            var includeStd = layer.GetInt(0, 1);
+            var epsilon = layer.GetFloat(1, 0f);
+            if ((includeStd != 0 && includeStd != 1) || !IsStrictFinite(epsilon) || epsilon < 0f)
+                return RejectStrictCommandBufferPack4Node("StatisticsPooling requires include_std=0|1 and finite non-negative epsilon.");
+
+            var outputRows = includeStd != 0 ? checked(input.h * 2) : input.h;
+            return AcceptStrictCommandBufferPack4Node(
+                layer,
+                new BufferShape(2, 1, outputRows, 1, 1),
+                request,
+                "command-buffer-pack4:statistics-pooling-linearmat");
+        }
+
+        private static AexisTextureExecutionPlanNodeVerification VerifyStrictCommandBufferSpectrogram(
+            AexisGraphModel.Layer layer,
+            IReadOnlyList<AexisTexturePlanTensorDescriptor> inputs,
+            AexisTextureExecutionPlanRequest request,
+            bool inverse)
+        {
+            if (!TryGetSingleStrictPlanShape(inputs, out var input, out var reason))
+                return RejectStrictCommandBufferPack4Node(reason);
+            if (input.dims != 2 || input.w <= 0 || input.h <= 0 || input.d != 1 || input.c != 1)
+                return RejectStrictCommandBufferPack4Node((inverse ? "InverseSpectrogram" : "Spectrogram") + " requires a static rank-2 LinearMat input.");
+            if (!HasStrictLinearMatStorage(inputs[0], input))
+                return RejectStrictCommandBufferPack4Node((inverse ? "InverseSpectrogram" : "Spectrogram") + " requires exact FP32 LinearMat texture storage.");
+
+            var nfft = layer.GetInt(0, 0);
+            var hop = layer.GetInt(1, 0);
+            var channels = layer.GetInt(2, 0);
+            if (nfft < 2 || nfft > 256 || (nfft & 1) != 0 || hop <= 0 || hop > nfft || channels <= 0)
+                return RejectStrictCommandBufferPack4Node("Spectrogram requires an even n_fft in [2,256], hop in [1,n_fft], and explicit positive channels.");
+
+            BufferShape output;
+            if (!inverse)
+            {
+                if (input.h != channels || input.w < nfft || (input.w - nfft) % hop != 0)
+                    return RejectStrictCommandBufferPack4Node("Spectrogram input must be exact [samples,channels] with complete static frames.");
+                var frames = 1 + (input.w - nfft) / hop;
+                if (frames > int.MaxValue / channels)
+                    return RejectStrictCommandBufferPack4Node("Spectrogram output rows exceed the static 32-bit texture descriptor range.");
+                output = new BufferShape(2, 2 * (nfft / 2 + 1), frames * channels, 1, 1);
+            }
+            else
+            {
+                var complexBins = 2 * (nfft / 2 + 1);
+                if (input.w != complexBins || input.h % channels != 0)
+                    return RejectStrictCommandBufferPack4Node("InverseSpectrogram input must be exact one-sided complex [2*(n_fft/2+1),frames*channels] storage.");
+                var frames = input.h / channels;
+                if (frames <= 0 || frames > 1 + (int.MaxValue - nfft) / hop)
+                    return RejectStrictCommandBufferPack4Node("InverseSpectrogram frame count exceeds the static output descriptor range.");
+                output = new BufferShape(2, nfft + hop * (frames - 1), channels, 1, 1);
+            }
+
+            return AcceptStrictCommandBufferPack4Node(
+                layer,
+                output,
+                request,
+                inverse ? "command-buffer-pack4:inverse-spectrogram-linearmat" : "command-buffer-pack4:spectrogram-linearmat");
+        }
+
+        private AexisTextureExecutionPlanNodeVerification VerifyStrictCommandBufferRecurrent(
+            AexisGraphModel.Layer layer,
+            IReadOnlyList<AexisTexturePlanTensorDescriptor> inputs,
+            AexisTextureExecutionPlanRequest request,
+            AexisRecurrentKind kind)
+        {
+            if (!TryGetSingleStrictPlanShape(inputs, out var input, out var reason))
+                return RejectStrictCommandBufferPack4Node(reason);
+            try
+            {
+                AexisRecurrentLayer.ValidateLayerContract(layer, kind);
+            }
+            catch (Exception exception)
+            {
+                return RejectStrictCommandBufferPack4Node(exception.Message);
+            }
+            if (input.dims != 3 || input.w <= 0 || input.w > 256 || input.h != 1 || input.d != 1)
+                return RejectStrictCommandBufferPack4Node("The bounded recurrent profile requires static [sequence<=256,1,input_channels] Pack4 input storage.");
+            if (!HasStrictExactPack4Storage(inputs[0], input))
+                return RejectStrictCommandBufferPack4Node("The bounded recurrent profile requires exact Pack4 Texture2DArray descriptor storage.");
+            if (!string.Equals(inputs[0].dtype, "FP32", StringComparison.Ordinal)
+                || !string.Equals(inputs[0].logicalDtype, "Float32", StringComparison.Ordinal))
+            {
+                return RejectStrictCommandBufferPack4Node("The bounded recurrent profile requires FP32 activation and logical dtype contracts.");
+            }
+            if (!_extraPacks.TryGetValue(layer.name, out var loaded) || loaded is not RecurrentPack pack
+                || pack.kind != (int)kind || pack.inputSize != input.c || pack.hiddenSize <= 0 || pack.hiddenSize > 256
+                || pack.inputWeights == null || pack.recurrentWeights == null || pack.bias == null)
+            {
+                return RejectStrictCommandBufferPack4Node("The bounded recurrent profile requires matching loaded immutable gate weights and FP32 output state.");
+            }
+            return AcceptStrictCommandBufferPack4Node(
+                layer,
+                new BufferShape(3, input.w, 1, 1, pack.hiddenSize),
+                request,
+                "command-buffer-pack4:bounded-" + kind.ToString().ToLowerInvariant() + "-fp32");
         }
 
         private AexisTextureExecutionPlanNodeVerification VerifyStrictCommandBufferDeconvolution(
@@ -2977,6 +3355,20 @@ namespace Aexis.Execution
                         request,
                         "command-buffer-linearmat:binary-scalar");
                 }
+                // Rank-two projection activations can be physically stored as a
+                // Pack4-linear Texture2DArray.  The CommandBuffer layer dispatches
+                // AexisBinaryOpPack4 with a single physical slice for this exact
+                // layout, retaining the logical [w,h] matrix and its storage
+                // descriptor; no texture-to-buffer conversion is involved.
+                if (scalarInput.dims == 2 && HasStrictPack4LinearMatStorage(inputs[0], scalarInput))
+                {
+                    return AcceptStrictCommandBufferPack4Node(
+                        layer,
+                        scalarInput,
+                        CopyStrictStorage(inputs[0]),
+                        request,
+                        "command-buffer-pack4:binary-pack4-linear-scalar");
+                }
                 if (HasStrictScalarLikePlanStorage(inputs[0], scalarInput))
                 {
                     return AcceptStrictCommandBufferPack4Node(
@@ -3031,6 +3423,25 @@ namespace Aexis.Execution
                     "command-buffer-linearmat:binary-exact");
             }
 
+            // Legacy MHA exposes its FP32 output as a scalar one-slice
+            // Texture2DArray. Residuals with a LinearMat use the dedicated
+            // texture kernel and keep the LinearMat physical descriptor.
+            if (shapes[0].dims == 2
+                && StrictPlanShapesEqual(shapes[0], shapes[1])
+                && ((HasStrictLinearMatStorage(inputs[0], shapes[0])
+                        && HasStrictScalar2DPack4Storage(inputs[1], shapes[1]))
+                    || (HasStrictScalar2DPack4Storage(inputs[0], shapes[0])
+                        && HasStrictLinearMatStorage(inputs[1], shapes[1]))))
+            {
+                var linearInput = HasStrictLinearMatStorage(inputs[0], shapes[0]) ? inputs[0] : inputs[1];
+                return AcceptStrictCommandBufferPack4Node(
+                    layer,
+                    shapes[0],
+                    CopyStrictStorage(linearInput),
+                    request,
+                    "command-buffer-linearmat:binary-scalar-array");
+            }
+
             if (shapes[0].dims == 2
                 && StrictPlanShapesEqual(shapes[0], shapes[1])
                 && HasStrictPack4LinearMatStorage(inputs[0], shapes[0])
@@ -3077,6 +3488,26 @@ namespace Aexis.Execution
                     CopyStrictStorage(pack4Input),
                     request,
                     "command-buffer-pack4:binary-pack4-linear-mixed");
+            }
+
+            // Legacy MHA publishes its FP32 projection result as a scalar
+            // Texture2DArray rather than an RFloat Texture2D. The dedicated
+            // MixedArray kernel consumes that scalar-array layout directly and
+            // returns the Pack4-linear residual without a buffer conversion.
+            if (shapes[0].dims == 2
+                && StrictPlanShapesEqual(shapes[0], shapes[1])
+                && ((HasStrictPack4LinearMatStorage(inputs[0], shapes[0])
+                        && HasStrictScalar2DPack4Storage(inputs[1], shapes[1]))
+                    || (HasStrictScalar2DPack4Storage(inputs[0], shapes[0])
+                        && HasStrictPack4LinearMatStorage(inputs[1], shapes[1]))))
+            {
+                var pack4Input = HasStrictPack4LinearMatStorage(inputs[0], shapes[0]) ? inputs[0] : inputs[1];
+                return AcceptStrictCommandBufferPack4Node(
+                    layer,
+                    shapes[0],
+                    CopyStrictStorage(pack4Input),
+                    request,
+                    "command-buffer-pack4:binary-pack4-linear-scalar-array");
             }
 
             if ((shapes[0].dims == 3 || shapes[0].dims == 4)
@@ -3179,6 +3610,51 @@ namespace Aexis.Execution
             }
 
             return true;
+        }
+
+        private static AexisTextureExecutionPlanNodeVerification VerifyStrictCommandBufferNonMaxSuppression(
+            AexisGraphModel.Layer layer,
+            IReadOnlyList<AexisTexturePlanTensorDescriptor> inputs,
+            AexisTextureExecutionPlanRequest request)
+        {
+            if (!string.Equals(request?.targetDtype, "FP32", StringComparison.OrdinalIgnoreCase))
+                return RejectStrictCommandBufferPack4Node("NonMaxSuppression uses exact FP32 LinearMat textures for boxes, scores, padded indices, and count.");
+            if (inputs == null || inputs.Count != 2 || layer?.topNames == null || layer.topNames.Length != 2)
+                return RejectStrictCommandBufferPack4Node("NonMaxSuppression requires exactly boxes/scores inputs and padded-index/count texture outputs.");
+            if (!TryGetStrictPlanShapes(inputs, out var shapes, out var reason))
+                return RejectStrictCommandBufferPack4Node(reason);
+            if (!HasStrictAnyRankLinearMatStorage(inputs[0], shapes[0])
+                || !HasStrictAnyRankLinearMatStorage(inputs[1], shapes[1])
+                || !string.Equals(inputs[0].dtype, "FP32", StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(inputs[1].dtype, "FP32", StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(inputs[0].logicalDtype, "Float32", StringComparison.Ordinal)
+                || !string.Equals(inputs[1].logicalDtype, "Float32", StringComparison.Ordinal))
+            {
+                return RejectStrictCommandBufferPack4Node("NonMaxSuppression requires exact FP32 LinearMat Float32 boxes and scores; Pack4 activation reinterpretation and buffer materialization are not permitted.");
+            }
+
+            var boxes = shapes[0];
+            var scores = shapes[1];
+            var capacity = ReadStrictLayerInt(layer, "capacity", 0, 0);
+            var maxOutputPerClass = ReadStrictLayerInt(layer, "max_output_boxes_per_class", 1, -1);
+            var centerPointBox = ReadStrictLayerInt(layer, "center_point_box", 2, 0);
+            var iouThreshold = layer.GetFloat(3, 0f);
+            if (boxes.dims != 2 || boxes.w != 4 || boxes.h <= 0
+                || scores.dims != 2 || scores.w != boxes.h || scores.h <= 0
+                || capacity <= 0 || maxOutputPerClass < 0 || maxOutputPerClass > capacity
+                || centerPointBox < 0 || centerPointBox > 1 || iouThreshold < 0f || iouThreshold > 1f)
+            {
+                return RejectStrictCommandBufferPack4Node("NonMaxSuppression requires static batch=1 boxes[num_boxes,4], scores[num_classes,num_boxes], capacity>0, max_output_boxes_per_class<=capacity, center_point_box=0|1, and iou_threshold in [0,1].");
+            }
+
+            var output = new BufferShape(2, 3, capacity, 1, 1);
+            var count = new BufferShape(1, 1, 1, 1, 1);
+            return AcceptStrictLinearTextureNode(
+                layer,
+                request,
+                "command-buffer-linearmat:bounded-nms",
+                new[] { output, count },
+                new[] { "Int32", "Int32" });
         }
 
         private static AexisTextureExecutionPlanNodeVerification VerifyStrictCommandBufferDataIndex(
@@ -4306,9 +4782,23 @@ namespace Aexis.Execution
             var output = input.dims == 2
                 ? new BufferShape(2, innerProduct.outFeatures, input.h, 1, 1)
                 : new BufferShape(1, innerProduct.outFeatures, 1, 1, 1);
-            var usePack4LinearMat = output.dims == 2
+            // Mirror TryExecuteCommandBufferTexturePath. A legacy/F32-sensitive
+            // projection stays in exact RFloat LinearMat storage; only the
+            // explicitly admitted FP16 path publishes Pack4-linear output.
+            var usePack4LinearMat = UsesFp16ActivationStorage
+                && output.dims == 2
                 && innerProduct.outFeatures % 4 == 0
                 && (linearMatInput || pack4LinearMatInput);
+            usePack4LinearMat = usePack4LinearMat
+                && !PreserveLegacyFp32Execution
+                && !UseLegacyPack4AttentionLayout
+                && !HasDirectSoftmaxConsumerForStrictPlan(layer)
+                && !RequiresFp32SensitiveOutputStorage(layer);
+            if (pack4LinearMatInput && !usePack4LinearMat)
+            {
+                return RejectStrictCommandBufferPack4Node(
+                    "The loaded InnerProduct Pack4-linear input requires the FP16 Pack4-linear projection profile; the active legacy or sensitive-output contract selects LinearMat instead.");
+            }
             var outputStorage = usePack4LinearMat
                 ? ResolvePack4LinearMatStorageShape(output)
                 : linearMatInput
@@ -4324,6 +4814,27 @@ namespace Aexis.Execution
                     : linearMatInput
                     ? "command-buffer-pack4:inner-product-linear-mat"
                     : "command-buffer-pack4:inner-product-scalar-pack4");
+        }
+
+        private bool HasDirectSoftmaxConsumerForStrictPlan(AexisGraphModel.Layer layer)
+        {
+            if (Model?.layers == null || layer?.topNames == null)
+                return false;
+
+            foreach (var topName in layer.topNames)
+            {
+                if (string.IsNullOrWhiteSpace(topName))
+                    continue;
+                foreach (var consumer in Model.layers)
+                {
+                    if (consumer?.type != AexisLayerTypes.Softmax || consumer.bottomNames == null)
+                        continue;
+                    if (consumer.bottomNames.Any(bottom => string.Equals(bottom, topName, StringComparison.Ordinal)))
+                        return true;
+                }
+            }
+
+            return false;
         }
 
         private static AexisTextureExecutionPlanNodeVerification VerifyStrictCommandBufferShuffleChannel(
@@ -4493,8 +5004,18 @@ namespace Aexis.Execution
                 return RejectStrictCommandBufferPack4Node("MVN normalize_variance and across_channels must be 0 or 1.");
             if (!_extraPacks.ContainsKey(layer.name))
                 return RejectStrictCommandBufferPack4Node("MVN dispatch constants are not loaded.");
-            return AcceptStrictCommandBufferPack4Node(layer, input, request,
+            var verification = AcceptStrictCommandBufferPack4Node(layer, input, request,
                 layer.GetInt(1, 0) != 0 ? "command-buffer-pack4:mvn-across-channels" : "command-buffer-pack4:mvn-per-channel");
+            if (!verification.accepted)
+                return verification;
+
+            var groups = layer.GetInt(1, 0) != 0 ? 1 : input.c;
+            verification.scratch = new[]
+            {
+                CreateStrictPack4ScratchDescriptor(layer, "mvn-stats-a", new BufferShape(3, groups, 1, 1, 4), request),
+                CreateStrictPack4ScratchDescriptor(layer, "mvn-stats-b", new BufferShape(3, groups, 1, 1, 4), request)
+            };
+            return verification;
         }
 
         private AexisTextureExecutionPlanNodeVerification VerifyStrictCommandBufferPRelu(
@@ -4737,13 +5258,34 @@ namespace Aexis.Execution
             if (!pack4 && !linear)
                 return RejectStrictCommandBufferPack4Node("GroupNorm requires exact rank-3/rank-4 Pack4 storage or rank-2 LinearMat with height=channels.");
 
-            return AcceptStrictCommandBufferPack4Node(
+            var verification = AcceptStrictCommandBufferPack4Node(
                 layer,
                 input,
                 CopyStrictStorage(inputs[0]),
                 request,
                 linear ? "command-buffer-linearmat:groupnorm" : "command-buffer-pack4:groupnorm",
                 inputs[0].logicalDtype);
+            if (!verification.accepted)
+                return verification;
+
+            // GroupNorm's texture kernels write mean and variance to two FP32
+            // Pack4 textures. LinearMat additionally materializes its
+            // immutable, statically-shaped Pack4 view and its result before
+            // returning to LinearMat. Declare all of them to the static RT arena
+            // so CommandBuffer execution never falls back to opportunistic RTs.
+            var scratch = new List<AexisTexturePlanTensorDescriptor>
+            {
+                CreateStrictPack4ScratchDescriptor(layer, "groupnorm-stats-a", new BufferShape(3, pack.group, 1, 1, 4), request),
+                CreateStrictPack4ScratchDescriptor(layer, "groupnorm-stats-b", new BufferShape(3, pack.group, 1, 1, 4), request)
+            };
+            if (linear)
+            {
+                var packed = new BufferShape(3, input.w, 1, 1, pack.channels);
+                scratch.Add(CreateStrictPack4ScratchDescriptor(layer, "groupnorm-linear-packed-input", packed, request));
+                scratch.Add(CreateStrictPack4ScratchDescriptor(layer, "groupnorm-linear-packed-output", packed, request));
+            }
+            verification.scratch = scratch.ToArray();
+            return verification;
         }
 
         private static AexisTextureExecutionPlanNodeVerification VerifyStrictCommandBufferPadding(
@@ -5737,12 +6279,29 @@ namespace Aexis.Execution
                 return RejectStrictCommandBufferPack4Node("LayerNorm input storage does not prove a LinearMat or Pack4 texture mapping.");
 
             var storage = descriptor.storageShape;
-            return AcceptStrictCommandBufferPack4Node(
+            var verification = AcceptStrictCommandBufferPack4Node(
                 layer,
                 input,
                 new BufferShape(storage[0], storage[1], storage[2], storage[3], storage[4]),
                 request,
                 "command-buffer-pack4:layernorm-width-fp32-accumulate");
+            if (!verification.accepted || !HasStrictLinearMatStorage(descriptor, input))
+                return verification;
+
+            // LinearMat inputs are explicitly materialized to one-slice Pack4
+            // arrays for the width-normalized kernel, then normalized into a
+            // second Pack4 scratch before being reshaped back to the LinearMat
+            // graph output. Both allocations are real CommandBuffer RTs.
+            var scratchDtype = IsStrictFp32ActivationIslandLayer(request, layer)
+                ? "FP32"
+                : ResolvePhysicalTextureDtype(request.targetDtype);
+            var pack4Scratch = new BufferShape(3, input.w, input.h, 1, 1);
+            verification.scratch = new[]
+            {
+                CreateStrictPack4ScratchDescriptor(layer, "layernorm-packed-input", pack4Scratch, request, scratchDtype),
+                CreateStrictPack4ScratchDescriptor(layer, "layernorm-packed-output", pack4Scratch, request, scratchDtype)
+            };
+            return verification;
         }
 
         private AexisTextureExecutionPlanNodeVerification VerifyStrictCommandBufferRmsNorm(
@@ -5899,6 +6458,91 @@ namespace Aexis.Execution
 
             var size = sliceParams[Mathf.Min(outputIndex, sliceParams.Length - 1)];
             return size == -233 ? (axisSize - begin) / Mathf.Max(1, outputCount - outputIndex) : size;
+        }
+
+        private AexisTextureExecutionPlanNodeVerification VerifyStrictCommandBufferDeterministicRandom(
+            AexisGraphModel.Layer layer,
+            IReadOnlyList<AexisTexturePlanTensorDescriptor> inputs,
+            AexisTextureExecutionPlanRequest request)
+        {
+            if (AexisDeterministicRandomLayer.IsStaticRandom(layer))
+            {
+                try
+                {
+                    AexisDeterministicRandomLayer.ValidateLayer(layer);
+                    var output = AexisDeterministicRandomLayer.ResolveStaticOutputShape(layer);
+                    return AcceptStrictCommandBufferPack4Node(layer, output, request, "command-buffer-pack4:deterministic-static-rng");
+                }
+                catch (Exception exception) when (exception is ArgumentException
+                    || exception is InvalidOperationException
+                    || exception is NotSupportedException
+                    || exception is OverflowException)
+                {
+                    return RejectStrictCommandBufferPack4Node("Static deterministic RNG profile rejected: " + exception.Message);
+                }
+            }
+            if (!TryGetStrictPlanShapes(inputs, out var shapes, out var reason))
+                return RejectStrictCommandBufferPack4Node(reason);
+            if (shapes.Length != 1 || (shapes[0].dims != 3 && shapes[0].dims != 4)
+                || !HasStrictExactPack4Storage(inputs[0], shapes[0]))
+            {
+                return RejectStrictCommandBufferPack4Node(
+                    "Deterministic RNG requires one rank-3/rank-4 exact Pack4 Texture2DArray input; LinearMat, buffer, and descriptor-only storage are rejected.");
+            }
+            try
+            {
+                AexisDeterministicRandomLayer.ValidateLayer(layer);
+                return AcceptStrictCommandBufferPack4Node(layer, shapes[0], request, "command-buffer-pack4:deterministic-rng");
+            }
+            catch (Exception exception) when (exception is ArgumentException
+                || exception is InvalidOperationException
+                || exception is NotSupportedException
+                || exception is OverflowException)
+            {
+                return RejectStrictCommandBufferPack4Node("Deterministic RNG profile rejected: " + exception.Message);
+            }
+        }
+
+        private static AexisTextureExecutionPlanNodeVerification VerifyStrictCommandBufferMultinomial(
+            AexisGraphModel.Layer layer,
+            IReadOnlyList<AexisTexturePlanTensorDescriptor> inputs,
+            AexisTextureExecutionPlanRequest request)
+        {
+            if (!string.Equals(request?.targetDtype, "FP32", StringComparison.OrdinalIgnoreCase))
+            {
+                return RejectStrictCommandBufferPack4Node(
+                    "Bounded Multinomial emits exact FP32 Pack4 lanes for logical Int32 indices; FP16/BF16 cannot preserve the categorical index contract.");
+            }
+            if (!TryGetSingleStrictPlanShape(inputs, out var input, out var reason))
+                return RejectStrictCommandBufferPack4Node(reason);
+            try
+            {
+                AexisMultinomialLayer.ValidateLayer(layer);
+                var profile = AexisMultinomialLayer.ValidateShape(input, layer.name);
+                profile.samples = layer.GetInt(0);
+                if (!HasStrictExactPack4Storage(inputs[0], input)
+                    || !string.Equals(inputs[0].dtype, "FP32", StringComparison.OrdinalIgnoreCase)
+                    || !string.Equals(inputs[0].logicalDtype, "Float32", StringComparison.OrdinalIgnoreCase))
+                {
+                    return RejectStrictCommandBufferPack4Node(
+                        "Bounded Multinomial requires an exact FP32 Pack4 logits descriptor with logical Float32 values.");
+                }
+                var output = AexisMultinomialLayer.OutputShape(profile);
+                return AcceptStrictCommandBufferPack4Node(
+                    layer,
+                    output,
+                    output,
+                    request,
+                    "command-buffer-pack4:bounded-multinomial",
+                    "Int32");
+            }
+            catch (Exception exception) when (exception is ArgumentException
+                || exception is InvalidOperationException
+                || exception is NotSupportedException
+                || exception is OverflowException)
+            {
+                return RejectStrictCommandBufferPack4Node("Bounded Multinomial profile rejected: " + exception.Message);
+            }
         }
 
         // P1 vision layers have a native Pack4 implementation. Admission is based on
@@ -6198,22 +6842,28 @@ namespace Aexis.Execution
                 return RejectStrictCommandBufferPack4Node("MultiHeadAttention parameters were not loaded for this node.");
             if (pack.kvCache)
                 return RejectStrictCommandBufferPack4Node("MultiHeadAttention kv-cache is not implemented for CommandBuffer Pack4 execution.");
+            if (layer?.topNames == null || layer.topNames.Length != 1)
+                return RejectStrictCommandBufferPack4Node("MultiHeadAttention CommandBuffer Pack4 execution requires exactly one output blob.");
             if (shapes.Length < 1 || shapes.Length > 4)
             {
                 return RejectStrictCommandBufferPack4Node(
                     "MultiHeadAttention requires one self-attention input, two/three cross-attention inputs, or an optional attention-mask input.");
             }
 
+            var queryIndex = -1;
+            var keyIndex = -1;
+            var valueIndex = -1;
+            var maskIndex = -1;
             try
             {
                 AexisMultiHeadAttentionLayer.ResolveBottomBlobIndices(
                     layer.bottomNames?.Length ?? 0,
                     pack.attnMask,
                     pack.kvCache,
-                    out var queryIndex,
-                    out var keyIndex,
-                    out var valueIndex,
-                    out var maskIndex);
+                    out queryIndex,
+                    out keyIndex,
+                    out valueIndex,
+                    out maskIndex);
                 if (!HasStrictMultiHeadAttentionLinearInput(inputs, shapes, queryIndex)
                     || !HasStrictMultiHeadAttentionLinearInput(inputs, shapes, keyIndex)
                     || !HasStrictMultiHeadAttentionLinearInput(inputs, shapes, valueIndex))
@@ -6246,13 +6896,130 @@ namespace Aexis.Execution
                 return RejectStrictCommandBufferPack4Node("MultiHeadAttention input profile rejected: " + exception.Message);
             }
 
-            var output = new BufferShape(2, pack.qdim, shapes[0].h, 1, 1);
-            return AcceptStrictCommandBufferPack4Node(
+            var rows = shapes[queryIndex].h;
+            var output = new BufferShape(2, pack.qdim, rows, 1, 1);
+            var outputScalarStorage = new BufferShape(3, output.w, output.h, 1, 1);
+            var packedOutputStorage = ResolvePack4LinearMatStorageShape(output);
+            var useLegacyAttentionLayout = UseLegacyPack4AttentionLayout || PreserveLegacyFp32Execution;
+            var verification = AcceptStrictCommandBufferPack4Node(
                 layer,
                 output,
-                ResolvePack4LinearMatStorageShape(output),
+                useLegacyAttentionLayout ? outputScalarStorage : packedOutputStorage,
                 request,
                 "command-buffer-pack4:mha-mask-no-kv-cache");
+            if (!verification.accepted)
+                return verification;
+
+            // Keep the static arena in lockstep with TryExecuteCommandBufferTexturePath.
+            // MHA uses scalar Pack4 intermediates for the projections, then CDHW
+            // Pack4 arrays for attention. Inputs are materialized only when their
+            // descriptor says LinearMat or Pack4-Linear; equivalent descriptor
+            // aliases share that materialization exactly as the runtime does.
+            var scratchDtype = IsStrictFp32ActivationIslandLayer(request, layer)
+                ? "FP32"
+                : ResolvePhysicalTextureDtype(request.targetDtype);
+            var headDim = pack.embedDim / pack.numHeads;
+            var scalar = new BufferShape(3, pack.embedDim, rows, 1, 1);
+            var heads = new BufferShape(4, headDim, rows, 1, pack.numHeads);
+            var keyTransposed = new BufferShape(4, rows, headDim, 1, pack.numHeads);
+            var scores = new BufferShape(4, rows, rows, 1, pack.numHeads);
+            var contextPermuted = new BufferShape(4, pack.numHeads, rows, 1, headDim);
+            var scratch = new List<AexisTexturePlanTensorDescriptor>
+            {
+                CreateStrictPack4ScratchDescriptor(layer, "mha-q-projection", scalar, request, scratchDtype),
+                CreateStrictPack4ScratchDescriptor(layer, "mha-k-projection", scalar, request, scratchDtype),
+                CreateStrictPack4ScratchDescriptor(layer, "mha-v-projection", scalar, request, scratchDtype),
+                CreateStrictPack4ScratchDescriptor(layer, "mha-q-scaled", scalar, request, scratchDtype),
+                CreateStrictPack4ScratchDescriptor(layer, "mha-q-heads", heads, request, scratchDtype),
+                CreateStrictPack4ScratchDescriptor(layer, "mha-k-heads", heads, request, scratchDtype),
+                CreateStrictPack4ScratchDescriptor(layer, "mha-v-heads", heads, request, scratchDtype),
+                CreateStrictPack4ScratchDescriptor(layer, "mha-k-heads-transposed", keyTransposed, request, scratchDtype),
+                CreateStrictPack4ScratchDescriptor(layer, "mha-scores", scores, request, scratchDtype)
+            };
+
+            if (maskIndex >= 0)
+            {
+                scratch.Add(CreateStrictPack4ScratchDescriptor(
+                    layer,
+                    "mha-attention-mask-tiled",
+                    scores,
+                    request,
+                    scratchDtype));
+                scratch.Add(CreateStrictPack4ScratchDescriptor(
+                    layer,
+                    "mha-scores-biased",
+                    scores,
+                    request,
+                    scratchDtype));
+            }
+
+            scratch.Add(CreateStrictPack4ScratchDescriptor(layer, "mha-weights", scores, request, scratchDtype));
+            scratch.Add(CreateStrictPack4ScratchDescriptor(layer, "mha-context-heads", heads, request, scratchDtype));
+            scratch.Add(CreateStrictPack4ScratchDescriptor(layer, "mha-context-permuted", contextPermuted, request, scratchDtype));
+            scratch.Add(CreateStrictPack4ScratchDescriptor(layer, "mha-context-flat", scalar, request, scratchDtype));
+            scratch.Add(CreateStrictPack4ScratchDescriptor(
+                layer,
+                useLegacyAttentionLayout ? "mha-output-packed" : "mha-output-scalar",
+                useLegacyAttentionLayout ? packedOutputStorage : outputScalarStorage,
+                request,
+                scratchDtype));
+
+            // Query always materializes from the admitted LinearMat/Pack4-Linear
+            // input. K and V use that same texture when the plan proves an alias.
+            scratch.Add(CreateStrictPack4ScratchDescriptor(
+                layer,
+                "mha-q-scalar-input",
+                new BufferShape(3, shapes[queryIndex].w, shapes[queryIndex].h, 1, 1),
+                request,
+                scratchDtype));
+            if (!StrictMhaInputsShareStorage(inputs, queryIndex, keyIndex))
+            {
+                scratch.Add(CreateStrictPack4ScratchDescriptor(
+                    layer,
+                    "mha-k-scalar-input",
+                    new BufferShape(3, shapes[keyIndex].w, shapes[keyIndex].h, 1, 1),
+                    request,
+                    scratchDtype));
+            }
+            if (!StrictMhaInputsShareStorage(inputs, queryIndex, valueIndex)
+                && !StrictMhaInputsShareStorage(inputs, keyIndex, valueIndex))
+            {
+                scratch.Add(CreateStrictPack4ScratchDescriptor(
+                    layer,
+                    "mha-v-scalar-input",
+                    new BufferShape(3, shapes[valueIndex].w, shapes[valueIndex].h, 1, 1),
+                    request,
+                    scratchDtype));
+            }
+            if (maskIndex >= 0)
+            {
+                scratch.Add(CreateStrictPack4ScratchDescriptor(
+                    layer,
+                    "mha-attention-mask-scalar-input",
+                    new BufferShape(3, shapes[maskIndex].w, shapes[maskIndex].h, 1, 1),
+                    request,
+                    scratchDtype));
+            }
+
+            verification.scratch = scratch.ToArray();
+            return verification;
+        }
+
+        private static bool StrictMhaInputsShareStorage(
+            IReadOnlyList<AexisTexturePlanTensorDescriptor> inputs,
+            int firstIndex,
+            int secondIndex)
+        {
+            if (firstIndex == secondIndex)
+                return true;
+            if (firstIndex < 0 || secondIndex < 0 || firstIndex >= inputs.Count || secondIndex >= inputs.Count)
+                return false;
+            var first = inputs[firstIndex];
+            var second = inputs[secondIndex];
+            return first != null
+                && second != null
+                && !string.IsNullOrWhiteSpace(first.aliasGroup)
+                && string.Equals(first.aliasGroup, second.aliasGroup, StringComparison.Ordinal);
         }
 
         private static bool HasStrictMultiHeadAttentionLinearInput(
@@ -6454,12 +7221,23 @@ namespace Aexis.Execution
             if (!IsStrictFinite(softmaxScale) || softmaxScale <= 0f || !IsStrictFinite(patchEpsilon) || patchEpsilon <= 0f)
                 return RejectStrictCommandBufferPack4Node("DeepFillV2 contextual attention requires finite positive softmax_scale and patch_epsilon.");
 
-            return AcceptStrictCommandBufferPack4Node(
+            var verification = AcceptStrictCommandBufferPack4Node(
                 layer,
                 feature,
                 CopyStrictStorage(inputs[0]),
                 request,
                 "command-buffer-pack4:deepfillv2-contextual-attention");
+            if (!verification.accepted)
+                return verification;
+
+            var scratchDtype = ResolveStrictOutputTextureDtype(feature, CopyStrictStorage(inputs[0]), request);
+            verification.scratch = new[]
+            {
+                CreateStrictPack4ScratchDescriptor(layer, "deepfill-patch-stats", new BufferShape(3, 50, 64, 1, 4), request, scratchDtype),
+                CreateStrictPack4ScratchDescriptor(layer, "deepfill-scores", new BufferShape(3, 50, 64, 1, 3200), request, scratchDtype),
+                CreateStrictPack4ScratchDescriptor(layer, "deepfill-weights", new BufferShape(3, 50, 64, 1, 3200), request, scratchDtype)
+            };
+            return verification;
         }
 
         private static bool TryGetSingleStrictCdhwPlanShape(
@@ -6660,7 +7438,7 @@ namespace Aexis.Execution
                 return RejectStrictCommandBufferPack4Node(capacityReason);
             var logical = new[] { logicalShape.dims, logicalShape.w, logicalShape.h, logicalShape.d, logicalShape.c };
             var storage = new[] { storageShape.dims, storageShape.w, storageShape.h, storageShape.d, storageShape.c };
-            var physicalDtype = ResolveStrictOutputTextureDtype(logicalShape, storageShape, request);
+            var physicalDtype = ResolveStrictOutputTextureDtype(logicalShape, storageShape, request, layer);
             return new AexisTextureExecutionPlanNodeVerification
             {
                 accepted = true,
@@ -6678,6 +7456,36 @@ namespace Aexis.Execution
                     textureBacked = true
                 }).ToArray()
             };
+        }
+
+        private static AexisTexturePlanTensorDescriptor CreateStrictPack4ScratchDescriptor(
+            AexisGraphModel.Layer layer,
+            string suffix,
+            BufferShape shape,
+            AexisTextureExecutionPlanRequest request,
+            string physicalDtype = "FP32")
+        {
+            var identity = GetStrictPack4ScratchIdentity(layer, suffix);
+            return new AexisTexturePlanTensorDescriptor
+            {
+                blob = identity,
+                logicalShape = new[] { shape.dims, shape.w, shape.h, shape.d, shape.c },
+                storageShape = new[] { shape.dims, shape.w, shape.h, shape.d, shape.c },
+                layout = request.targetLayout,
+                // MVN reduction statistics use FP32 accumulation even when the
+                // activation profile is FP16; this is still a Pack4 RT, not a
+                // buffer-side fallback or readback.
+                dtype = physicalDtype,
+                logicalDtype = "Float32",
+                aliasGroup = identity,
+                textureBacked = true
+            };
+        }
+
+        internal static string GetStrictPack4ScratchIdentity(AexisGraphModel.Layer layer, string suffix)
+        {
+            var layerName = string.IsNullOrWhiteSpace(layer?.name) ? (layer?.typeName ?? "layer") : layer.name;
+            return "scratch:" + layerName + ":" + (suffix ?? string.Empty);
         }
 
         private static AexisTextureExecutionPlanNodeVerification AcceptStrictCommandBufferPack4Outputs(
@@ -6713,7 +7521,7 @@ namespace Aexis.Execution
                     logicalShape = new[] { logical.dims, logical.w, logical.h, logical.d, logical.c },
                     storageShape = new[] { storage.dims, storage.w, storage.h, storage.d, storage.c },
                     layout = request.targetLayout,
-                    dtype = ResolveStrictOutputTextureDtype(logicalShapes[index], storageShapes[index], request),
+                    dtype = ResolveStrictOutputTextureDtype(logicalShapes[index], storageShapes[index], request, layer),
                     logicalDtype = ResolveLogicalDtype(request.targetDtype),
                     aliasGroup = "computed:" + (layer?.name ?? layer?.typeName ?? "layer") + ":" + index,
                     textureBacked = true
@@ -6780,12 +7588,29 @@ namespace Aexis.Execution
         private static string ResolveStrictOutputTextureDtype(
             BufferShape logicalShape,
             BufferShape storageShape,
-            AexisTextureExecutionPlanRequest request)
+            AexisTextureExecutionPlanRequest request,
+            AexisGraphModel.Layer layer = null)
         {
+            if (IsStrictFp32ActivationIslandLayer(request, layer))
+                return "FP32";
             var expectedLinearStorage = ResolveLinearMatStorageShape(logicalShape);
             if (StrictPlanShapesEqual(storageShape, expectedLinearStorage))
                 return "FP32";
             return ResolvePhysicalTextureDtype(request.targetDtype);
+        }
+
+        private static bool IsStrictFp32ActivationIslandLayer(
+            AexisTextureExecutionPlanRequest request,
+            AexisGraphModel.Layer layer)
+        {
+            if (!string.Equals(request?.targetDtype, "FP16", StringComparison.OrdinalIgnoreCase)
+                || string.IsNullOrWhiteSpace(layer?.name))
+            {
+                return false;
+            }
+
+            return (request.fp32ActivationLayerNames ?? Array.Empty<string>())
+                .Any(name => string.Equals(name, layer.name, StringComparison.Ordinal));
         }
 
         private static AexisTextureExecutionPlanNodeVerification RejectStrictCommandBufferPack4Node(string reason)
@@ -6926,10 +7751,303 @@ namespace Aexis.Execution
             try { OnConvComplete?.Invoke(layerName, mode, srcW, srcH, inPacks, outPacks, gpuMs); } catch { }
         }
 
+        // Binds compiler-assigned temporary graph activations to stable
+        // CommandBuffer RT IDs. This deliberately does not invent a buffer
+        // arena: every slot is a Pack4 RenderTexture/Texture2DArray resource.
+        private sealed class CommandBufferRtArena : IDisposable
+        {
+            private sealed class ResourceState
+            {
+                public AexisTextureExecutionPlanResource resource;
+                public bool bound;
+            }
+
+            private sealed class SlotState
+            {
+                public int slot;
+                public int nameId;
+                public bool allocated;
+                public bool active;
+                public bool persistent;
+                public string trackerLabel;
+                public AexisTextureExecutionPlanResource activeResource;
+            }
+
+            private readonly AexisGraphSession _owner;
+            private readonly CommandBuffer _commandBuffer;
+            private readonly List<ResourceState> _resources = new List<ResourceState>();
+            private readonly Dictionary<int, SlotState> _slots = new Dictionary<int, SlotState>();
+            private readonly Queue<string> _recentTransitions = new Queue<string>();
+            private bool _disposed;
+
+            public CommandBufferRtArena(AexisGraphSession owner, CommandBuffer commandBuffer, AexisTextureExecutionPlan plan)
+            {
+                _owner = owner ?? throw new ArgumentNullException(nameof(owner));
+                _commandBuffer = commandBuffer ?? throw new ArgumentNullException(nameof(commandBuffer));
+                Metrics = new CommandBufferRtArenaMetrics { enabled = true };
+                foreach (var resource in plan?.memory?.resources ?? Array.Empty<AexisTextureExecutionPlanResource>())
+                {
+                    if (resource == null || resource.allocationSlot < 0
+                        || resource.externalInput
+                        || (!resource.temporary && !resource.producedByGraph))
+                        continue;
+                    _resources.Add(new ResourceState { resource = resource });
+                    if (resource.temporary) Metrics.plannedTemporaryResources++;
+                    else Metrics.plannedPersistentResources++;
+                    if (_slots.ContainsKey(resource.allocationSlot))
+                        continue;
+                    _slots.Add(resource.allocationSlot, new SlotState
+                    {
+                        slot = resource.allocationSlot,
+                        persistent = resource.persistent,
+                        nameId = Shader.PropertyToID("_AexisStaticRtArena_" + Guid.NewGuid().ToString("N")),
+                        trackerLabel = "AexisGraphSession.CommandBufferRtArena(slot="
+                            + resource.allocationSlot.ToString(CultureInfo.InvariantCulture) + ")"
+                    });
+                }
+                Metrics.plannedSlots = _slots.Count;
+            }
+
+            public CommandBufferRtArenaMetrics Metrics { get; }
+
+            public bool TryRentArray(
+                int layerIndex,
+                int width,
+                int height,
+                int depth,
+                RenderTextureFormat format,
+                RenderTextureDescriptor descriptor,
+                AexisTemporaryRtDescriptor temporaryDescriptor,
+                string plannedResourceName,
+                out ComputeTexture texture)
+            {
+                return TryRent(layerIndex, true, width, height, depth, format, descriptor, temporaryDescriptor, plannedResourceName, out texture);
+            }
+
+            public bool TryRentMat(
+                int layerIndex,
+                int width,
+                int height,
+                RenderTextureFormat format,
+                RenderTextureDescriptor descriptor,
+                AexisTemporaryRtDescriptor temporaryDescriptor,
+                out ComputeTexture texture)
+            {
+                return TryRent(layerIndex, false, width, height, 1, format, descriptor, temporaryDescriptor, null, out texture);
+            }
+
+            private bool TryRent(
+                int layerIndex,
+                bool array,
+                int width,
+                int height,
+                int depth,
+                RenderTextureFormat format,
+                RenderTextureDescriptor descriptor,
+                AexisTemporaryRtDescriptor temporaryDescriptor,
+                string plannedResourceName,
+                out ComputeTexture texture)
+            {
+                texture = null;
+                if (layerIndex < 0)
+                    return false;
+
+                var candidates = _resources.Where(state => !state.bound
+                    && state.resource.firstLayerIndex == layerIndex
+                    && (string.IsNullOrWhiteSpace(plannedResourceName)
+                        || string.Equals(state.resource.representativeBlob, plannedResourceName, StringComparison.Ordinal))
+                    && Matches(state.resource.descriptor, array, width, height, depth, format))
+                    .ToArray();
+                if (string.IsNullOrWhiteSpace(plannedResourceName) && candidates.Length > 1)
+                {
+                    throw new InvalidOperationException(
+                        "Compiled RT arena has ambiguous unnamed allocation"
+                        + " | layer=" + layerIndex.ToString(CultureInfo.InvariantCulture)
+                        + " | storage=" + width.ToString(CultureInfo.InvariantCulture) + "x"
+                        + height.ToString(CultureInfo.InvariantCulture) + "x"
+                        + depth.ToString(CultureInfo.InvariantCulture)
+                        + " | format=" + format
+                        + " | candidates=" + string.Join(",", candidates.Select(state => state.resource.representativeBlob))
+                        + " | required_action=bind the graph output or kernel scratch identity when renting the CommandBuffer Pack4 RT.");
+                }
+                var candidate = candidates.FirstOrDefault();
+                if (candidate == null)
+                    return false;
+
+                if (!_slots.TryGetValue(candidate.resource.allocationSlot, out var slot))
+                    throw new InvalidOperationException("Compiled RT arena slot is missing for " + candidate.resource.representativeBlob + ".");
+                if (slot.active)
+                {
+                    var active = slot.activeResource;
+                    throw new InvalidOperationException(
+                        "Compiled RT arena liveness violation: slot=" + slot.slot.ToString(CultureInfo.InvariantCulture)
+                        + " is reused before its prior graph activation was released."
+                        + " | request_layer=" + layerIndex.ToString(CultureInfo.InvariantCulture)
+                        + " | requested_blob=" + candidate.resource.representativeBlob
+                        + " | requested_range=" + candidate.resource.firstLayerIndex.ToString(CultureInfo.InvariantCulture)
+                        + ".." + candidate.resource.lastLayerIndex.ToString(CultureInfo.InvariantCulture)
+                        + " | active_blob=" + (active?.representativeBlob ?? string.Empty)
+                        + " | active_range=" + (active?.firstLayerIndex ?? -1).ToString(CultureInfo.InvariantCulture)
+                        + ".." + (active?.lastLayerIndex ?? -1).ToString(CultureInfo.InvariantCulture)
+                        + " | recent_arena_transitions=" + string.Join("; ", _recentTransitions));
+                }
+                if (!slot.allocated)
+                {
+                    _commandBuffer.GetTemporaryRT(slot.nameId, descriptor);
+                    AexisGpuResourceTracker.RegisterTemporaryTextureHandle(slot.nameId, temporaryDescriptor);
+                    slot.allocated = true;
+                    Metrics.allocatedSlots++;
+                }
+
+                slot.active = true;
+                slot.activeResource = candidate.resource;
+                candidate.bound = true;
+                Metrics.boundResources++;
+                RecordTransition("rent layer=" + layerIndex.ToString(CultureInfo.InvariantCulture)
+                    + " slot=" + slot.slot.ToString(CultureInfo.InvariantCulture)
+                    + " blob=" + candidate.resource.representativeBlob);
+                texture = new ComputeTexture
+                {
+                    nameID = slot.nameId,
+                    width = width,
+                    height = height,
+                    depth = depth,
+                    dimension = descriptor.dimension,
+                    format = format,
+                    trackerLabel = slot.trackerLabel + ":" + candidate.resource.representativeBlob,
+                    isTemporary = true,
+                    arenaSlot = slot.slot,
+                    temporaryDescriptor = temporaryDescriptor
+                };
+                return true;
+            }
+
+            public bool TryReturn(ComputeTexture texture)
+            {
+                if (texture == null || texture.arenaSlot < 0)
+                    return false;
+                if (!_slots.TryGetValue(texture.arenaSlot, out var slot))
+                    throw new InvalidOperationException("Unknown compiled RT arena slot " + texture.arenaSlot.ToString(CultureInfo.InvariantCulture) + ".");
+                if (!slot.active)
+                    throw new InvalidOperationException("Compiled RT arena slot was returned twice: " + texture.arenaSlot.ToString(CultureInfo.InvariantCulture) + ".");
+
+                var releasedResource = slot.activeResource;
+                slot.active = false;
+                slot.activeResource = null;
+                texture.isReleased = true;
+                Metrics.releasedResources++;
+                RecordTransition("return slot=" + slot.slot.ToString(CultureInfo.InvariantCulture)
+                    + " blob=" + (releasedResource?.representativeBlob ?? string.Empty));
+                if (slot.persistent)
+                {
+                    AexisGpuResourceTracker.ReleaseTextureHandle(texture.nameID, texture.trackerLabel ?? slot.trackerLabel);
+                    _commandBuffer.ReleaseTemporaryRT(texture.nameID);
+                    slot.allocated = false;
+                }
+                return true;
+            }
+
+            private void RecordTransition(string transition)
+            {
+                const int capacity = 16;
+                if (_recentTransitions.Count == capacity)
+                    _recentTransitions.Dequeue();
+                _recentTransitions.Enqueue(transition);
+            }
+
+            public void RecordUnplannedTextureAllocation()
+            {
+                Metrics.unplannedTextureAllocations++;
+            }
+
+            public void Complete()
+            {
+                Metrics.allPlannedResourcesBound = _resources.All(resource => resource.bound);
+                Metrics.allBoundResourcesReleased = _slots.Values
+                    .Where(slot => !slot.persistent)
+                    .All(slot => !slot.active);
+                Metrics.unboundResourceDiagnostics = _resources
+                    .Where(resource => !resource.bound)
+                    .OrderBy(resource => resource.resource.firstLayerIndex)
+                    .ThenBy(resource => resource.resource.representativeBlob, StringComparer.Ordinal)
+                    .Select(resource => "slot=" + resource.resource.allocationSlot.ToString(CultureInfo.InvariantCulture)
+                        + " | persistent=" + resource.resource.persistent
+                        + " | blob=" + resource.resource.representativeBlob
+                        + " | range=" + resource.resource.firstLayerIndex.ToString(CultureInfo.InvariantCulture)
+                        + ".." + resource.resource.lastLayerIndex.ToString(CultureInfo.InvariantCulture))
+                    .ToArray();
+                Metrics.activeResourceDiagnostics = _slots.Values
+                    .Where(slot => slot.active)
+                    .OrderBy(slot => slot.slot)
+                    .Select(slot => "slot=" + slot.slot.ToString(CultureInfo.InvariantCulture)
+                        + " | persistent=" + slot.persistent
+                        + " | blob=" + (slot.activeResource?.representativeBlob ?? string.Empty)
+                        + " | range=" + (slot.activeResource?.firstLayerIndex ?? -1).ToString(CultureInfo.InvariantCulture)
+                        + ".." + (slot.activeResource?.lastLayerIndex ?? -1).ToString(CultureInfo.InvariantCulture))
+                    .ToArray();
+                if (!Metrics.allPlannedResourcesBound || !Metrics.allBoundResourcesReleased)
+                {
+                    throw new InvalidOperationException(
+                        "Compiled CommandBuffer RT arena did not satisfy the static graph lifetime proof"
+                        + " | planned=" + Metrics.plannedTemporaryResources.ToString(CultureInfo.InvariantCulture)
+                        + " | planned_persistent=" + Metrics.plannedPersistentResources.ToString(CultureInfo.InvariantCulture)
+                        + " | bound=" + Metrics.boundResources.ToString(CultureInfo.InvariantCulture)
+                        + " | released=" + Metrics.releasedResources.ToString(CultureInfo.InvariantCulture)
+                        + " | active_slots=" + _slots.Values.Count(slot => slot.active).ToString(CultureInfo.InvariantCulture)
+                        + " | active_resources=" + string.Join("; ", Metrics.activeResourceDiagnostics)
+                        + " | unbound_resources=" + string.Join("; ", Metrics.unboundResourceDiagnostics));
+                }
+            }
+
+            public void Dispose()
+            {
+                if (_disposed)
+                    return;
+                _disposed = true;
+                foreach (var slot in _slots.Values)
+                {
+                    if (!slot.allocated || slot.persistent)
+                        continue;
+                    AexisGpuResourceTracker.ReleaseTextureHandle(slot.nameId, slot.trackerLabel);
+                    _commandBuffer.ReleaseTemporaryRT(slot.nameId);
+                }
+            }
+
+            private static bool Matches(
+                AexisTexturePlanTensorDescriptor descriptor,
+                bool array,
+                int width,
+                int height,
+                int depth,
+                RenderTextureFormat format)
+            {
+                var shape = descriptor?.storageShape;
+                if (shape == null || shape.Length != 5 || shape[1] != width || shape[2] != height)
+                    return false;
+                var dims = shape[0];
+                var packs = Math.Max(1, (shape[4] + 3) / 4);
+                if (array)
+                {
+                    var expectedDepth = dims == 4 ? Math.Max(1, shape[3]) * packs : packs;
+                    if (dims < 3 || expectedDepth != depth)
+                        return false;
+                }
+                else if (dims > 2 || depth != 1)
+                {
+                    return false;
+                }
+
+                return string.Equals(descriptor.dtype, "FP16", StringComparison.OrdinalIgnoreCase)
+                    ? format == RenderTextureFormat.ARGBHalf
+                    : format == RenderTextureFormat.ARGBFloat || format == RenderTextureFormat.RFloat;
+            }
+        }
+
         internal void SetCurrentExecutingLayer(AexisGraphModel.Layer layer)
         {
             _currentExecutingLayerName = layer?.name;
             _currentExecutingLayerTypeName = layer?.typeName;
+            _currentExecutingLayerIndex = Model?.layers?.IndexOf(layer) ?? -1;
             if (ModelManifest != null
                 && UsesFp16WeightStorage
                 && !TryVerifyFp16WeightStorage(layer, out var reason))
@@ -6963,6 +8081,7 @@ namespace Aexis.Execution
         {
             _currentExecutingLayerName = null;
             _currentExecutingLayerTypeName = null;
+            _currentExecutingLayerIndex = -1;
         }
 
         public sealed class CmdInferResult : IDisposable
@@ -8583,8 +9702,15 @@ namespace Aexis.Execution
         {
             if (cmd == null)
                 throw new ArgumentNullException(nameof(cmd));
-            if (textureInputs == null || textureInputs.Count == 0)
+            if (textureInputs == null)
                 throw new ArgumentNullException(nameof(textureInputs));
+            if (textureInputs.Count == 0 && Model != null && Model.layers != null
+                && Model.layers.Any(layer => layer?.bottomNames != null && layer.bottomNames.Any(name => !string.IsNullOrWhiteSpace(name))))
+            {
+                throw new ArgumentException(
+                    "A zero-input CommandBuffer invocation is valid only for a statically closed texture plan; this model declares external activation bottoms.",
+                    nameof(textureInputs));
+            }
             if (Model == null || _blobUseCount == null)
                 throw new InvalidOperationException("model not loaded");
             if (LayerRepros != null && LayerRepros.Count == Model.layers.Count)
@@ -8653,8 +9779,15 @@ namespace Aexis.Execution
         {
             if (cmd == null)
                 throw new ArgumentNullException(nameof(cmd));
-            if (textureInputs == null || textureInputs.Count == 0)
+            if (textureInputs == null)
                 throw new ArgumentNullException(nameof(textureInputs));
+            if (textureInputs.Count == 0 && Model != null && Model.layers != null
+                && Model.layers.Any(layer => layer?.bottomNames != null && layer.bottomNames.Any(name => !string.IsNullOrWhiteSpace(name))))
+            {
+                throw new ArgumentException(
+                    "A zero-input CommandBuffer invocation is valid only for a statically closed texture plan; this model declares external activation bottoms.",
+                    nameof(textureInputs));
+            }
             if (outputBlobNames == null)
                 throw new ArgumentNullException(nameof(outputBlobNames));
             if (Model == null || _blobUseCount == null)
@@ -8930,13 +10063,61 @@ namespace Aexis.Execution
 
         public ComputeTexture RentTempArray(CommandBuffer cmd, int w, int h, int depth, RenderTextureFormat format)
         {
+            return RentTempArrayCore(cmd, w, h, depth, format, preserveRequestedFormat: false, plannedResourceName: null);
+        }
+
+        // Kernel-local plans with same-sized temporaries need a resource identity,
+        // not just a texture descriptor, to preserve the compiled liveness proof.
+        internal ComputeTexture RentTempArray(
+            CommandBuffer cmd,
+            int w,
+            int h,
+            int depth,
+            RenderTextureFormat format,
+            string plannedResourceName)
+        {
+            if (string.IsNullOrWhiteSpace(plannedResourceName))
+                throw new ArgumentException("A planned CommandBuffer RT name is required.", nameof(plannedResourceName));
+            return RentTempArrayCore(cmd, w, h, depth, format, preserveRequestedFormat: false, plannedResourceName: plannedResourceName);
+        }
+
+        // Reduction statistics are immutable FP32 accumulation storage rather
+        // than activations. Keep the explicit texture format intact so the
+        // compiler-declared scratch descriptor matches the CommandBuffer RT.
+        internal ComputeTexture RentTempArrayExactFormat(CommandBuffer cmd, int w, int h, int depth, RenderTextureFormat format)
+        {
+            return RentTempArrayCore(cmd, w, h, depth, format, preserveRequestedFormat: true, plannedResourceName: null);
+        }
+
+        internal ComputeTexture RentTempArrayExactFormat(
+            CommandBuffer cmd,
+            int w,
+            int h,
+            int depth,
+            RenderTextureFormat format,
+            string plannedResourceName)
+        {
+            if (string.IsNullOrWhiteSpace(plannedResourceName))
+                throw new ArgumentException("A planned CommandBuffer RT name is required.", nameof(plannedResourceName));
+            return RentTempArrayCore(cmd, w, h, depth, format, preserveRequestedFormat: true, plannedResourceName: plannedResourceName);
+        }
+
+        private ComputeTexture RentTempArrayCore(
+            CommandBuffer cmd,
+            int w,
+            int h,
+            int depth,
+            RenderTextureFormat format,
+            bool preserveRequestedFormat,
+            string plannedResourceName)
+        {
             if (cmd == null)
                 throw new ArgumentNullException(nameof(cmd));
 
             w = Mathf.Max(1, w);
             h = Mathf.Max(1, h);
             depth = Mathf.Max(1, depth);
-            format = ResolvePack4TextureFormat(format);
+            format = preserveRequestedFormat ? format : ResolvePack4TextureFormat(format);
             if (WouldExceedTextureArraySliceLimit(depth))
             {
                 throw new InvalidOperationException(
@@ -8962,6 +10143,19 @@ namespace Aexis.Execution
                 new BufferShape(3, w, h, 1, depth * 4),
                 desc,
                 allocLabel);
+            if (_activeCommandBufferRtArena != null
+                && _activeCommandBufferRtArena.TryRentArray(
+                    _currentExecutingLayerIndex, w, h, depth, format, desc, temporaryDescriptor, plannedResourceName, out var planned))
+            {
+                _ops?.FillScalarTexture(cmd, null, planned);
+                TrackTempRtRent();
+                return planned;
+            }
+            if (_activeCommandBufferRtArena != null)
+            {
+                _activeCommandBufferRtArena.RecordUnplannedTextureAllocation();
+                RejectUnplannedCommandBufferTextureAllocation("Texture2DArray", w, h, depth, format);
+            }
             EnsureTemporaryTextureBudget(temporaryDescriptor);
             cmd.GetTemporaryRT(id, desc);
             AexisGpuResourceTracker.RegisterTemporaryTextureHandle(id, temporaryDescriptor);
@@ -8984,12 +10178,30 @@ namespace Aexis.Execution
 
         public ComputeTexture RentTempMat(CommandBuffer cmd, int w, int h, RenderTextureFormat format)
         {
+            return RentTempMatCore(cmd, w, h, format, preserveRequestedFormat: false);
+        }
+
+        // LinearMat conversions have an explicit FP32 Texture2D storage contract
+        // in the strict execution plan. Preserve that format exactly instead of
+        // applying the model-wide FP16 activation preference.
+        internal ComputeTexture RentTempMatExactFormat(CommandBuffer cmd, int w, int h, RenderTextureFormat format)
+        {
+            return RentTempMatCore(cmd, w, h, format, preserveRequestedFormat: true);
+        }
+
+        private ComputeTexture RentTempMatCore(
+            CommandBuffer cmd,
+            int w,
+            int h,
+            RenderTextureFormat format,
+            bool preserveRequestedFormat)
+        {
             if (cmd == null)
                 throw new ArgumentNullException(nameof(cmd));
 
             w = Mathf.Max(1, w);
             h = Mathf.Max(1, h);
-            format = ResolveLinearTextureFormat(format);
+            format = preserveRequestedFormat ? format : ResolveLinearTextureFormat(format);
             if (WouldExceedTextureSizeLimit(w, h))
             {
                 throw new InvalidOperationException(
@@ -9014,6 +10226,19 @@ namespace Aexis.Execution
                 new BufferShape(2, w, h, 1, 1),
                 desc,
                 allocLabel);
+            if (_activeCommandBufferRtArena != null
+                && _activeCommandBufferRtArena.TryRentMat(
+                    _currentExecutingLayerIndex, w, h, format, desc, temporaryDescriptor, out var planned))
+            {
+                _ops?.FillScalarTexture(cmd, null, planned);
+                TrackTempRtRent();
+                return planned;
+            }
+            if (_activeCommandBufferRtArena != null)
+            {
+                _activeCommandBufferRtArena.RecordUnplannedTextureAllocation();
+                RejectUnplannedCommandBufferTextureAllocation("Texture2D", w, h, 1, format);
+            }
             EnsureTemporaryTextureBudget(temporaryDescriptor);
             cmd.GetTemporaryRT(id, desc);
             AexisGpuResourceTracker.RegisterTemporaryTextureHandle(id, temporaryDescriptor);
@@ -9038,10 +10263,40 @@ namespace Aexis.Execution
         {
             if (cmd == null || t == null || !t.isTemporary || t.isReleased)
                 return;
+            if (_activeCommandBufferRtArena != null && _activeCommandBufferRtArena.TryReturn(t))
+            {
+                TrackTempRtReturn();
+                return;
+            }
             t.isReleased = true;
             TrackTempRtReturn();
             AexisGpuResourceTracker.ReleaseTextureHandle(t.nameID, t.trackerLabel ?? "AexisGraphSession.ReturnTempArrayCmd");
             cmd.ReleaseTemporaryRT(t.nameID);
+        }
+
+        private void RejectUnplannedCommandBufferTextureAllocation(
+            string dimension,
+            int width,
+            int height,
+            int depth,
+            RenderTextureFormat format)
+        {
+            if (LastTextureExecutionPlan == null
+                || !LastTextureExecutionPlan.strict
+                || LastTextureExecutionPlan.debugOracleRelaxed)
+                return;
+
+            throw new InvalidOperationException(
+                "command-buffer-pack4-unplanned-temporary-rt"
+                + " | layer=" + (_currentExecutingLayerName ?? string.Empty)
+                + " | operator=" + (_currentExecutingLayerTypeName ?? string.Empty)
+                + " | layer_index=" + _currentExecutingLayerIndex.ToString(CultureInfo.InvariantCulture)
+                + " | storage=" + dimension
+                + " | size=" + width.ToString(CultureInfo.InvariantCulture) + "x" + height.ToString(CultureInfo.InvariantCulture)
+                + "x" + depth.ToString(CultureInfo.InvariantCulture)
+                + " | format=" + format
+                + " | rejected_fallback=unplanned-texture-allocation"
+                + " | action=declare-the-scratch-rt-in-the-loaded-commandbuffer-profile-before-dispatch.");
         }
 
         internal AexisTemporaryRtDescriptor CreateTemporaryRtDescriptor(
@@ -11570,7 +12825,25 @@ namespace Aexis.Execution
 
             if (tensor.owned && tensor.texture != null)
             {
-                try { ReturnTempArray(cmd, tensor.texture); } catch { }
+                try
+                {
+                    ReturnTempArray(cmd, tensor.texture);
+                }
+                catch (Exception exception) when (_activeCommandBufferRtArena != null)
+                {
+                    throw new InvalidOperationException(
+                        "Failed to release a planned CommandBuffer Pack4 activation"
+                        + " | layer=" + (_currentExecutingLayerName ?? string.Empty)
+                        + " | layer_index=" + _currentExecutingLayerIndex.ToString(CultureInfo.InvariantCulture)
+                        + " | arena_slot=" + tensor.texture.arenaSlot.ToString(CultureInfo.InvariantCulture)
+                        + " | texture=" + (tensor.texture.trackerLabel ?? string.Empty),
+                        exception);
+                }
+                catch
+                {
+                    // Non-arena legacy cleanup remains best effort. Strict CommandBuffer
+                    // inference takes the branch above and must never hide a lifetime fault.
+                }
             }
 
             tensor.ClearTexture();
@@ -13820,6 +15093,42 @@ namespace Aexis.Execution
                             }
                         }
                         packed[baseIndex] = v;
+                    }
+                }
+            }
+            return packed;
+        }
+
+        // One-to-one CDHW depthwise weights are stored as one float4 per
+        // [output-pack,kz,ky,kx]. Activations stay in Texture2DArray slices;
+        // this is an immutable upload format only, never an activation buffer.
+        public static Vector4[] PackDepthWiseWeightsToP4KdKhKw(float[] w, int channels, int kernelW, int kernelH, int kernelD, int packs)
+        {
+            if (w == null) throw new ArgumentNullException(nameof(w));
+            if (channels <= 0 || kernelW <= 0 || kernelH <= 0 || kernelD <= 0 || packs <= 0)
+                throw new ArgumentOutOfRangeException(nameof(channels));
+            var kernelVolume = checked(kernelW * kernelH * kernelD);
+            if (w.Length != checked(channels * kernelVolume))
+                throw new ArgumentException("Depthwise 3D weight length does not match channels*kernel volume.", nameof(w));
+            var packed = new Vector4[checked(packs * kernelVolume)];
+            for (var pack = 0; pack < packs; pack++)
+            {
+                for (var kz = 0; kz < kernelD; kz++)
+                {
+                    for (var ky = 0; ky < kernelH; ky++)
+                    {
+                        for (var kx = 0; kx < kernelW; kx++)
+                        {
+                            var kernelIndex = (kz * kernelH + ky) * kernelW + kx;
+                            var value = Vector4.zero;
+                            for (var lane = 0; lane < 4; lane++)
+                            {
+                                var channel = pack * 4 + lane;
+                                if (channel < channels)
+                                    value[lane] = w[channel * kernelVolume + kernelIndex];
+                            }
+                            packed[pack * kernelVolume + kernelIndex] = value;
+                        }
                     }
                 }
             }

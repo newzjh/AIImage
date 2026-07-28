@@ -70,6 +70,103 @@ float P1Read2Linear(int index)
     return P1ReadLinear(_P1In2Arr, index, _P1In2Dims, _P1In2W, _P1In2H, _P1In2D, _P1In2C);
 }
 
+float AexisNmsIou(int first, int second)
+{
+    float a0 = _NmsBoxesArr[int2(0, first)];
+    float a1 = _NmsBoxesArr[int2(1, first)];
+    float a2 = _NmsBoxesArr[int2(2, first)];
+    float a3 = _NmsBoxesArr[int2(3, first)];
+    float b0 = _NmsBoxesArr[int2(0, second)];
+    float b1 = _NmsBoxesArr[int2(1, second)];
+    float b2 = _NmsBoxesArr[int2(2, second)];
+    float b3 = _NmsBoxesArr[int2(3, second)];
+    float ax0;
+    float ay0;
+    float ax1;
+    float ay1;
+    float bx0;
+    float by0;
+    float bx1;
+    float by1;
+    if (_NmsCenterPointBox != 0)
+    {
+        ax0 = a0 - 0.5 * a2; ax1 = a0 + 0.5 * a2;
+        ay0 = a1 - 0.5 * a3; ay1 = a1 + 0.5 * a3;
+        bx0 = b0 - 0.5 * b2; bx1 = b0 + 0.5 * b2;
+        by0 = b1 - 0.5 * b3; by1 = b1 + 0.5 * b3;
+    }
+    else
+    {
+        ax0 = min(a0, a2); ax1 = max(a0, a2);
+        ay0 = min(a1, a3); ay1 = max(a1, a3);
+        bx0 = min(b0, b2); bx1 = max(b0, b2);
+        by0 = min(b1, b3); by1 = max(b1, b3);
+    }
+    float interW = max(0.0, min(ax1, bx1) - max(ax0, bx0));
+    float interH = max(0.0, min(ay1, by1) - max(ay0, by0));
+    float intersection = interW * interH;
+    float areaA = max(0.0, ax1 - ax0) * max(0.0, ay1 - ay0);
+    float areaB = max(0.0, bx1 - bx0) * max(0.0, by1 - by0);
+    float denominator = areaA + areaB - intersection;
+    return denominator > 0.0 ? intersection / denominator : 0.0;
+}
+
+// Capacity-bounded ONNX NMS.  A single GPU invocation deliberately serializes
+// selection so score ties are deterministic (lower box index first).  Results and
+// count remain FP32 texture-encoded Int32 tensors; no activation buffer/readback is
+// used. The importer limits this profile to a statically bounded number of boxes.
+void AexisNonMaxSuppressionPack4_Impl(uint3 id)
+{
+    if (id.x != 0 || id.y != 0 || id.z != 0) return;
+    int capacity = max(1, _NmsCapacity);
+    [loop] for (int slot = 0; slot < capacity; ++slot)
+    {
+        _NmsOutputArr[int2(0, slot)] = -1.0;
+        _NmsOutputArr[int2(1, slot)] = -1.0;
+        _NmsOutputArr[int2(2, slot)] = -1.0;
+    }
+
+    int outputCount = 0;
+    int maxPerClass = min(max(0, _NmsMaxOutputPerClass), capacity);
+    [loop] for (int classIndex = 0; classIndex < _NmsNumClasses && outputCount < capacity; ++classIndex)
+    {
+        int classStart = outputCount;
+        [loop] for (int selected = 0; selected < maxPerClass && outputCount < capacity; ++selected)
+        {
+            int bestBox = -1;
+            float bestScore = -3.402823466e+38;
+            [loop] for (int candidate = 0; candidate < _NmsNumBoxes; ++candidate)
+            {
+                float score = _NmsScoresArr[int2(candidate, classIndex)];
+                if (score <= _NmsScoreThreshold) continue;
+                bool suppressed = false;
+                [loop] for (int prior = classStart; prior < outputCount; ++prior)
+                {
+                    int priorBox = (int)_NmsOutputArr[int2(2, prior)];
+                    if (priorBox >= 0 && AexisNmsIou(candidate, priorBox) > _NmsIouThreshold)
+                    {
+                        suppressed = true;
+                        break;
+                    }
+                }
+                if (!suppressed && (bestBox < 0 || score > bestScore || (score == bestScore && candidate < bestBox)))
+                {
+                    bestScore = score;
+                    bestBox = candidate;
+                }
+            }
+            if (bestBox < 0) break;
+            // The index/count contract uses RFloat LinearMat textures, so each
+            // selected-index column is an individual texel rather than a float4 lane.
+            _NmsOutputArr[int2(0, outputCount)] = 0.0;
+            _NmsOutputArr[int2(1, outputCount)] = (float)classIndex;
+            _NmsOutputArr[int2(2, outputCount)] = (float)bestBox;
+            outputCount++;
+        }
+    }
+    _NmsCountArr[int2(0, 0)] = (float)outputCount;
+}
+
 void P1DecodeOutput(uint3 id, out int x, out int y, out int z, out int pack)
 {
     int packs = P1PackCount(_P1OutC);
@@ -339,12 +436,13 @@ float P1BilinearFeature(int channel, float x, float y)
     return v0 * (1.0 - dy) + v1 * dy;
 }
 
-void P1ReadRoi(out float x1, out float y1, out float x2, out float y2)
+void P1ReadRoi(int roiIndex, out float x1, out float y1, out float x2, out float y2)
 {
-    x1 = P1Read1Linear(0) * _P1SpatialScale;
-    y1 = P1Read1Linear(1) * _P1SpatialScale;
-    x2 = P1Read1Linear(2) * _P1SpatialScale;
-    y2 = P1Read1Linear(3) * _P1SpatialScale;
+    int baseIndex = roiIndex * 4;
+    x1 = P1Read1Linear(baseIndex) * _P1SpatialScale;
+    y1 = P1Read1Linear(baseIndex + 1) * _P1SpatialScale;
+    x2 = P1Read1Linear(baseIndex + 2) * _P1SpatialScale;
+    y2 = P1Read1Linear(baseIndex + 3) * _P1SpatialScale;
 }
 
 void AexisP1RoiAlignPack4_Impl(uint3 id)
@@ -353,7 +451,7 @@ void AexisP1RoiAlignPack4_Impl(uint3 id)
     int x, y, z, pack;
     P1DecodeOutput(id, x, y, z, pack);
     float x1, y1, x2, y2;
-    P1ReadRoi(x1, y1, x2, y2);
+    P1ReadRoi(z, x1, y1, x2, y2);
     if (_P1Aligned != 0) { x1 -= 0.5; y1 -= 0.5; x2 -= 0.5; y2 -= 0.5; }
     float rw = x2 - x1;
     float rh = y2 - y1;
@@ -382,7 +480,7 @@ void AexisP1RoiPoolPack4_Impl(uint3 id)
     int x, y, z, pack;
     P1DecodeOutput(id, x, y, z, pack);
     float x1, y1, x2, y2;
-    P1ReadRoi(x1, y1, x2, y2);
+    P1ReadRoi(z, x1, y1, x2, y2);
     int rx1 = (int)floor(x1 + 0.5);
     int ry1 = (int)floor(y1 + 0.5);
     int rx2 = (int)floor(x2 + 0.5);
@@ -413,7 +511,7 @@ void AexisP1PsRoiPoolPack4_Impl(uint3 id)
     int x, y, z, pack;
     P1DecodeOutput(id, x, y, z, pack);
     float x1, y1, x2, y2;
-    P1ReadRoi(x1, y1, x2, y2);
+    P1ReadRoi(z, x1, y1, x2, y2);
     x1 = floor(x1 + 0.5) * _P1SpatialScale;
     y1 = floor(y1 + 0.5) * _P1SpatialScale;
     x2 = floor(x2 + 1.5) * _P1SpatialScale;

@@ -85,6 +85,110 @@ namespace Aexis.Tests.Editor
         }
 
         [Test]
+        public void OnnxLowering_BoundedHighRankArenaKeepsLogicalRankAndPlansPack4Relu()
+        {
+            RequireArgbFloatCompute();
+            var model = new OnnxModel();
+            model.graph.inputs.Add(Value("x", TensorDataType.Float32, 1, 2, 2, 2, 2, 2));
+            model.graph.outputs.Add(Value("y", TensorDataType.Float32, 1, 2, 2, 2, 2, 2));
+            model.graph.nodes.Add(Node("relu", "Relu", new[] { "x" }, new[] { "y" }));
+
+            var result = AexisOnnxGraphLowering.Lower(model, new AexisOnnxGraphLoweringOptions
+            {
+                enableBoundedHighRankArenaLowering = true,
+                maximumBoundedArenaRank = 8
+            });
+
+            Assert.That(result.IsEligible, Is.True, DescribeLowering(result));
+            Assert.That(Find(result, "x").shape, Is.EqualTo(new long[] { 1, 2, 2, 2, 2, 2 }));
+            Assert.That(Find(result, "x").runtimeShape, Is.EqualTo(new long[] { 4, 2, 2, 2 }));
+            Assert.That(Find(result, "y").shape, Is.EqualTo(new long[] { 1, 2, 2, 2, 2, 2 }));
+            Assert.That(Find(result, "y").runtimeShape, Is.EqualTo(new long[] { 4, 2, 2, 2 }));
+
+            var compiled = AexisOnnxGraphCompiler.Compile(result);
+            using var ops = new AexisOps();
+            using var session = new AexisGraphSession(ops)
+            {
+                TensorTextureFormat = RenderTextureFormat.ARGBFloat,
+                StrictTextureTargetDtype = "FP32"
+            };
+            compiled.LoadInto(session);
+            var report = session.AnalyzeLoadedModelPreflight(StrictTextureRequest(new[] { Texture("x", 4, 2, 2, 2, 4) }));
+
+            Assert.That(report.strictEligible, Is.True, DescribeReport(report));
+            Assert.That(report.texturePlan.nodes.Single(candidate => candidate.layer == "relu").executionPath,
+                Does.Contain("command-buffer-pack4:relu"), DescribeReport(report));
+
+            using var commandBuffer = new CommandBuffer { name = "AexisBoundedHighRankReluGolden" };
+            var inputUpload = CreatePack4Array(new[]
+            {
+                -1f, 2f, -3f, 4f, 5f, -6f, 7f, -8f, -9f, 10f, 11f, -12f, 13f, 14f, -15f, 16f,
+                17f, -18f, 19f, -20f, -21f, 22f, -23f, 24f, 25f, -26f, 27f, 28f, -29f, 30f, 31f, -32f
+            }, 2, 2, 2);
+            var outputReadback = CreatePack4Target(2, 2, 2);
+            ComputeTexture input = null;
+            try
+            {
+                input = session.RentTempArray(commandBuffer, 2, 2, 2, RenderTextureFormat.ARGBFloat);
+                commandBuffer.CopyTexture(inputUpload, 0, 0, input.nameID, 0, 0);
+                commandBuffer.CopyTexture(inputUpload, 1, 0, input.nameID, 1, 0);
+                using (var execution = session.ForwardPack4Outputs(
+                    commandBuffer,
+                    new Dictionary<string, ComputeTexture>(StringComparer.Ordinal) { ["x"] = input },
+                    new Dictionary<string, AexisGraphSession.BufferShape>(StringComparer.Ordinal)
+                    {
+                        ["x"] = new AexisGraphSession.BufferShape(4, 2, 2, 2, 4)
+                    },
+                    new[] { "y" }))
+                {
+                    commandBuffer.CopyTexture(execution.GetTexture("y").nameID, 0, 0, outputReadback, 0, 0);
+                    commandBuffer.CopyTexture(execution.GetTexture("y").nameID, 1, 0, outputReadback, 1, 0);
+                }
+                session.ReturnTempArray(commandBuffer, input); input = null;
+                Graphics.ExecuteCommandBuffer(commandBuffer);
+
+                Assert.That(session.LastTextureExecutionPlan.strictEligible, Is.True, session.LastTextureExecutionPlan.summary);
+                Assert.That(session.LastTextureExecutionPlan.nodes.Single(candidate => candidate.layer == "relu").executionPath,
+                    Does.Contain("command-buffer-pack4:relu"));
+                Assert.That(session.LastCommandBufferRtArena.unplannedTextureAllocations, Is.Zero);
+                Assert.That(session.LastCommandBufferRtArena.allPlannedResourcesBound, Is.True);
+                Assert.That(session.LastCommandBufferRtArena.allBoundResourcesReleased, Is.True);
+                Assert.That(ReadPack4Slice(outputReadback, 0), Is.EqualTo(new[]
+                {
+                    0f, 2f, 0f, 4f, 5f, 0f, 7f, 0f, 0f, 10f, 11f, 0f, 13f, 14f, 0f, 16f
+                }).Within(1e-6f));
+                Assert.That(ReadPack4Slice(outputReadback, 1), Is.EqualTo(new[]
+                {
+                    17f, 0f, 19f, 0f, 0f, 22f, 0f, 24f, 25f, 0f, 27f, 28f, 0f, 30f, 31f, 0f
+                }).Within(1e-6f));
+            }
+            finally
+            {
+                if (input != null) session.ReturnTempArray(commandBuffer, input);
+                UnityEngine.Object.DestroyImmediate(inputUpload);
+                UnityEngine.Object.DestroyImmediate(outputReadback);
+            }
+        }
+
+        [Test]
+        public void OnnxLowering_BoundedHighRankArenaRejectsAxisAwareConvolution()
+        {
+            var model = new OnnxModel();
+            model.graph.inputs.Add(Value("x", TensorDataType.Float32, 1, 2, 2, 2, 2, 2));
+            model.graph.initializers["weight"] = Tensor("weight", TensorDataType.Float32, 2, 2, 1, 1);
+            model.graph.nodes.Add(Node("conv", "Conv", new[] { "x", "weight" }, new[] { "y" }));
+
+            var result = AexisOnnxGraphLowering.Lower(model, new AexisOnnxGraphLoweringOptions
+            {
+                enableBoundedHighRankArenaLowering = true
+            });
+
+            Assert.That(result.IsEligible, Is.False, DescribeLowering(result));
+            Assert.That(result.diagnostics, Has.Some.Matches<AexisOnnxLoweringDiagnostic>(diagnostic =>
+                diagnostic.code == "unsupported-bounded-high-rank-profile" && diagnostic.blocking));
+        }
+
+        [Test]
         public void OnnxLowering_NormalizesStaticConvIntoNcnnTextureContract()
         {
             var model = new OnnxModel();
@@ -120,6 +224,135 @@ namespace Aexis.Tests.Editor
 
             Assert.That(result.IsEligible, Is.False, DescribeLowering(result));
             Assert.That(result.diagnostics, Has.Some.Matches<AexisOnnxLoweringDiagnostic>(diagnostic => diagnostic.code == "unsupported-operator" && diagnostic.blocking));
+        }
+
+        [Test]
+        public void OnnxLowering_BoundedIfInlinesTheProvenBranchIntoThePack4Graph()
+        {
+            var model = new OnnxModel { opset = 13 };
+            model.graph.inputs.Add(Value("x", TensorDataType.Float32, 1));
+            model.graph.outputs.Add(Value("y", TensorDataType.Float32, 1));
+            model.graph.initializers["condition"] = IntTensor("condition", new[] { 1 });
+
+            var thenBranch = new OnnxGraph { name = "then" };
+            thenBranch.nodes.Add(Node("then_identity", "Identity", new[] { "x" }, new[] { "then_y" }));
+            thenBranch.outputs.Add(Value("then_y", TensorDataType.Float32, 1));
+            var elseBranch = new OnnxGraph { name = "else" };
+            elseBranch.nodes.Add(Node("else_identity", "Identity", new[] { "x" }, new[] { "else_y" }));
+            elseBranch.outputs.Add(Value("else_y", TensorDataType.Float32, 1));
+
+            var control = Node("if", "If", new[] { "condition" }, new[] { "y" });
+            control.attributes["then_branch"] = new OnnxAttribute { type = 5, graph = thenBranch };
+            control.attributes["else_branch"] = new OnnxAttribute { type = 5, graph = elseBranch };
+            model.graph.nodes.Add(control);
+
+            var result = AexisOnnxGraphLowering.Lower(model, new AexisOnnxGraphLoweringOptions { enableBoundedControlFlowLowering = true });
+
+            Assert.That(result.IsEligible, Is.True, DescribeLowering(result));
+            Assert.That(result.graph.layers.Any(layer => layer.typeName == "If"), Is.False);
+            Assert.That(result.graph.layers.Any(layer => layer.topNames.Contains("y")), Is.True);
+        }
+
+        [Test]
+        public void OnnxLowering_BoundedLoopUnrollsFixedTripCountWithoutRuntimeControlFlow()
+        {
+            var model = new OnnxModel { opset = 13 };
+            // Exercise the actual LinearMat binary-exact CommandBuffer kernel.
+            // Scalar x scalar is deliberately not claimed as a GPU profile;
+            // the scalar kernel is a broadcast kernel rather than an exact
+            // two-input operator.
+            model.graph.inputs.Add(Value("x", TensorDataType.Float32, 1, 1));
+            model.graph.outputs.Add(Value("y", TensorDataType.Float32, 1, 1));
+            model.graph.initializers["trip"] = Int64Tensor("trip", new long[] { 2 });
+            model.graph.initializers["condition"] = IntTensor("condition", new[] { 1 });
+
+            var body = new OnnxGraph { name = "body" };
+            body.inputs.Add(Value("iteration", TensorDataType.Int32));
+            body.inputs.Add(Value("continue_in", TensorDataType.Int32));
+            body.inputs.Add(Value("carry", TensorDataType.Float32, 1, 1));
+            body.initializers["body_continue"] = IntTensor("body_continue", new[] { 1 });
+            body.initializers["one"] = FloatTensor("one", new[] { 1f }, 1, 1);
+            body.nodes.Add(Node("increment", "Add", new[] { "carry", "one" }, new[] { "carry_out" }));
+            body.outputs.Add(Value("body_continue", TensorDataType.Int32));
+            body.outputs.Add(Value("carry_out", TensorDataType.Float32, 1, 1));
+
+            var loop = Node("loop", "Loop", new[] { "trip", "condition", "x" }, new[] { "y" });
+            loop.attributes["body"] = new OnnxAttribute { type = 5, graph = body };
+            model.graph.nodes.Add(loop);
+
+            var result = AexisOnnxGraphLowering.Lower(model, new AexisOnnxGraphLoweringOptions
+            {
+                enableBoundedControlFlowLowering = true,
+                maximumStaticLoopIterations = 2
+            });
+
+            Assert.That(result.IsEligible, Is.True, DescribeLowering(result));
+            Assert.That(result.graph.layers.Any(layer => layer.typeName == "Loop"), Is.False);
+            Assert.That(result.graph.layers.Count(layer => layer.typeName == "BinaryOp"), Is.EqualTo(2));
+            Assert.That(Find(result, "y").shape, Is.EqualTo(new long[] { 1, 1 }));
+
+            var compiled = AexisOnnxGraphCompiler.Compile(result);
+            using var ops = new AexisOps();
+            using var session = new AexisGraphSession(ops) { TensorTextureFormat = RenderTextureFormat.ARGBFloat };
+            compiled.LoadInto(session);
+            var report = session.AnalyzeLoadedModelPreflight(StrictTextureRequest(new[] { LinearTexture("x", 2, 1, 1, 1, 1) }));
+            Assert.That(report.strictEligible, Is.True, DescribeReport(report));
+            Assert.That(report.nodes.All(candidate => candidate.strictEligible), Is.True, DescribeReport(report));
+        }
+
+        [Test]
+        public void OnnxLowering_BoundedScanUnrollsStaticAxisZeroIntoSliceAndConcat()
+        {
+            var model = new OnnxModel { opset = 13 };
+            model.graph.inputs.Add(Value("state", TensorDataType.Float32, 1, 1));
+            model.graph.inputs.Add(Value("values", TensorDataType.Float32, 2, 1));
+            model.graph.outputs.Add(Value("final_state", TensorDataType.Float32, 1, 1));
+            model.graph.outputs.Add(Value("scanned", TensorDataType.Float32, 2, 1));
+
+            var body = new OnnxGraph { name = "scan_body" };
+            body.inputs.Add(Value("state_in", TensorDataType.Float32, 1, 1));
+            body.inputs.Add(Value("value_in", TensorDataType.Float32, 1, 1));
+            body.nodes.Add(Node("add", "Add", new[] { "state_in", "value_in" }, new[] { "state_out" }));
+            body.nodes.Add(Node("expose", "Identity", new[] { "state_out" }, new[] { "scan_out" }));
+            body.outputs.Add(Value("state_out", TensorDataType.Float32, 1, 1));
+            body.outputs.Add(Value("scan_out", TensorDataType.Float32, 1, 1));
+
+            var scan = Node("scan", "Scan", new[] { "state", "values" }, new[] { "final_state", "scanned" });
+            scan.attributes["body"] = new OnnxAttribute { type = 5, graph = body };
+            scan.attributes["num_scan_inputs"] = Int(1);
+            model.graph.nodes.Add(scan);
+
+            var result = AexisOnnxGraphLowering.Lower(model, new AexisOnnxGraphLoweringOptions
+            {
+                enableBoundedControlFlowLowering = true,
+                maximumStaticScanSteps = 2
+            });
+
+            Assert.That(result.IsEligible, Is.True, DescribeLowering(result));
+            Assert.That(result.graph.layers.Any(layer => layer.typeName == "Scan"), Is.False);
+            Assert.That(result.graph.layers.Count(layer => layer.typeName == "Crop"), Is.EqualTo(2));
+            Assert.That(result.graph.layers.Any(layer => layer.typeName == "Concat" && layer.topNames.Contains("scanned")), Is.True);
+        }
+
+        [Test]
+        public void OnnxLowering_BoundedSequenceAndOptionalBecomeTextureNativeViews()
+        {
+            var model = new OnnxModel { opset = 13 };
+            model.graph.inputs.Add(Value("a", TensorDataType.Float32, 1, 2));
+            model.graph.inputs.Add(Value("b", TensorDataType.Float32, 1, 2));
+            model.graph.outputs.Add(Value("element", TensorDataType.Float32, 1, 2));
+            model.graph.initializers["index"] = IntTensor("index", new[] { 1 });
+            model.graph.nodes.Add(Node("construct", "SequenceConstruct", new[] { "a", "b" }, new[] { "sequence" }));
+            model.graph.nodes.Add(Node("at", "SequenceAt", new[] { "sequence", "index" }, new[] { "selected" }));
+            model.graph.nodes.Add(Node("optional", "Optional", new[] { "selected" }, new[] { "wrapped" }));
+            model.graph.nodes.Add(Node("get", "OptionalGetElement", new[] { "wrapped" }, new[] { "element" }));
+
+            var result = AexisOnnxGraphLowering.Lower(model, new AexisOnnxGraphLoweringOptions { enableBoundedControlFlowLowering = true });
+
+            Assert.That(result.IsEligible, Is.True, DescribeLowering(result));
+            Assert.That(result.graph.layers.Any(layer => layer.typeName == "SequenceConstruct" || layer.typeName == "SequenceAt" || layer.typeName == "Optional"), Is.False);
+            Assert.That(result.graph.layers.Any(layer => layer.typeName == "Concat" && layer.topNames.Contains("sequence")), Is.True);
+            Assert.That(Find(result, "element").shape, Is.EqualTo(new long[] { 1, 2 }));
         }
 
         [Test]
@@ -521,6 +754,229 @@ namespace Aexis.Tests.Editor
         }
 
         [Test]
+        public void OnnxLowering_SeedsRandomLikeForTheCanonicalPack4CommandBufferProfile()
+        {
+            var model = new OnnxModel { opset = 18 };
+            model.graph.inputs.Add(Value("x", TensorDataType.Float32, 1, 5, 2, 3));
+            model.graph.outputs.Add(Value("y", TensorDataType.Float32, 1, 5, 2, 3));
+            var random = Node("seeded_random", "RandomUniformLike", new[] { "x" }, new[] { "y" });
+            random.attributes["seed"] = FloatAttribute(37f);
+            random.attributes["low"] = FloatAttribute(-2f);
+            random.attributes["high"] = FloatAttribute(3f);
+            model.graph.nodes.Add(random);
+
+            var result = AexisOnnxGraphLowering.Lower(model);
+            var layer = result.graph.layers.Single(candidate => candidate.name == "seeded_random");
+            var report = AnalyzeLoadedLayer(layer, StrictTextureRequest(new[] { Texture("x", 3, 3, 2, 1, 5) }));
+
+            Assert.That(result.IsEligible, Is.True, DescribeLowering(result));
+            Assert.That(layer.typeName, Is.EqualTo("RandomLike"));
+            Assert.That(layer.GetString("aexis.random.operator"), Is.EqualTo("RandomUniformLike"));
+            Assert.That(layer.GetInt(0), Is.EqualTo(37));
+            Assert.That(layer.GetFloat(1), Is.EqualTo(-2f));
+            Assert.That(layer.GetFloat(2), Is.EqualTo(3f));
+            Assert.That(Find(result, "y").runtimeShape, Is.EqualTo(new long[] { 5, 2, 3 }));
+            Assert.That(report.strictEligible, Is.True, DescribeReport(report));
+            Assert.That(report.texturePlan.nodes.Single(node => node.layer == "seeded_random").executionPath,
+                Is.EqualTo("command-buffer-pack4:deterministic-rng"));
+        }
+
+        [Test]
+        public void OnnxLowering_RejectsRandomLikeWithoutAnExactExplicitSeed()
+        {
+            var model = new OnnxModel { opset = 18 };
+            model.graph.inputs.Add(Value("x", TensorDataType.Float32, 1, 4, 2, 2));
+            model.graph.outputs.Add(Value("y", TensorDataType.Float32, 1, 4, 2, 2));
+            var random = Node("unseeded_random", "RandomNormalLike", new[] { "x" }, new[] { "y" });
+            random.attributes["seed"] = FloatAttribute(1.5f);
+            model.graph.nodes.Add(random);
+
+            var result = AexisOnnxGraphLowering.Lower(model);
+
+            Assert.That(result.IsEligible, Is.False, DescribeLowering(result));
+            Assert.That(result.diagnostics, Has.Some.Matches<AexisOnnxLoweringDiagnostic>(diagnostic =>
+                diagnostic.code == "missing-or-invalid-deterministic-random-seed" && diagnostic.blocking));
+        }
+
+        [Test]
+        public void OnnxLowering_MapsStaticRandomUniformToTheZeroInputPack4ArenaProfile()
+        {
+            var model = new OnnxModel { opset = 18 };
+            model.graph.outputs.Add(Value("y", TensorDataType.Float32, 1, 3, 2, 2));
+            var random = Node("static_random", "RandomUniform", Array.Empty<string>(), new[] { "y" });
+            random.attributes["seed"] = FloatAttribute(73f);
+            random.attributes["low"] = FloatAttribute(-2f);
+            random.attributes["high"] = FloatAttribute(3f);
+            random.attributes["shape"] = Ints(1, 3, 2, 2);
+            model.graph.nodes.Add(random);
+
+            var result = AexisOnnxGraphLowering.Lower(model);
+            var layer = result.graph.layers.Single(candidate => candidate.name == "static_random");
+            var report = AnalyzeLoadedLayer(layer, StrictTextureRequest(Array.Empty<AexisTexturePlanTensorDescriptor>()));
+
+            Assert.That(result.IsEligible, Is.True, DescribeLowering(result));
+            Assert.That(layer.typeName, Is.EqualTo("RandomLike"));
+            Assert.That(layer.bottomNames, Is.Empty);
+            Assert.That(layer.GetString("aexis.random.operator"), Is.EqualTo("RandomUniform"));
+            Assert.That(layer.GetInt(0), Is.EqualTo(73));
+            Assert.That(layer.GetInt(10), Is.EqualTo(3));
+            Assert.That(layer.GetInt(11), Is.EqualTo(2));
+            Assert.That(layer.GetInt(12), Is.EqualTo(2));
+            Assert.That(layer.GetInt(13), Is.EqualTo(1));
+            Assert.That(layer.GetInt(14), Is.EqualTo(3));
+            Assert.That(Find(result, "y").runtimeShape, Is.EqualTo(new long[] { 3, 2, 2 }));
+            Assert.That(report.strictEligible, Is.True, DescribeReport(report));
+            Assert.That(report.texturePlan.nodes.Single(node => node.layer == "static_random").executionPath,
+                Is.EqualTo("command-buffer-pack4:deterministic-static-rng"));
+        }
+
+        [Test]
+        public void OnnxLowering_MapsSeededMultinomialToTheBoundedPack4Int32Profile()
+        {
+            var model = new OnnxModel { opset = 18 };
+            model.graph.inputs.Add(Value("logits", TensorDataType.Float32, 2, 5));
+            model.graph.outputs.Add(Value("samples", TensorDataType.Int32, 2, 5));
+            var multinomial = Node("sample", "Multinomial", new[] { "logits" }, new[] { "samples" });
+            multinomial.attributes["sample_size"] = Int(5);
+            multinomial.attributes["seed"] = FloatAttribute(1234567f);
+            multinomial.attributes["dtype"] = Int(6);
+            model.graph.nodes.Add(multinomial);
+
+            var result = AexisOnnxGraphLowering.Lower(model);
+            var layer = result.graph.layers.Single(candidate => candidate.name == "sample");
+            var report = AnalyzeLoadedLayer(layer, StrictTextureRequest(new[] { Texture("logits", 3, 1, 2, 1, 5) }));
+
+            Assert.That(result.IsEligible, Is.True, DescribeLowering(result));
+            Assert.That(layer.typeName, Is.EqualTo("Multinomial"));
+            Assert.That(layer.GetInt(0), Is.EqualTo(5));
+            Assert.That(layer.GetInt(1), Is.EqualTo(1234567));
+            Assert.That(Find(result, "samples").dataType, Is.EqualTo(TensorDataType.Int32));
+            Assert.That(Find(result, "samples").shape, Is.EqualTo(new long[] { 2, 5 }));
+            Assert.That(report.strictEligible, Is.True, DescribeReport(report));
+            var node = report.texturePlan.nodes.Single(candidate => candidate.layer == "sample");
+            Assert.That(node.executionPath, Is.EqualTo("command-buffer-pack4:bounded-multinomial"));
+            Assert.That(node.outputs[0].logicalDtype, Is.EqualTo("Int32"));
+        }
+
+        [Test]
+        public void OnnxLowering_CompilesForwardRnnIntoTheBoundedPack4ImmutableWeightProfile()
+        {
+            var model = new OnnxModel { opset = 18 };
+            model.graph.inputs.Add(Value("x", TensorDataType.Float32, 3, 1, 1));
+            model.graph.outputs.Add(Value("y", TensorDataType.Float32, 3, 1, 1));
+            model.graph.initializers["w"] = FloatTensor("w", new[] { 0.5f }, 1, 1, 1);
+            model.graph.initializers["r"] = FloatTensor("r", new[] { 0.25f }, 1, 1, 1);
+            model.graph.initializers["b"] = FloatTensor("b", new[] { 0.1f, 0.2f }, 1, 2);
+            var recurrent = Node("forward_rnn", "RNN", new[] { "x", "w", "r", "b" }, new[] { "y" });
+            recurrent.attributes["hidden_size"] = Int(1);
+            model.graph.nodes.Add(recurrent);
+
+            var lowering = AexisOnnxGraphLowering.Lower(model);
+            Assert.That(lowering.IsEligible, Is.True, DescribeLowering(lowering));
+            var layer = lowering.graph.layers.Single(candidate => candidate.name == "forward_rnn");
+            var compiled = AexisOnnxGraphCompiler.Compile(lowering);
+            using var ops = new AexisOps();
+            using var session = new AexisGraphSession(ops) { TensorTextureFormat = RenderTextureFormat.ARGBFloat };
+            compiled.LoadInto(session);
+            var report = session.AnalyzeLoadedModelPreflight(StrictTextureRequest(new[] { Texture("x", 3, 3, 1, 1, 1) }));
+
+            Assert.That(layer.typeName, Is.EqualTo("RNN"));
+            Assert.That(layer.bottomNames, Is.EqualTo(new[] { "x" }));
+            Assert.That(layer.GetInt(0), Is.EqualTo(1));
+            Assert.That(layer.GetInt(1), Is.EqualTo(1));
+            Assert.That(layer.GetString("onnx.w"), Is.EqualTo("w"));
+            Assert.That(layer.GetString("onnx.r"), Is.EqualTo("r"));
+            Assert.That(compiled.immutableWeights, Is.EqualTo(new[] { 0.5f, 0.25f, 0.3f }).Within(1e-7f));
+            Assert.That(Find(lowering, "y").shape, Is.EqualTo(new long[] { 3, 1, 1 }));
+            Assert.That(report.strictEligible, Is.True, DescribeReport(report));
+            Assert.That(report.texturePlan.nodes.Single(node => node.layer == "forward_rnn").executionPath,
+                Is.EqualTo("command-buffer-pack4:bounded-rnn-fp32"));
+        }
+
+        [TestCase("GRU", 3)]
+        [TestCase("LSTM", 4)]
+        public void OnnxLowering_CompilesForwardGatedRecurrentProfilesIntoImmutablePack4Weights(string operatorName, int gates)
+        {
+            var model = new OnnxModel { opset = 18 };
+            model.graph.inputs.Add(Value("x", TensorDataType.Float32, 2, 1, 1));
+            model.graph.outputs.Add(Value("y", TensorDataType.Float32, 2, 1, 1));
+            model.graph.initializers["w"] = FloatTensor("w", Enumerable.Repeat(0.25f, gates).ToArray(), 1, gates, 1);
+            model.graph.initializers["r"] = FloatTensor("r", Enumerable.Repeat(0.125f, gates).ToArray(), 1, gates, 1);
+            var bias = new float[2 * gates];
+            for (var index = 0; index < bias.Length; index++) bias[index] = index + 1;
+            model.graph.initializers["b"] = FloatTensor("b", bias, 1, 2 * gates);
+            var recurrent = Node("forward_" + operatorName.ToLowerInvariant(), operatorName, new[] { "x", "w", "r", "b" }, new[] { "y" });
+            recurrent.attributes["hidden_size"] = Int(1);
+            model.graph.nodes.Add(recurrent);
+
+            var lowering = AexisOnnxGraphLowering.Lower(model);
+            Assert.That(lowering.IsEligible, Is.True, DescribeLowering(lowering));
+            var compiled = AexisOnnxGraphCompiler.Compile(lowering);
+            using var ops = new AexisOps();
+            using var session = new AexisGraphSession(ops) { TensorTextureFormat = RenderTextureFormat.ARGBFloat };
+            compiled.LoadInto(session);
+            var report = session.AnalyzeLoadedModelPreflight(StrictTextureRequest(new[] { Texture("x", 3, 2, 1, 1, 1) }));
+
+            Assert.That(compiled.immutableWeights.Length, Is.EqualTo(3 * gates));
+            Assert.That(compiled.immutableWeights.Skip(2 * gates).ToArray(),
+                Is.EqualTo(Enumerable.Range(0, gates).Select(index => (float)(2 * index + gates + 2)).ToArray()).Within(1e-7f));
+            Assert.That(report.strictEligible, Is.True, DescribeReport(report));
+            Assert.That(report.texturePlan.nodes.Single(node => node.layer == "forward_" + operatorName.ToLowerInvariant()).executionPath,
+                Is.EqualTo("command-buffer-pack4:bounded-" + operatorName.ToLowerInvariant() + "-fp32"));
+        }
+
+        [Test]
+        public void OnnxLowering_BoundedNmsSynthesizesPaddedIndicesAndGpuCountOutput()
+        {
+            var model = new OnnxModel();
+            model.graph.inputs.Add(Value("boxes", TensorDataType.Float32, 1, 3, 4));
+            model.graph.inputs.Add(Value("scores", TensorDataType.Float32, 1, 2, 3));
+            model.graph.initializers.Add("max_output", Int64Tensor("max_output", new long[] { 2 }, 1));
+            model.graph.initializers.Add("iou", FloatTensor("iou", new[] { 0.5f }, 1));
+            model.graph.initializers.Add("score", FloatTensor("score", new[] { 0.2f }, 1));
+            model.graph.nodes.Add(Node("nms", "NonMaxSuppression",
+                new[] { "boxes", "scores", "max_output", "iou", "score" }, new[] { "selected_indices" }));
+
+            var result = AexisOnnxGraphLowering.Lower(model, new AexisOnnxGraphLoweringOptions
+            {
+                enableBoundedNonMaxSuppressionLowering = true,
+                outputCapacities = { ["nms"] = 4 }
+            });
+
+            Assert.That(result.IsEligible, Is.True, DescribeLowering(result));
+            var layer = result.graph.layers.Single(candidate => candidate.name == "nms");
+            Assert.That(layer.typeName, Is.EqualTo("Nms"));
+            Assert.That(layer.bottomNames, Is.EqualTo(new[] { "boxes", "scores" }));
+            Assert.That(layer.topNames, Is.EqualTo(new[] { "selected_indices", "selected_indices.aexis_count" }));
+            Assert.That(layer.GetInt(0), Is.EqualTo(4));
+            Assert.That(layer.GetInt(1), Is.EqualTo(2));
+            Assert.That(Find(result, "selected_indices").shape, Is.EqualTo(new long[] { 4, 3 }));
+            Assert.That(Find(result, "selected_indices.aexis_count").shape, Is.EqualTo(new long[] { 1 }));
+        }
+
+        [Test]
+        public void OnnxLowering_BoundedNmsRejectsConsumerWithoutGpuCountContract()
+        {
+            var model = new OnnxModel();
+            model.graph.inputs.Add(Value("boxes", TensorDataType.Float32, 1, 3, 4));
+            model.graph.inputs.Add(Value("scores", TensorDataType.Float32, 1, 2, 3));
+            model.graph.initializers.Add("max_output", Int64Tensor("max_output", new long[] { 2 }, 1));
+            model.graph.nodes.Add(Node("nms", "NonMaxSuppression",
+                new[] { "boxes", "scores", "max_output" }, new[] { "selected_indices" }));
+            model.graph.nodes.Add(Node("consumer", "Identity", new[] { "selected_indices" }, new[] { "output" }));
+
+            var result = AexisOnnxGraphLowering.Lower(model, new AexisOnnxGraphLoweringOptions
+            {
+                enableBoundedNonMaxSuppressionLowering = true,
+                outputCapacities = { ["nms"] = 4 }
+            });
+
+            Assert.That(result.IsEligible, Is.False, DescribeLowering(result));
+            Assert.That(result.diagnostics, Has.Some.Matches<AexisOnnxLoweringDiagnostic>(diagnostic =>
+                diagnostic.code == "bounded-nms-consumer-requires-count" && diagnostic.blocking));
+        }
+
+        [Test]
         public void OnnxLowering_BoundedNonZeroRejectsCapacityBelowStaticMaximum()
         {
             var model = new OnnxModel();
@@ -595,23 +1051,51 @@ namespace Aexis.Tests.Editor
         }
 
         [Test]
-        public void NcnnReferenceLayersOutsideP0_AreExplicitCapabilitiesAndStrictlyReject()
+        public void NcnnReferenceP2Profiles_AreExplicitCapabilities()
         {
-            var unsupported = new[]
+            var recurrent = new[]
             {
-                "ConvolutionDepthWise3D", "DeconvolutionDepthWise1D", "DeconvolutionDepthWise3D",
-                "DeformableConv2D", "DetectionOutput", "Diag", "Einsum", "Flip", "Fold", "GLU", "GridSample",
-                "GRU", "InverseSpectrogram", "LSTM", "Proposal", "PSROIPooling", "RNN", "ROIAlign", "ROIPooling",
-                "Spectrogram", "SPP", "StatisticsPooling", "YoloDetectionOutput", "Yolov3DetectionOutput"
+                "GRU", "LSTM", "RNN"
             };
             var document = AexisOperatorCapabilities.CreateDocument();
-            foreach (var operatorName in unsupported)
+            foreach (var operatorName in recurrent)
             {
                 Assert.That(AexisOperatorCapabilities.TryGet(operatorName, out var capability), Is.True, operatorName);
-                Assert.That(capability.status, Is.EqualTo(AexisOperatorCapabilityStatus.Unsupported), operatorName);
-                Assert.That(capability.importSupported, Is.False, operatorName);
-                Assert.That(capability.commandBuffer, Is.False, operatorName);
+                Assert.That(capability.status, Is.EqualTo(AexisOperatorCapabilityStatus.SupportedByProfile), operatorName);
+                Assert.That(capability.importSupported, Is.True, operatorName);
+                Assert.That(capability.commandBuffer, Is.True, operatorName);
+                Assert.That(capability.ranks, Is.EqualTo(new[] { 3 }), operatorName);
                 Assert.That(document.operators.Any(entry => entry.operatorName == operatorName), Is.True, operatorName);
+            }
+
+            Assert.That(AexisOperatorCapabilities.TryGet("StatisticsPooling", out var statisticsPooling), Is.True);
+            Assert.That(statisticsPooling.status, Is.EqualTo(AexisOperatorCapabilityStatus.SupportedByProfile));
+            Assert.That(statisticsPooling.importSupported, Is.True);
+            Assert.That(statisticsPooling.commandBuffer, Is.True);
+            Assert.That(document.operators.Any(entry => entry.operatorName == "StatisticsPooling"), Is.True);
+
+            Assert.That(AexisOperatorCapabilities.TryGet("ConvolutionDepthWise3D", out var depthWise3D), Is.True);
+            Assert.That(depthWise3D.status, Is.EqualTo(AexisOperatorCapabilityStatus.SupportedByProfile));
+            Assert.That(depthWise3D.importSupported, Is.True);
+            Assert.That(depthWise3D.commandBuffer, Is.True);
+            Assert.That(AexisOperatorCapabilities.TryGet("DeconvolutionDepthWise3D", out var deconvDepthWise3D), Is.True);
+            Assert.That(deconvDepthWise3D.status, Is.EqualTo(AexisOperatorCapabilityStatus.SupportedByProfile));
+            Assert.That(deconvDepthWise3D.importSupported, Is.True);
+            Assert.That(deconvDepthWise3D.commandBuffer, Is.True);
+            Assert.That(AexisOperatorCapabilities.TryGet("DeconvolutionDepthWise1D", out var deconvDepthWise1D), Is.True);
+            Assert.That(deconvDepthWise1D.status, Is.EqualTo(AexisOperatorCapabilityStatus.SupportedByProfile));
+            Assert.That(deconvDepthWise1D.importSupported, Is.True);
+            Assert.That(deconvDepthWise1D.commandBuffer, Is.True);
+
+            foreach (var operatorName in new[]
+            {
+                "DeformableConv2D", "DetectionOutput", "Diag", "Einsum", "Flip", "Fold", "GLU", "GridSample",
+                "Proposal", "PSROIPooling", "ROIAlign", "ROIPooling", "SPP", "YoloDetectionOutput", "Yolov3DetectionOutput"
+            })
+            {
+                Assert.That(AexisOperatorCapabilities.TryGet(operatorName, out var capability), Is.True, operatorName);
+                Assert.That(capability.status, Is.EqualTo(AexisOperatorCapabilityStatus.SupportedByProfile), operatorName);
+                Assert.That(capability.commandBuffer, Is.True, operatorName);
             }
 
             var model = NcnnParamParser.Parse(
@@ -639,31 +1123,40 @@ namespace Aexis.Tests.Editor
             var node = report.nodes.Single(entry => entry.operatorName == "GridSample");
             Assert.That(report.missingNodes, Is.Empty);
             Assert.That(node.strictEligible, Is.False);
-            Assert.That(node.status, Is.EqualTo(AexisOperatorCapabilityStatus.Unsupported));
-            Assert.That(node.issues, Has.Some.Contains("GridSample"));
+            Assert.That(node.status, Is.EqualTo(AexisOperatorCapabilityStatus.SupportedByProfile));
+            Assert.That(node.issues, Has.Some.Contains("sample_type"));
 
             var plannerModel = new AexisGraphModel();
             plannerModel.layers.Add(new AexisGraphModel.Layer
             {
                 name = "unsupported_grid",
                 typeName = "GridSample",
-                bottomNames = new[] { "data" },
-                topNames = new[] { "output" }
+                bottoms = 2,
+                tops = 1,
+                bottomNames = new[] { "data", "grid" },
+                topNames = new[] { "output" },
+                // The node now reaches the loaded P1 verifier. Its invalid sample
+                // mode must be rejected there, rather than failing I/O discovery.
+                intParams = { [0] = "4", [1] = "1", [2] = "0" }
             });
             var relaxedPlan = AexisTextureExecutionPlanner.Analyze(plannerModel, new AexisTextureExecutionPlanRequest
             {
                 strict = true,
-                debugOracleRelaxed = true,
+                debugOracleRelaxed = false,
                 targetBackend = AexisOperatorCapabilityBackend.CommandBuffer,
                 targetDtype = "FP32",
                 targetLayout = AexisTexturePlanLayout.Packed4,
-                inputs = new[] { LinearTexture("data", 1, 4, 1, 1, 1) }
+                inputs = new[]
+                {
+                    Texture("data", 3, 8, 8, 1, 4),
+                    Texture("grid", 3, 4, 4, 1, 4)
+                }
             });
 
             Assert.That(relaxedPlan.dispatchAllowed, Is.False);
             Assert.That(relaxedPlan.nodes.Single().acceptedByDebugOracle, Is.False);
             Assert.That(relaxedPlan.diagnostics, Has.Some.Matches<AexisTextureExecutionPlanDiagnostic>(diagnostic =>
-                diagnostic.code == "unsupported-operator" && diagnostic.blocking));
+                diagnostic.code == "command-buffer-pack4-profile-rejected" && diagnostic.blocking));
         }
 
         [Test]
@@ -1709,6 +2202,697 @@ namespace Aexis.Tests.Editor
         }
 
         [Test]
+        public void ConvolutionDepthWise3D_CommandBufferPack4CdhwMatchesTailChannelGolden()
+        {
+            RequireArgbFloatCompute();
+            var layer = new AexisGraphModel.Layer
+            {
+                name = "depthwise3d_pack4_golden",
+                typeName = "ConvolutionDepthWise3D",
+                type = AexisLayerTypes.ConvDw3D,
+                bottoms = 1,
+                tops = 1,
+                bottomNames = new[] { "data" },
+                topNames = new[] { "output" },
+                intParams =
+                {
+                    [0] = "5", [1] = "1", [11] = "1", [21] = "1",
+                    [2] = "1", [12] = "1", [22] = "1",
+                    [3] = "1", [13] = "1", [23] = "1",
+                    [4] = "0", [14] = "0", [15] = "0", [16] = "0", [17] = "0", [24] = "0",
+                    [5] = "1", [6] = "5", [7] = "5", [9] = "0"
+                }
+            };
+            var immutableWeights = new[]
+            {
+                2f, 3f, 4f, 5f, 6f,
+                0.5f, 1.5f, 2.5f, 3.5f, 4.5f
+            };
+            using var ops = new AexisOps();
+            using var session = new AexisGraphSession(ops)
+            {
+                TensorTextureFormat = RenderTextureFormat.ARGBFloat,
+                StrictTextureTargetDtype = "FP32"
+            };
+            using var reader = new AexisFloatArrayWeightReader(immutableWeights);
+            session.LoadModel(SerializeSingleLayer(layer), reader);
+            using var commandBuffer = new CommandBuffer { name = "AexisDepthWise3dPack4CdhwGolden" };
+            var inputUpload = CreatePack4Array(new[]
+            {
+                1f, 2f, 3f, 4f, 10f, 20f, 30f, 40f,
+                5f, 999f, 999f, 999f, 50f, 999f, 999f, 999f,
+                6f, 7f, 8f, 9f, 60f, 70f, 80f, 90f,
+                10f, 999f, 999f, 999f, 100f, 999f, 999f, 999f
+            }, 2, 1, 4);
+            var outputReadback = CreatePack4Target(2, 1, 4);
+            ComputeTexture input = null;
+            try
+            {
+                input = session.RentTempArray(commandBuffer, 2, 1, 4, RenderTextureFormat.ARGBFloat);
+                for (var slice = 0; slice < 4; slice++)
+                    commandBuffer.CopyTexture(inputUpload, slice, 0, input.nameID, slice, 0);
+                using (var result = session.ForwardPack4Outputs(
+                    commandBuffer,
+                    new Dictionary<string, ComputeTexture>(StringComparer.Ordinal) { ["data"] = input },
+                    new Dictionary<string, AexisGraphSession.BufferShape>(StringComparer.Ordinal)
+                    {
+                        ["data"] = new AexisGraphSession.BufferShape(4, 2, 1, 2, 5)
+                    },
+                    new[] { "output" }))
+                {
+                    Assert.That(result.GetLogicalShape("output"), Is.EqualTo(new AexisGraphSession.BufferShape(4, 2, 1, 2, 5)));
+                    for (var slice = 0; slice < 4; slice++)
+                        commandBuffer.CopyTexture(result.GetTexture("output").nameID, slice, 0, outputReadback, slice, 0);
+                }
+                session.ReturnTempArray(commandBuffer, input); input = null;
+                Graphics.ExecuteCommandBuffer(commandBuffer);
+
+                Assert.That(session.LastTextureExecutionPlan.strictEligible, Is.True, session.LastTextureExecutionPlan.summary);
+                Assert.That(session.LastTextureExecutionPlan.nodes.Last().executionPath,
+                    Is.EqualTo("command-buffer-pack4:depthwise-convolution3d-cdhw"));
+                Assert.That(ReadPack4Slice(outputReadback, 0), Is.EqualTo(new[]
+                {
+                    2.5f, 7.5f, 14.5f, 23.5f, 20.5f, 61.5f, 122.5f, 203.5f
+                }).Within(1e-5f));
+                Assert.That(ReadPack4Slice(outputReadback, 1), Is.EqualTo(new[]
+                {
+                    34.5f, 0f, 0f, 0f, 304.5f, 0f, 0f, 0f
+                }).Within(1e-5f));
+                Assert.That(ReadPack4Slice(outputReadback, 2), Is.EqualTo(new[]
+                {
+                    12.5f, 22.5f, 34.5f, 48.5f, 120.5f, 211.5f, 322.5f, 453.5f
+                }).Within(1e-5f));
+                Assert.That(ReadPack4Slice(outputReadback, 3), Is.EqualTo(new[]
+                {
+                    64.5f, 0f, 0f, 0f, 604.5f, 0f, 0f, 0f
+                }).Within(1e-5f));
+            }
+            finally
+            {
+                if (input != null) session.ReturnTempArray(commandBuffer, input);
+                UnityEngine.Object.DestroyImmediate(inputUpload);
+                UnityEngine.Object.DestroyImmediate(outputReadback);
+            }
+        }
+
+        [Test]
+        public void DeconvolutionDepthWise3D_CommandBufferPack4CdhwMatchesStrideAndTailGolden()
+        {
+            RequireArgbFloatCompute();
+            var layer = new AexisGraphModel.Layer
+            {
+                name = "deconvolution_depthwise3d_pack4_golden",
+                typeName = "DeconvolutionDepthWise3D",
+                type = AexisLayerTypes.DeconvDw3D,
+                bottoms = 1,
+                tops = 1,
+                bottomNames = new[] { "data" },
+                topNames = new[] { "output" },
+                intParams =
+                {
+                    [0] = "5", [1] = "1", [11] = "1", [21] = "1",
+                    [2] = "1", [12] = "1", [22] = "1",
+                    [3] = "2", [13] = "1", [23] = "2",
+                    [4] = "0", [14] = "0", [15] = "0", [16] = "0", [17] = "0", [24] = "0",
+                    [18] = "0", [19] = "0", [20] = "0",
+                    [5] = "1", [6] = "5", [7] = "5", [9] = "0"
+                }
+            };
+            var immutableWeights = new[]
+            {
+                2f, 3f, 4f, 5f, 6f,
+                0.5f, 1.5f, 2.5f, 3.5f, 4.5f
+            };
+            using var ops = new AexisOps();
+            using var session = new AexisGraphSession(ops)
+            {
+                TensorTextureFormat = RenderTextureFormat.ARGBFloat,
+                StrictTextureTargetDtype = "FP32"
+            };
+            using var reader = new AexisFloatArrayWeightReader(immutableWeights);
+            session.LoadModel(SerializeSingleLayer(layer), reader);
+            using var commandBuffer = new CommandBuffer { name = "AexisDeconvDepthWise3dPack4CdhwGolden" };
+            var inputUpload = CreatePack4Array(new[]
+            {
+                1f, 2f, 3f, 4f, 10f, 20f, 30f, 40f,
+                5f, 0f, 0f, 0f, 50f, 0f, 0f, 0f,
+                6f, 7f, 8f, 9f, 60f, 70f, 80f, 90f,
+                10f, 0f, 0f, 0f, 100f, 0f, 0f, 0f
+            }, 2, 1, 4);
+            var outputReadback = CreatePack4Target(3, 1, 6);
+            ComputeTexture input = null;
+            try
+            {
+                input = session.RentTempArray(commandBuffer, 2, 1, 4, RenderTextureFormat.ARGBFloat);
+                for (var slice = 0; slice < 4; slice++)
+                    commandBuffer.CopyTexture(inputUpload, slice, 0, input.nameID, slice, 0);
+                using (var result = session.ForwardPack4Outputs(
+                    commandBuffer,
+                    new Dictionary<string, ComputeTexture>(StringComparer.Ordinal) { ["data"] = input },
+                    new Dictionary<string, AexisGraphSession.BufferShape>(StringComparer.Ordinal)
+                    {
+                        ["data"] = new AexisGraphSession.BufferShape(4, 2, 1, 2, 5)
+                    },
+                    new[] { "output" }))
+                {
+                    Assert.That(result.GetLogicalShape("output"), Is.EqualTo(new AexisGraphSession.BufferShape(4, 3, 1, 3, 5)));
+                    for (var slice = 0; slice < 6; slice++)
+                        commandBuffer.CopyTexture(result.GetTexture("output").nameID, slice, 0, outputReadback, slice, 0);
+                }
+                session.ReturnTempArray(commandBuffer, input); input = null;
+                Graphics.ExecuteCommandBuffer(commandBuffer);
+
+                Assert.That(session.LastTextureExecutionPlan.strictEligible, Is.True, session.LastTextureExecutionPlan.summary);
+                Assert.That(session.LastTextureExecutionPlan.nodes.Last().executionPath,
+                    Is.EqualTo("command-buffer-pack4:depthwise-deconvolution3d-cdhw"));
+                Assert.That(ReadPack4Slice(outputReadback, 0), Is.EqualTo(new[]
+                {
+                    2.5f, 7.5f, 14.5f, 23.5f, 0.5f, 1.5f, 2.5f, 3.5f, 20.5f, 61.5f, 122.5f, 203.5f
+                }).Within(1e-5f));
+                Assert.That(ReadPack4Slice(outputReadback, 1), Is.EqualTo(new[]
+                {
+                    34.5f, 0f, 0f, 0f, 4.5f, 0f, 0f, 0f, 304.5f, 0f, 0f, 0f
+                }).Within(1e-5f));
+                Assert.That(ReadPack4Slice(outputReadback, 2), Is.EqualTo(new[]
+                {
+                    0.5f, 1.5f, 2.5f, 3.5f, 0.5f, 1.5f, 2.5f, 3.5f, 0.5f, 1.5f, 2.5f, 3.5f
+                }).Within(1e-5f));
+                Assert.That(ReadPack4Slice(outputReadback, 3), Is.EqualTo(new[]
+                {
+                    4.5f, 0f, 0f, 0f, 4.5f, 0f, 0f, 0f, 4.5f, 0f, 0f, 0f
+                }).Within(1e-5f));
+                Assert.That(ReadPack4Slice(outputReadback, 4), Is.EqualTo(new[]
+                {
+                    12.5f, 22.5f, 34.5f, 48.5f, 0.5f, 1.5f, 2.5f, 3.5f, 120.5f, 211.5f, 322.5f, 453.5f
+                }).Within(1e-5f));
+                Assert.That(ReadPack4Slice(outputReadback, 5), Is.EqualTo(new[]
+                {
+                    64.5f, 0f, 0f, 0f, 4.5f, 0f, 0f, 0f, 604.5f, 0f, 0f, 0f
+                }).Within(1e-5f));
+            }
+            finally
+            {
+                if (input != null) session.ReturnTempArray(commandBuffer, input);
+                UnityEngine.Object.DestroyImmediate(inputUpload);
+                UnityEngine.Object.DestroyImmediate(outputReadback);
+            }
+        }
+
+        [Test]
+        public void DeconvolutionDepthWise1D_CommandBufferPack4MatchesStrideAndTailGolden()
+        {
+            if (!SystemInfo.supportsComputeShaders || !SystemInfo.SupportsRenderTextureFormat(RenderTextureFormat.RFloat))
+                Assert.Ignore("The graphics device does not support the RFloat LinearMat profile required by this golden.");
+            var layer = new AexisGraphModel.Layer
+            {
+                name = "deconvolution_depthwise1d_pack4_golden",
+                typeName = "DeconvolutionDepthWise1D",
+                type = AexisLayerTypes.DeconvDw1D,
+                bottoms = 1,
+                tops = 1,
+                bottomNames = new[] { "data" },
+                topNames = new[] { "output" },
+                intParams =
+                {
+                    [0] = "5", [1] = "1", [2] = "1", [3] = "2", [4] = "0", [15] = "0",
+                    [5] = "1", [6] = "5", [7] = "5", [9] = "0", [18] = "0", [20] = "0", [28] = "0"
+                }
+            };
+            using var ops = new AexisOps();
+            using var session = new AexisGraphSession(ops)
+            {
+                TensorTextureFormat = RenderTextureFormat.ARGBFloat,
+                StrictTextureTargetDtype = "FP32"
+            };
+            using var reader = new AexisFloatArrayWeightReader(new[]
+            {
+                2f, 3f, 4f, 5f, 6f,
+                0.5f, 1.5f, 2.5f, 3.5f, 4.5f
+            });
+            session.LoadModel(SerializeSingleLayer(layer), reader);
+            using var upload = new ComputeBuffer(10, sizeof(float));
+            upload.SetData(new[] { 1f, 10f, 2f, 20f, 3f, 30f, 4f, 40f, 5f, 50f });
+            using var commandBuffer = new CommandBuffer { name = "AexisDeconvDepthWise1dPack4Golden" };
+            var input = session.RentTempMat(commandBuffer, 2, 5, RenderTextureFormat.RFloat);
+            var outputReadback = CreateRFloatTarget(3, 5);
+            try
+            {
+                ops.FillLinearMatFromBuffer(commandBuffer, upload, 2, 5, input);
+                using (var result = session.ForwardPack4Outputs(
+                    commandBuffer,
+                    new Dictionary<string, ComputeTexture>(StringComparer.Ordinal) { ["data"] = input },
+                    new Dictionary<string, AexisGraphSession.BufferShape>(StringComparer.Ordinal)
+                    {
+                        ["data"] = new AexisGraphSession.BufferShape(2, 2, 5, 1, 1)
+                    },
+                    new[] { "output" }))
+                {
+                    Assert.That(result.GetLogicalShape("output"), Is.EqualTo(new AexisGraphSession.BufferShape(2, 3, 5, 1, 1)));
+                    commandBuffer.CopyTexture(result.GetTexture("output").nameID, new RenderTargetIdentifier(outputReadback));
+                }
+                session.ReturnTempArray(commandBuffer, input);
+                Graphics.ExecuteCommandBuffer(commandBuffer);
+
+                Assert.That(session.LastTextureExecutionPlan.strictEligible, Is.True, session.LastTextureExecutionPlan.summary);
+                Assert.That(session.LastTextureExecutionPlan.nodes.Last().executionPath,
+                    Is.EqualTo("command-buffer-pack4:depthwise-deconvolution1d"));
+                Assert.That(session.LastTextureExecutionPlan.nodes.Last().scratch, Has.Length.EqualTo(2));
+                Assert.That(session.LastCommandBufferRtArena.unplannedTextureAllocations, Is.EqualTo(0));
+                Assert.That(session.LastCommandBufferRtArena.allPlannedResourcesBound, Is.True);
+                Assert.That(session.LastCommandBufferRtArena.allBoundResourcesReleased, Is.True);
+                Assert.That(ReadRFloat(outputReadback, 15), Is.EqualTo(new[]
+                {
+                    2.5f, 0.5f, 20.5f,
+                    7.5f, 1.5f, 61.5f,
+                    14.5f, 2.5f, 122.5f,
+                    23.5f, 3.5f, 203.5f,
+                    34.5f, 4.5f, 304.5f
+                }).Within(1e-5f));
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(outputReadback);
+            }
+        }
+
+        [Test]
+        public void StatisticsPooling_CommandBufferLinearMatMatchesMeanAndPopulationStdGolden()
+        {
+            if (!SystemInfo.supportsComputeShaders || !SystemInfo.SupportsRenderTextureFormat(RenderTextureFormat.RFloat))
+                Assert.Ignore("The graphics device does not support the RFloat LinearMat profile required by this golden.");
+
+            var layer = new AexisGraphModel.Layer
+            {
+                name = "statistics_pooling_pack4_golden",
+                typeName = "StatisticsPooling",
+                type = AexisLayerTypes.StatsPooling,
+                bottoms = 1,
+                tops = 1,
+                bottomNames = new[] { "data" },
+                topNames = new[] { "output" },
+                intParams = { [0] = "1", [1] = "0" }
+            };
+            using var ops = new AexisOps();
+            using var session = new AexisGraphSession(ops)
+            {
+                TensorTextureFormat = RenderTextureFormat.ARGBFloat,
+                StrictTextureTargetDtype = "FP32"
+            };
+            using var reader = new AexisFloatArrayWeightReader(Array.Empty<float>());
+            session.LoadModel(SerializeSingleLayer(layer), reader);
+            using var upload = new ComputeBuffer(8, sizeof(float));
+            upload.SetData(new[] { 1f, 3f, 5f, 7f, 2f, 4f, 6f, 8f });
+            using var commandBuffer = new CommandBuffer { name = "AexisStatisticsPoolingPack4Golden" };
+            var input = session.RentTempMat(commandBuffer, 4, 2, RenderTextureFormat.RFloat);
+            var outputReadback = CreateRFloatTarget(1, 4);
+            try
+            {
+                ops.FillLinearMatFromBuffer(commandBuffer, upload, 4, 2, input);
+                using (var result = session.ForwardPack4Outputs(
+                    commandBuffer,
+                    new Dictionary<string, ComputeTexture>(StringComparer.Ordinal) { ["data"] = input },
+                    new Dictionary<string, AexisGraphSession.BufferShape>(StringComparer.Ordinal)
+                    {
+                        ["data"] = new AexisGraphSession.BufferShape(2, 4, 2, 1, 1)
+                    },
+                    new[] { "output" }))
+                {
+                    Assert.That(result.GetLogicalShape("output"), Is.EqualTo(new AexisGraphSession.BufferShape(2, 1, 4, 1, 1)));
+                    commandBuffer.CopyTexture(result.GetTexture("output").nameID, new RenderTargetIdentifier(outputReadback));
+                }
+                session.ReturnTempArray(commandBuffer, input);
+                input = null;
+                Graphics.ExecuteCommandBuffer(commandBuffer);
+
+                Assert.That(session.LastTextureExecutionPlan.strictEligible, Is.True, session.LastTextureExecutionPlan.summary);
+                Assert.That(session.LastTextureExecutionPlan.nodes.Last().executionPath,
+                    Is.EqualTo("command-buffer-pack4:statistics-pooling-linearmat"));
+                Assert.That(session.LastCommandBufferRtArena.unplannedTextureAllocations, Is.EqualTo(0));
+                Assert.That(session.LastCommandBufferRtArena.allPlannedResourcesBound, Is.True);
+                Assert.That(session.LastCommandBufferRtArena.allBoundResourcesReleased, Is.True);
+                Assert.That(ReadRFloat(outputReadback, 4), Is.EqualTo(new[]
+                {
+                    4f, 5f, Mathf.Sqrt(5f), Mathf.Sqrt(5f)
+                }).Within(1e-5f));
+            }
+            finally
+            {
+                if (input != null)
+                    session.ReturnTempArray(commandBuffer, input);
+                UnityEngine.Object.DestroyImmediate(outputReadback);
+            }
+        }
+
+        [Test]
+        public void SpectrogramAndInverseSpectrogram_CommandBufferLinearMatRoundTripsGolden()
+        {
+            if (!SystemInfo.supportsComputeShaders || !SystemInfo.SupportsRenderTextureFormat(RenderTextureFormat.RFloat))
+                Assert.Ignore("The graphics device does not support the RFloat LinearMat profile required by this golden.");
+
+            var spectrogram = new AexisGraphModel.Layer
+            {
+                name = "spectrogram_pack4_golden",
+                typeName = "Spectrogram",
+                type = AexisLayerTypes.Spectrogram,
+                bottoms = 1,
+                tops = 1,
+                bottomNames = new[] { "data" },
+                topNames = new[] { "spectrum" },
+                intParams = { [0] = "4", [1] = "2", [2] = "1" }
+            };
+            var inverse = new AexisGraphModel.Layer
+            {
+                name = "inverse_spectrogram_pack4_golden",
+                typeName = "InverseSpectrogram",
+                type = AexisLayerTypes.InvSpectrogram,
+                bottoms = 1,
+                tops = 1,
+                bottomNames = new[] { "spectrum" },
+                topNames = new[] { "output" },
+                intParams = { [0] = "4", [1] = "2", [2] = "1" }
+            };
+            using var ops = new AexisOps();
+            using var session = new AexisGraphSession(ops)
+            {
+                TensorTextureFormat = RenderTextureFormat.ARGBFloat,
+                StrictTextureTargetDtype = "FP32"
+            };
+            using var reader = new AexisFloatArrayWeightReader(Array.Empty<float>());
+            session.LoadModel(SerializeLayers(spectrogram, inverse), reader);
+            using var upload = new ComputeBuffer(6, sizeof(float));
+            upload.SetData(new[] { 1f, 2f, 3f, 4f, 5f, 6f });
+            using var commandBuffer = new CommandBuffer { name = "AexisSpectrogramPack4Golden" };
+            var input = session.RentTempMat(commandBuffer, 6, 1, RenderTextureFormat.RFloat);
+            var outputReadback = CreateRFloatTarget(6, 1);
+            try
+            {
+                ops.FillLinearMatFromBuffer(commandBuffer, upload, 6, 1, input);
+                using (var result = session.ForwardPack4Outputs(
+                    commandBuffer,
+                    new Dictionary<string, ComputeTexture>(StringComparer.Ordinal) { ["data"] = input },
+                    new Dictionary<string, AexisGraphSession.BufferShape>(StringComparer.Ordinal)
+                    {
+                        ["data"] = new AexisGraphSession.BufferShape(2, 6, 1, 1, 1)
+                    },
+                    new[] { "output" }))
+                {
+                    Assert.That(result.GetLogicalShape("output"), Is.EqualTo(new AexisGraphSession.BufferShape(2, 6, 1, 1, 1)));
+                    commandBuffer.CopyTexture(result.GetTexture("output").nameID, new RenderTargetIdentifier(outputReadback));
+                }
+                session.ReturnTempArray(commandBuffer, input);
+                input = null;
+                Graphics.ExecuteCommandBuffer(commandBuffer);
+
+                Assert.That(session.LastTextureExecutionPlan.strictEligible, Is.True, session.LastTextureExecutionPlan.summary);
+                Assert.That(session.LastTextureExecutionPlan.nodes.Last().executionPath,
+                    Is.EqualTo("command-buffer-pack4:inverse-spectrogram-linearmat"));
+                Assert.That(session.LastCommandBufferRtArena.unplannedTextureAllocations, Is.EqualTo(0));
+                Assert.That(session.LastCommandBufferRtArena.allPlannedResourcesBound, Is.True);
+                Assert.That(session.LastCommandBufferRtArena.allBoundResourcesReleased, Is.True);
+                Assert.That(ReadRFloat(outputReadback, 6), Is.EqualTo(new[] { 1f, 2f, 3f, 4f, 5f, 6f }).Within(2e-4f));
+            }
+            finally
+            {
+                if (input != null)
+                    session.ReturnTempArray(commandBuffer, input);
+                UnityEngine.Object.DestroyImmediate(outputReadback);
+            }
+        }
+
+        [Test]
+        public void Rnn_CommandBufferPack4MatchesBoundedForwardGolden()
+        {
+            ExecuteBoundedRecurrentGolden(
+                "RNN", AexisLayerTypes.RNN, AexisRecurrentKind.Rnn, inputSize: 2, hiddenSize: 2,
+                immutableWeights: new[]
+                {
+                    0.5f, -0.25f, 0.1f, 0.4f,
+                    0.2f, 0f, 0f, 0.3f,
+                    0.1f, -0.2f
+                },
+                inputByChannel: new[] { 1f, 2f, 3f, 4f, 5f, 6f });
+        }
+
+        [Test]
+        public void Gru_CommandBufferPack4MatchesBoundedForwardGolden()
+        {
+            ExecuteBoundedRecurrentGolden(
+                "GRU", AexisLayerTypes.GRU, AexisRecurrentKind.Gru, inputSize: 1, hiddenSize: 1,
+                immutableWeights: new[]
+                {
+                    0f, 0f, 1f,
+                    0f, 0f, 0f,
+                    0f, 0f, 0f
+                },
+                inputByChannel: new[] { 1f, 2f });
+        }
+
+        [Test]
+        public void Lstm_CommandBufferPack4MatchesBoundedForwardGolden()
+        {
+            ExecuteBoundedRecurrentGolden(
+                "LSTM", AexisLayerTypes.LSTM, AexisRecurrentKind.Lstm, inputSize: 1, hiddenSize: 1,
+                immutableWeights: new[]
+                {
+                    0f, 0f, 0f, 1f,
+                    0f, 0f, 0f, 0f,
+                    0f, 0f, 0f, 0f
+                },
+                inputByChannel: new[] { 1f, 2f });
+        }
+
+        [Test]
+        public void DeterministicRandomUniformLike_CommandBufferPack4IsSeedReproducibleAndZerosTailLanes()
+        {
+            RequireArgbFloatCompute();
+            var layer = new AexisGraphModel.Layer
+            {
+                name = "seeded_uniform",
+                typeName = "RandomUniformLike",
+                type = AexisLayerTypes.RandomLike,
+                bottoms = 1,
+                tops = 1,
+                bottomNames = new[] { "data" },
+                topNames = new[] { "output" },
+                intParams = { [0] = "20260728", [1] = "-2", [2] = "3" }
+            };
+            using var ops = new AexisOps();
+            using var session = new AexisGraphSession(ops)
+            {
+                TensorTextureFormat = RenderTextureFormat.ARGBFloat,
+                StrictTextureTargetDtype = "FP32"
+            };
+            using var reader = new AexisFloatArrayWeightReader(Array.Empty<float>());
+            session.LoadModel(SerializeSingleLayer(layer), reader);
+            var inputUpload = CreatePack4Array(new[]
+            {
+                0f, 0f, 0f, 0f, 0f, 99f, 99f, 99f,
+                0f, 0f, 0f, 0f, 0f, 99f, 99f, 99f
+            }, 2, 1, 2);
+            var firstReadback = CreatePack4Target(2, 1, 2);
+            var secondReadback = CreatePack4Target(2, 1, 2);
+            try
+            {
+                ExecuteSeededRandomPass(session, inputUpload, firstReadback, "AexisSeededRandomFirst");
+                ExecuteSeededRandomPass(session, inputUpload, secondReadback, "AexisSeededRandomSecond");
+
+                Assert.That(session.LastTextureExecutionPlan.strictEligible, Is.True, session.LastTextureExecutionPlan.summary);
+                Assert.That(session.LastTextureExecutionPlan.nodes.Last().executionPath, Is.EqualTo("command-buffer-pack4:deterministic-rng"));
+                for (var slice = 0; slice < 2; slice++)
+                {
+                    var first = ReadPack4Slice(firstReadback, slice);
+                    var second = ReadPack4Slice(secondReadback, slice);
+                    Assert.That(second, Is.EqualTo(first).Within(0f));
+                    for (var index = 0; index < first.Length; index += 4)
+                    {
+                        Assert.That(first[index], Is.GreaterThanOrEqualTo(-2f).And.LessThan(3f));
+                        Assert.That(first[index + 1], Is.GreaterThanOrEqualTo(-2f).And.LessThan(3f));
+                        Assert.That(first[index + 2], Is.GreaterThanOrEqualTo(-2f).And.LessThan(3f));
+                        Assert.That(first[index + 3], Is.GreaterThanOrEqualTo(-2f).And.LessThan(3f));
+                    }
+                }
+                var tail = ReadPack4Slice(firstReadback, 1);
+                Assert.That(new[] { tail[1], tail[2], tail[3], tail[5], tail[6], tail[7] },
+                    Is.EqualTo(new[] { 0f, 0f, 0f, 0f, 0f, 0f }).Within(0f));
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(inputUpload);
+                UnityEngine.Object.DestroyImmediate(firstReadback);
+                UnityEngine.Object.DestroyImmediate(secondReadback);
+            }
+        }
+
+        [Test]
+        public void RandomUniform_CommandBufferStaticPack4ProfileUsesSeededGpuOutput()
+        {
+            RequireArgbFloatCompute();
+            var layer = new AexisGraphModel.Layer
+            {
+                name = "static_random_uniform_pack4_golden",
+                typeName = "RandomUniform",
+                type = AexisLayerTypes.RandomLike,
+                bottoms = 0,
+                tops = 1,
+                bottomNames = Array.Empty<string>(),
+                topNames = new[] { "output" },
+                intParams = { [0] = "1234", [1] = "-2", [2] = "3", [10] = "3", [11] = "2", [12] = "2", [13] = "1", [14] = "3" }
+            };
+            using var ops = new AexisOps();
+            using var session = new AexisGraphSession(ops)
+            {
+                TensorTextureFormat = RenderTextureFormat.ARGBFloat,
+                StrictTextureTargetDtype = "FP32"
+            };
+            using var reader = new AexisFloatArrayWeightReader(Array.Empty<float>());
+            session.LoadModel(SerializeSingleLayer(layer), reader);
+            using var commandBuffer = new CommandBuffer { name = "AexisStaticRandomUniformPack4Golden" };
+            var outputReadback = CreatePack4Target(2, 2, 1);
+            try
+            {
+                using (var result = session.ForwardPack4Outputs(
+                    commandBuffer,
+                    new Dictionary<string, ComputeTexture>(StringComparer.Ordinal),
+                    new Dictionary<string, AexisGraphSession.BufferShape>(StringComparer.Ordinal),
+                    new[] { "output" }))
+                {
+                    Assert.That(result.GetLogicalShape("output"), Is.EqualTo(new AexisGraphSession.BufferShape(3, 2, 2, 1, 3)));
+                    commandBuffer.CopyTexture(result.GetTexture("output").nameID, 0, 0, outputReadback, 0, 0);
+                }
+                Graphics.ExecuteCommandBuffer(commandBuffer);
+
+                Assert.That(session.LastTextureExecutionPlan.strictEligible, Is.True, session.LastTextureExecutionPlan.summary);
+                Assert.That(session.LastTextureExecutionPlan.nodes.Last().executionPath, Is.EqualTo("command-buffer-pack4:deterministic-static-rng"));
+                Assert.That(session.LastCommandBufferRtArena.unplannedTextureAllocations, Is.EqualTo(0));
+                Assert.That(session.LastCommandBufferRtArena.allPlannedResourcesBound, Is.True);
+                Assert.That(session.LastCommandBufferRtArena.allBoundResourcesReleased, Is.True);
+                var values = ReadPack4Slice(outputReadback, 0);
+                for (var pixel = 0; pixel < 4; pixel++)
+                {
+                    Assert.That(values[pixel * 4], Is.InRange(-2f, 3f));
+                    Assert.That(values[pixel * 4 + 1], Is.InRange(-2f, 3f));
+                    Assert.That(values[pixel * 4 + 2], Is.InRange(-2f, 3f));
+                    Assert.That(values[pixel * 4 + 3], Is.EqualTo(0f).Within(1e-7f));
+                }
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(outputReadback);
+            }
+        }
+
+        [Test]
+        public void Multinomial_CommandBufferPack4UsesSeededGpuIndicesAndZerosTailLanes()
+        {
+            RequireArgbFloatCompute();
+            var layer = new AexisGraphModel.Layer
+            {
+                name = "bounded_multinomial_pack4_golden",
+                typeName = "Multinomial",
+                type = AexisLayerTypes.Multinomial,
+                bottoms = 1,
+                tops = 1,
+                bottomNames = new[] { "logits" },
+                topNames = new[] { "samples" },
+                intParams = { [0] = "5", [1] = "20260728" }
+            };
+            using var ops = new AexisOps();
+            using var session = new AexisGraphSession(ops)
+            {
+                TensorTextureFormat = RenderTextureFormat.ARGBFloat,
+                StrictTextureTargetDtype = "FP32"
+            };
+            using var reader = new AexisFloatArrayWeightReader(Array.Empty<float>());
+            session.LoadModel(SerializeSingleLayer(layer), reader);
+            var upload = CreatePack4Array(new[]
+            {
+                -100f, -100f, 100f, -100f,
+                100f, -100f, -100f, -100f,
+                -100f, 99f, 99f, 99f,
+                -100f, 99f, 99f, 99f
+            }, 1, 2, 2);
+            var readback = CreatePack4Target(1, 2, 2);
+            ComputeTexture input = null;
+            try
+            {
+                using var commandBuffer = new CommandBuffer { name = "AexisMultinomialPack4Golden" };
+                input = session.RentTempArray(commandBuffer, 1, 2, 2, RenderTextureFormat.ARGBFloat);
+                commandBuffer.CopyTexture(upload, 0, 0, input.nameID, 0, 0);
+                commandBuffer.CopyTexture(upload, 1, 0, input.nameID, 1, 0);
+                using (var result = session.ForwardPack4Outputs(
+                    commandBuffer,
+                    new Dictionary<string, ComputeTexture>(StringComparer.Ordinal) { ["logits"] = input },
+                    new Dictionary<string, AexisGraphSession.BufferShape>(StringComparer.Ordinal)
+                    {
+                        ["logits"] = new AexisGraphSession.BufferShape(3, 1, 2, 1, 5)
+                    },
+                    new[] { "samples" }))
+                {
+                    Assert.That(result.GetLogicalShape("samples"), Is.EqualTo(new AexisGraphSession.BufferShape(3, 1, 2, 1, 5)));
+                    commandBuffer.CopyTexture(result.GetTexture("samples").nameID, 0, 0, readback, 0, 0);
+                    commandBuffer.CopyTexture(result.GetTexture("samples").nameID, 1, 0, readback, 1, 0);
+                }
+                session.ReturnTempArray(commandBuffer, input);
+                input = null;
+                Graphics.ExecuteCommandBuffer(commandBuffer);
+
+                Assert.That(session.LastTextureExecutionPlan.strictEligible, Is.True, session.LastTextureExecutionPlan.summary);
+                Assert.That(session.LastTextureExecutionPlan.nodes.Last().executionPath, Is.EqualTo("command-buffer-pack4:bounded-multinomial"));
+                Assert.That(session.LastTextureExecutionPlan.nodes.Last().outputs[0].logicalDtype, Is.EqualTo("Int32"));
+                Assert.That(session.LastCommandBufferRtArena.unplannedTextureAllocations, Is.EqualTo(0));
+                Assert.That(session.LastCommandBufferRtArena.allPlannedResourcesBound, Is.True);
+                Assert.That(session.LastCommandBufferRtArena.allBoundResourcesReleased, Is.True);
+                var firstPack = ReadPack4Slice(readback, 0);
+                var tailPack = ReadPack4Slice(readback, 1);
+                Assert.That(new[] { firstPack[0], firstPack[1], firstPack[2], firstPack[3], tailPack[0] }, Is.EqualTo(new[] { 2f, 2f, 2f, 2f, 2f }).Within(0f));
+                Assert.That(new[] { firstPack[4], firstPack[5], firstPack[6], firstPack[7], tailPack[4] }, Is.EqualTo(new[] { 0f, 0f, 0f, 0f, 0f }).Within(0f));
+                Assert.That(new[] { tailPack[1], tailPack[2], tailPack[3], tailPack[5], tailPack[6], tailPack[7] },
+                    Is.EqualTo(new[] { 0f, 0f, 0f, 0f, 0f, 0f }).Within(0f));
+            }
+            finally
+            {
+                if (input != null)
+                {
+                    using var cleanup = new CommandBuffer { name = "AexisMultinomialPack4Cleanup" };
+                    session.ReturnTempArray(cleanup, input);
+                    Graphics.ExecuteCommandBuffer(cleanup);
+                }
+                UnityEngine.Object.DestroyImmediate(upload);
+                UnityEngine.Object.DestroyImmediate(readback);
+            }
+        }
+
+        private static void ExecuteSeededRandomPass(AexisGraphSession session, RenderTexture inputUpload, RenderTexture readback, string commandName)
+        {
+            using var commandBuffer = new CommandBuffer { name = commandName };
+            var input = session.RentTempArray(commandBuffer, 2, 1, 2, RenderTextureFormat.ARGBFloat);
+            try
+            {
+                commandBuffer.CopyTexture(inputUpload, 0, 0, input.nameID, 0, 0);
+                commandBuffer.CopyTexture(inputUpload, 1, 0, input.nameID, 1, 0);
+                using (var result = session.ForwardPack4Outputs(
+                    commandBuffer,
+                    new Dictionary<string, ComputeTexture>(StringComparer.Ordinal) { ["data"] = input },
+                    new Dictionary<string, AexisGraphSession.BufferShape>(StringComparer.Ordinal)
+                    {
+                        ["data"] = new AexisGraphSession.BufferShape(3, 2, 1, 1, 5)
+                    },
+                    new[] { "output" }))
+                {
+                    commandBuffer.CopyTexture(result.GetTexture("output").nameID, 0, 0, readback, 0, 0);
+                    commandBuffer.CopyTexture(result.GetTexture("output").nameID, 1, 0, readback, 1, 0);
+                }
+                session.ReturnTempArray(commandBuffer, input);
+                input = null;
+                Graphics.ExecuteCommandBuffer(commandBuffer);
+            }
+            finally
+            {
+                if (input != null) session.ReturnTempArray(commandBuffer, input);
+            }
+        }
+
+        [Test]
         public void PaddingAndReorg_StrictProfilesRejectUnsafeDescriptorEdges()
         {
             var padding = SentisLayer("Padding", new[] { "data" }, new[] { "output" });
@@ -2101,6 +3285,144 @@ namespace Aexis.Tests.Editor
         }
 
         [Test]
+        public void NonMaxSuppression_CommandBufferUsesBoundedIndexAndGpuCountTextures()
+        {
+            if (!SystemInfo.supportsComputeShaders || !SystemInfo.SupportsRenderTextureFormat(RenderTextureFormat.RFloat))
+                Assert.Ignore("The graphics device does not support the RFloat texture profile required by this NMS golden.");
+
+            var layer = SentisLayer("Nms", new[] { "boxes", "scores" }, new[] { "indices", "count" });
+            layer.intParams[0] = "4";
+            layer.intParams[1] = "2";
+            layer.intParams[2] = "0";
+            layer.intParams[3] = "0.5";
+            layer.intParams[4] = "0.2";
+            layer.stringParams["capacity"] = "4";
+            layer.stringParams["max_output_boxes_per_class"] = "2";
+            layer.stringParams["center_point_box"] = "0";
+            using var ops = new AexisOps();
+            using var session = new AexisGraphSession(ops)
+            {
+                TensorTextureFormat = RenderTextureFormat.ARGBFloat,
+                StrictTextureTargetDtype = "FP32"
+            };
+            using var reader = new AexisFloatArrayWeightReader(Array.Empty<float>());
+            session.LoadModel(SerializeSingleLayer(layer), reader);
+            using var boxesUpload = new ComputeBuffer(12, sizeof(float));
+            using var scoresUpload = new ComputeBuffer(6, sizeof(float));
+            boxesUpload.SetData(new[]
+            {
+                0f, 0f, 2f, 2f,
+                0.2f, 0.2f, 2.2f, 2.2f,
+                3f, 3f, 5f, 5f
+            });
+            scoresUpload.SetData(new[] { 0.9f, 0.8f, 0.7f, 0.1f, 0.95f, 0.6f });
+            using var commandBuffer = new CommandBuffer { name = "AexisBoundedNmsPack4Golden" };
+            var boxes = session.RentTempMat(commandBuffer, 4, 3, RenderTextureFormat.RFloat);
+            var scores = session.RentTempMat(commandBuffer, 3, 2, RenderTextureFormat.RFloat);
+            var indicesReadback = CreateRFloatTarget(3, 4);
+            var countReadback = CreateRFloatTarget(1, 1);
+            try
+            {
+                ops.FillLinearMatFromBuffer(commandBuffer, boxesUpload, 4, 3, boxes);
+                ops.FillLinearMatFromBuffer(commandBuffer, scoresUpload, 3, 2, scores);
+                using (var result = session.ForwardPack4Outputs(
+                    commandBuffer,
+                    new Dictionary<string, ComputeTexture>(StringComparer.Ordinal) { ["boxes"] = boxes, ["scores"] = scores },
+                    new Dictionary<string, AexisGraphSession.BufferShape>(StringComparer.Ordinal)
+                    {
+                        ["boxes"] = new AexisGraphSession.BufferShape(2, 4, 3, 1, 1),
+                        ["scores"] = new AexisGraphSession.BufferShape(2, 3, 2, 1, 1)
+                    },
+                    new[] { "indices", "count" }))
+                {
+                    Assert.That(result.GetLogicalShape("indices"), Is.EqualTo(new AexisGraphSession.BufferShape(2, 3, 4, 1, 1)));
+                    Assert.That(result.GetLogicalShape("count"), Is.EqualTo(new AexisGraphSession.BufferShape(1, 1, 1, 1, 1)));
+                    commandBuffer.CopyTexture(new RenderTargetIdentifier(result.GetTexture("indices").nameID), new RenderTargetIdentifier(indicesReadback));
+                    commandBuffer.CopyTexture(new RenderTargetIdentifier(result.GetTexture("count").nameID), new RenderTargetIdentifier(countReadback));
+                }
+                session.ReturnTempArray(commandBuffer, boxes);
+                session.ReturnTempArray(commandBuffer, scores);
+                Graphics.ExecuteCommandBuffer(commandBuffer);
+
+                Assert.That(session.LastTextureExecutionPlan.strictEligible, Is.True, session.LastTextureExecutionPlan.summary);
+                var indices = ReadRFloat(indicesReadback, 12);
+                Assert.That(indices, Is.EqualTo(new[]
+                {
+                    0f, 0f, 0f,
+                    0f, 0f, 2f,
+                    0f, 1f, 1f,
+                    0f, 1f, 2f
+                }).Within(1e-6f), "actual=" + string.Join(",", indices));
+                Assert.That(ReadRFloat(countReadback, 1), Is.EqualTo(new[] { 4f }).Within(1e-6f));
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(indicesReadback);
+                UnityEngine.Object.DestroyImmediate(countReadback);
+            }
+        }
+
+        [Test]
+        public void BinaryOpScalar_Pack4LinearMatProfilePassesStrictPlanAndDispatchesOnGpu()
+        {
+            RequireArgbFloatCompute();
+            var layer = new AexisGraphModel.Layer
+            {
+                name = "pack4_linear_scalar",
+                typeName = "BinaryOp",
+                type = AexisLayerTypes.BinaryOp,
+                bottoms = 1,
+                tops = 1,
+                bottomNames = new[] { "input" },
+                topNames = new[] { "output" },
+                intParams = new Dictionary<int, string> { [0] = "2", [1] = "1", [2] = "0.5" }
+            };
+            var report = AnalyzeLoadedLayer(layer, StrictTextureRequest(new[]
+            {
+                new AexisTexturePlanTensorDescriptor
+                {
+                    blob = "input",
+                    logicalShape = new[] { 2, 8, 2, 1, 1 },
+                    storageShape = new[] { 3, 2, 2, 1, 4 },
+                    layout = AexisTexturePlanLayout.Packed4,
+                    dtype = "FP32",
+                    logicalDtype = "Float32",
+                    aliasGroup = "external:input",
+                    textureBacked = true
+                }
+            }));
+            Assert.That(report.strictEligible, Is.True, DescribeReport(report));
+            Assert.That(report.texturePlan.nodes.Last().executionPath, Is.EqualTo("command-buffer-pack4:binary-pack4-linear-scalar"));
+
+            using var ops = new AexisOps();
+            using var commandBuffer = new CommandBuffer { name = "AexisBinaryPack4LinearScalarGolden" };
+            var input = CreatePack4Array(new[]
+            {
+                2f, 4f, 6f, 8f,
+                10f, 12f, 14f, 16f,
+                18f, 20f, 22f, 24f,
+                26f, 28f, 30f, 32f
+            }, 2, 2, 1);
+            var output = CreatePack4Target(2, 2, 1);
+            try
+            {
+                // The golden validates the same Pack4 scalar kernel used by the command-buffer profile.
+                ops.BinaryOpScalarPack4(commandBuffer, input, 0.5f, 1, 2, output);
+                Graphics.ExecuteCommandBuffer(commandBuffer);
+                Assert.That(ReadPack4Slice(output, 0), Is.EqualTo(new[]
+                {
+                    1f, 2f, 3f, 4f, 5f, 6f, 7f, 8f,
+                    9f, 10f, 11f, 12f, 13f, 14f, 15f, 16f
+                }).Within(1e-6f));
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(input);
+                UnityEngine.Object.DestroyImmediate(output);
+            }
+        }
+
+        [Test]
         public void SliceAndMaxUnPooling_LoadedProfilesAdmitNativeMultiOutputAndWideIndexTextures()
         {
             var slice = SentisLayer("Slice", new[] { "data" }, new[] { "left", "right" });
@@ -2183,10 +3505,25 @@ namespace Aexis.Tests.Editor
             };
             var codeFormerRequest = StrictTextureRequest(new[] { codeFormerInput });
             codeFormerRequest.targetDtype = "FP16";
-            var codeFormerReport = AnalyzeLoadedLayer(
-                innerProduct,
-                codeFormerRequest,
-                new float[524288 + 1024]);
+            // This profile is only valid for an actual FP16 activation contract.
+            // Do not let a default FP32 test session claim the half Pack4-linear
+            // projection variant merely because the request says FP16.
+            using var codeFormerOps = new AexisOps();
+            using var codeFormerSession = new AexisGraphSession(codeFormerOps);
+            using var codeFormerReader = new AexisFloatArrayWeightReader(new float[524288 + 1024]);
+            codeFormerSession.ApplyModelManifest(new ModelManifest
+            {
+                modelId = "codeformer-pack4-linear-profile",
+                precision = new ModelPrecisionContract
+                {
+                    activationDataType = TensorDataType.Float16,
+                    weightDataType = TensorDataType.Float16,
+                    sensitiveOutputDataType = TensorDataType.Float16,
+                    requireStrictTexturePlan = true
+                }
+            });
+            codeFormerSession.LoadModel(SerializeSingleLayer(innerProduct), codeFormerReader);
+            var codeFormerReport = codeFormerSession.AnalyzeLoadedModelPreflight(codeFormerRequest);
             var codeFormerNode = codeFormerReport.texturePlan.nodes.Single(node => node.operatorName == "InnerProduct");
             Assert.That(codeFormerReport.strictEligible, Is.True, DescribeReport(codeFormerReport));
             Assert.That(codeFormerNode.executionPath,
@@ -2269,6 +3606,37 @@ namespace Aexis.Tests.Editor
             Assert.That(codeFormerReport.strictEligible, Is.True, DescribeReport(codeFormerReport));
             Assert.That(codeFormerReport.texturePlan.nodes.Single(node => node.operatorName == "BinaryOp").executionPath,
                 Is.EqualTo("command-buffer-linearmat:binary-exact"));
+
+            // Legacy MHA returns a scalar FP32 matrix in a one-slice array,
+            // while CodeFormer's projection residual is an RFloat LinearMat.
+            // This must resolve to the dedicated texture kernel and retain the
+            // LinearMat descriptor rather than materializing an activation buffer.
+            var legacyAttentionOutput = new AexisTexturePlanTensorDescriptor
+            {
+                blob = "attention",
+                logicalShape = new[] { 2, 16, 8, 1, 1 },
+                storageShape = new[] { 3, 16, 8, 1, 1 },
+                layout = AexisTexturePlanLayout.Packed4,
+                dtype = "FP32",
+                logicalDtype = "Float32",
+                aliasGroup = "external:attention",
+                textureBacked = true
+            };
+            var legacyResidualBinary = SentisLayer("BinaryOp", new[] { "projection", "attention" }, new[] { "output" });
+            legacyResidualBinary.intParams[0] = "0";
+            var legacyResidualReport = AnalyzeLoadedLayerWithDeclaredInputs(
+                legacyResidualBinary,
+                StrictTextureRequest(new[]
+                {
+                    LinearTexture("projection", 2, 16, 8, 1, 1),
+                    legacyAttentionOutput
+                }));
+            var legacyResidualNode = legacyResidualReport.texturePlan.nodes.Single(node => node.operatorName == "BinaryOp");
+            Assert.That(legacyResidualReport.strictEligible, Is.True, DescribeReport(legacyResidualReport));
+            Assert.That(legacyResidualNode.executionPath,
+                Is.EqualTo("command-buffer-linearmat:binary-scalar-array"));
+            Assert.That(legacyResidualNode.outputs[0].storageShape,
+                Is.EqualTo(new[] { 2, 16, 8, 1, 1 }));
         }
 
         // Direct Unity batch entry point used where the Unity Test Framework CLI
@@ -2343,6 +3711,16 @@ namespace Aexis.Tests.Editor
             groupNorm.intParams[3] = "1";
             var groupReport = AnalyzeLoadedLayer(groupNorm, request, 1f, 1f, 1f, 1f, 0f, 0f, 0f, 0f);
             Assert.That(groupReport.strictEligible, Is.True, DescribeReport(groupReport));
+            Assert.That(groupReport.texturePlan.nodes[0].scratch, Has.Length.EqualTo(2));
+            Assert.That(groupReport.texturePlan.nodes[0].scratch.All(scratch => scratch.storageShape.SequenceEqual(new[] { 3, 2, 1, 1, 4 })), Is.True);
+            var fp16Input = Texture("data", 3, 4, 4, 1, 4);
+            fp16Input.dtype = "FP16";
+            fp16Input.logicalDtype = "Float16";
+            var fp16Request = StrictTextureRequest(new[] { fp16Input });
+            fp16Request.targetDtype = "FP16";
+            var fp16GroupReport = AnalyzeLoadedLayer(groupNorm, fp16Request, 1f, 1f, 1f, 1f, 0f, 0f, 0f, 0f);
+            Assert.That(fp16GroupReport.strictEligible, Is.True, DescribeReport(fp16GroupReport));
+            Assert.That(fp16GroupReport.texturePlan.nodes[0].scratch.All(scratch => scratch.dtype == "FP32"), Is.True);
             groupNorm.intParams[1] = "3";
             Assert.That(AnalyzeLoadedLayer(groupNorm, request, 1f, 1f, 1f, 0f, 0f, 0f).strictEligible, Is.False);
 
@@ -2444,6 +3822,480 @@ namespace Aexis.Tests.Editor
             Assert.That(result.IsEligible, Is.True);
             Assert.That(Find(result, "result").shape, Is.EqualTo(new long[] { 3 }));
             Assert.That(result.graph.layers.Last().GetString("indices_in_range"), Is.EqualTo("1"));
+        }
+
+        [Test]
+        public void OnnxRoiAlign_LowersStaticMultiRoiToThePack4TextureProfile()
+        {
+            var model = new OnnxModel { opset = 16 };
+            model.graph.inputs.Add(Value("features", TensorDataType.Float32, 1, 3, 8, 8));
+            model.graph.inputs.Add(Value("rois", TensorDataType.Float32, 2, 4));
+            model.graph.initializers["batch_indices"] = IntTensor("batch_indices", new[] { 0, 0 }, 2);
+            var node = Node("roi_align", "RoiAlign", new[] { "features", "rois", "batch_indices" }, new[] { "pooled" });
+            node.attributes["mode"] = StringAttribute("avg");
+            node.attributes["coordinate_transformation_mode"] = StringAttribute("half_pixel");
+            node.attributes["output_height"] = Int(2);
+            node.attributes["output_width"] = Int(3);
+            node.attributes["sampling_ratio"] = Int(2);
+            node.attributes["spatial_scale"] = new OnnxAttribute { f = 0.5f };
+            model.graph.nodes.Add(node);
+            model.graph.outputs.Add(Value("pooled", TensorDataType.Float32, 2, 3, 2, 3));
+
+            var result = AexisOnnxGraphLowering.Lower(model);
+            var layer = result.graph.layers.Last();
+
+            Assert.That(result.IsEligible, Is.True, DescribeLowering(result));
+            Assert.That(layer.typeName, Is.EqualTo("ROIAlign"));
+            Assert.That(layer.bottomNames, Is.EqualTo(new[] { "features", "rois" }));
+            Assert.That(layer.GetInt(0), Is.EqualTo(3));
+            Assert.That(layer.GetInt(1), Is.EqualTo(2));
+            Assert.That(layer.GetInt(3), Is.EqualTo(2));
+            Assert.That(layer.GetInt(4), Is.EqualTo(1));
+            Assert.That(Find(result, "pooled").runtimeShape, Is.EqualTo(new long[] { 2, 3, 2, 3 }));
+        }
+
+        [Test]
+        public void RoiAlign_StaticMultiRoiProfilePassesTheLoadedPack4PlanVerifier()
+        {
+            var layer = new AexisGraphModel.Layer
+            {
+                name = "roi_align",
+                typeName = "ROIAlign",
+                type = AexisLayerTypes.ROIAlign,
+                bottoms = 2,
+                tops = 1,
+                bottomNames = new[] { "features", "rois" },
+                topNames = new[] { "pooled" },
+                intParams = new Dictionary<int, string>
+                {
+                    [0] = "3", [1] = "2", [2] = "1", [3] = "2", [4] = "1", [5] = "1"
+                }
+            };
+
+            var report = AnalyzeLoadedLayerWithDeclaredInputs(layer, StrictTextureRequest(new[]
+            {
+                Texture("features", 3, 8, 8, 1, 3),
+                LinearTexture("rois", 2, 4, 2, 1, 1)
+            }));
+            Assert.That(report.strictEligible, Is.True, DescribeReport(report));
+            Assert.That(report.texturePlan.nodes.Last().outputs[0].logicalShape, Is.EqualTo(new[] { 4, 3, 2, 2, 3 }));
+            Assert.That(report.texturePlan.nodes.Last().executionPath, Is.EqualTo("command-buffer-pack4:p1-roialign"));
+            Assert.That(AexisOperatorCapabilities.TryGet("ROIAlign", out var capability), Is.True);
+            Assert.That(capability.verifiedModels, Does.Contain("command-buffer-pack4-roialign-multi-roi-golden"));
+        }
+
+        [Test]
+        public void TextureExecutionPlan_ReportsPack4LivenessAndStaticRtArena()
+        {
+            var model = new AexisGraphModel();
+            model.layers.Add(SentisLayer("ReLU", new[] { "input" }, new[] { "middle" }));
+            model.layers.Add(SentisLayer("ReLU", new[] { "middle" }, new[] { "output" }));
+            var plan = AexisTextureExecutionPlanner.Analyze(model, new AexisTextureExecutionPlanRequest
+            {
+                strict = false,
+                debugOracleRelaxed = true,
+                targetBackend = AexisOperatorCapabilityBackend.CommandBuffer,
+                targetDtype = "FP32",
+                targetLayout = AexisTexturePlanLayout.Packed4,
+                inputs = new[] { Texture("input", 3, 4, 4, 1, 3) }
+            });
+
+            Assert.That(plan.dispatchAllowed, Is.True);
+            Assert.That(plan.memory, Is.Not.Null);
+            Assert.That(plan.memory.resources, Has.Length.EqualTo(3));
+            Assert.That(plan.memory.peakLiveBytes, Is.GreaterThan(0));
+            Assert.That(plan.memory.temporaryArenaBytes, Is.GreaterThan(0));
+            var middle = plan.memory.resources.Single(resource => resource.representativeBlob == "middle");
+            Assert.That(middle.temporary, Is.True);
+            Assert.That(middle.allocationSlot, Is.GreaterThanOrEqualTo(0));
+        }
+
+        [Test]
+        public void TextureExecutionPlan_TerminalDescriptorAliasRetainsItsSingleProducedRt()
+        {
+            var model = new AexisGraphModel();
+            model.layers.Add(SentisLayer("ReLU", new[] { "input" }, new[] { "middle" }));
+            // Identity Permute preserves the exact Pack4 logical-to-physical
+            // mapping, so this is a legitimate descriptor alias unlike Flatten.
+            model.layers.Add(SentisLayer("Permute", new[] { "middle" }, new[] { "output" }));
+            var plan = AexisTextureExecutionPlanner.Analyze(model, new AexisTextureExecutionPlanRequest
+            {
+                strict = false,
+                debugOracleRelaxed = true,
+                targetBackend = AexisOperatorCapabilityBackend.CommandBuffer,
+                targetDtype = "FP32",
+                targetLayout = AexisTexturePlanLayout.Packed4,
+                inputs = new[] { Texture("input", 3, 4, 4, 1, 3) }
+            });
+
+            Assert.That(plan.dispatchAllowed, Is.True);
+            Assert.That(plan.nodes.Last().usesDescriptorAlias, Is.True);
+            Assert.That(plan.memory.resources.Count(resource => resource.producedByGraph), Is.EqualTo(1));
+            var outputStorage = plan.memory.resources.Single(resource => resource.producedByGraph);
+            Assert.That(outputStorage.representativeBlob, Is.EqualTo("middle"));
+            Assert.That(outputStorage.persistent, Is.True);
+            Assert.That(outputStorage.temporary, Is.False);
+        }
+
+        [Test]
+        public void TextureExecutionPlan_ExplicitInputNodeRemainsCallerOwned()
+        {
+            var model = new AexisGraphModel();
+            model.layers.Add(SentisLayer("Input", Array.Empty<string>(), new[] { "data" }));
+            model.layers.Add(SentisLayer("ReLU", new[] { "data" }, new[] { "output" }));
+            var plan = AexisTextureExecutionPlanner.Analyze(model, new AexisTextureExecutionPlanRequest
+            {
+                strict = false,
+                debugOracleRelaxed = true,
+                targetBackend = AexisOperatorCapabilityBackend.CommandBuffer,
+                targetDtype = "FP32",
+                targetLayout = AexisTexturePlanLayout.Packed4,
+                inputs = new[] { Texture("data", 3, 4, 4, 1, 3) }
+            });
+
+            Assert.That(plan.dispatchAllowed, Is.True);
+            Assert.That(plan.nodes[0].usesDescriptorAlias, Is.True);
+            var inputStorage = plan.memory.resources.Single(resource => resource.representativeBlob == "data");
+            Assert.That(inputStorage.producedByGraph, Is.False);
+            Assert.That(inputStorage.externalInput, Is.True);
+            Assert.That(inputStorage.allocationSlot, Is.EqualTo(-1));
+            Assert.That(plan.memory.resources.Count(resource => resource.producedByGraph), Is.EqualTo(1));
+        }
+
+        [Test]
+        public void CommandBufferPack4_StaticRtArenaBindsAndReleasesCompiledIntermediateSlot()
+        {
+            RequireArgbFloatCompute();
+            const string model = "7767517\n"
+                + "2 3\n"
+                + "ReLU relu_0 1 1 data middle\n"
+                + "ReLU relu_1 1 1 middle output\n";
+            using var ops = new AexisOps();
+            using var session = new AexisGraphSession(ops)
+            {
+                TensorTextureFormat = RenderTextureFormat.ARGBFloat,
+                StrictTextureTargetDtype = "FP32"
+            };
+            using var reader = new AexisFloatArrayWeightReader(Array.Empty<float>());
+            session.LoadModel(model, reader);
+            using var commandBuffer = new CommandBuffer { name = "AexisStaticRtArenaGolden" };
+            var inputUpload = CreatePack4Array(new[]
+            {
+                -2f, 1f, -3f, 4f,
+                5f, 0f, 0f, 0f,
+                5f, 0f, 0f, 0f,
+                0f, 0f, 0f, 0f
+            }, 2, 1, 2);
+            var outputReadback = CreatePack4Target(2, 1, 2);
+            ComputeTexture input = null;
+            try
+            {
+                input = session.RentTempArray(commandBuffer, 2, 1, 2, RenderTextureFormat.ARGBFloat);
+                commandBuffer.CopyTexture(inputUpload, 0, 0, input.nameID, 0, 0);
+                commandBuffer.CopyTexture(inputUpload, 1, 0, input.nameID, 1, 0);
+                using (var result = session.ForwardPack4Outputs(
+                    commandBuffer,
+                    new Dictionary<string, ComputeTexture>(StringComparer.Ordinal) { ["data"] = input },
+                    new Dictionary<string, AexisGraphSession.BufferShape>(StringComparer.Ordinal)
+                    {
+                        ["data"] = new AexisGraphSession.BufferShape(3, 2, 1, 1, 5)
+                    },
+                    new[] { "output" }))
+                {
+                    commandBuffer.CopyTexture(result.GetTexture("output").nameID, 0, 0, outputReadback, 0, 0);
+                    commandBuffer.CopyTexture(result.GetTexture("output").nameID, 1, 0, outputReadback, 1, 0);
+                }
+                session.ReturnTempArray(commandBuffer, input); input = null;
+                Graphics.ExecuteCommandBuffer(commandBuffer);
+
+                Assert.That(session.LastTextureExecutionPlan.strictEligible, Is.True, session.LastTextureExecutionPlan.summary);
+                Assert.That(session.LastCommandBufferRtArena, Is.Not.Null);
+                Assert.That(session.LastCommandBufferRtArena.plannedTemporaryResources, Is.EqualTo(1));
+                Assert.That(session.LastCommandBufferRtArena.plannedPersistentResources, Is.EqualTo(1));
+                Assert.That(session.LastCommandBufferRtArena.plannedSlots, Is.EqualTo(2));
+                Assert.That(session.LastCommandBufferRtArena.boundResources, Is.EqualTo(2));
+                Assert.That(session.LastCommandBufferRtArena.releasedResources, Is.EqualTo(1));
+                Assert.That(session.LastCommandBufferRtArena.unplannedTextureAllocations, Is.Zero);
+                Assert.That(session.LastCommandBufferRtArena.allPlannedResourcesBound, Is.True);
+                Assert.That(session.LastCommandBufferRtArena.allBoundResourcesReleased, Is.True);
+                Assert.That(ReadPack4Slice(outputReadback, 0), Is.EqualTo(new[]
+                {
+                    0f, 1f, 0f, 4f, 5f, 0f, 0f, 0f
+                }).Within(1e-6f));
+                Assert.That(ReadPack4Slice(outputReadback, 1), Is.EqualTo(new[]
+                {
+                    5f, 0f, 0f, 0f, 0f, 0f, 0f, 0f
+                }).Within(1e-6f));
+            }
+            finally
+            {
+                if (input != null) session.ReturnTempArray(commandBuffer, input);
+                UnityEngine.Object.DestroyImmediate(inputUpload);
+                UnityEngine.Object.DestroyImmediate(outputReadback);
+            }
+        }
+
+        [Test]
+        public void CommandBufferPack4_MaxPoolingIndBindsSameDescriptorValueAndIndexByBlobIdentity()
+        {
+            RequireArgbFloatCompute();
+            const string model = "7767517\n"
+                + "3 4\n"
+                + "MaxPoolingInd max_pool 1 2 data values indices 1=2 2=2 3=0 5=0\n"
+                + "ReLU relu_0 1 1 values middle\n"
+                + "ReLU relu_1 1 1 middle output\n";
+            using var ops = new AexisOps();
+            using var session = new AexisGraphSession(ops)
+            {
+                TensorTextureFormat = RenderTextureFormat.ARGBFloat,
+                StrictTextureTargetDtype = "FP32"
+            };
+            using var reader = new AexisFloatArrayWeightReader(Array.Empty<float>());
+            session.LoadModel(model, reader);
+            using var commandBuffer = new CommandBuffer { name = "AexisMaxPoolingIdentityRtArenaGolden" };
+            var inputValues = new float[4 * 4 * 4];
+            for (var pixel = 0; pixel < 16; pixel++)
+            {
+                for (var lane = 0; lane < 4; lane++)
+                    inputValues[pixel * 4 + lane] = pixel + 1;
+            }
+            var inputUpload = CreatePack4Array(inputValues, 4, 4, 1);
+            var outputReadback = CreatePack4Target(2, 2, 1);
+            ComputeTexture input = null;
+            try
+            {
+                input = session.RentTempArray(commandBuffer, 4, 4, 1, RenderTextureFormat.ARGBFloat);
+                commandBuffer.CopyTexture(inputUpload, 0, 0, input.nameID, 0, 0);
+                using (var result = session.ForwardPack4Outputs(
+                    commandBuffer,
+                    new Dictionary<string, ComputeTexture>(StringComparer.Ordinal) { ["data"] = input },
+                    new Dictionary<string, AexisGraphSession.BufferShape>(StringComparer.Ordinal)
+                    {
+                        ["data"] = new AexisGraphSession.BufferShape(3, 4, 4, 1, 4)
+                    },
+                    new[] { "output" }))
+                {
+                    commandBuffer.CopyTexture(result.GetTexture("output").nameID, 0, 0, outputReadback, 0, 0);
+                }
+                session.ReturnTempArray(commandBuffer, input); input = null;
+                Graphics.ExecuteCommandBuffer(commandBuffer);
+
+                var resources = session.LastTextureExecutionPlan.memory.resources;
+                var values = resources.Single(resource => resource.representativeBlob == "values");
+                var indices = resources.Single(resource => resource.representativeBlob == "indices");
+                Assert.That(values.allocationSlot, Is.Not.EqualTo(indices.allocationSlot),
+                    "Same-descriptor MaxPoolingInd outputs must be bound by their declared graph identities.");
+                Assert.That(session.LastCommandBufferRtArena.unplannedTextureAllocations, Is.Zero);
+                Assert.That(session.LastCommandBufferRtArena.allPlannedResourcesBound, Is.True);
+                Assert.That(session.LastCommandBufferRtArena.allBoundResourcesReleased, Is.True);
+                Assert.That(ReadPack4Slice(outputReadback, 0), Is.EqualTo(new[]
+                {
+                    6f, 6f, 6f, 6f,
+                    8f, 8f, 8f, 8f,
+                    14f, 14f, 14f, 14f,
+                    16f, 16f, 16f, 16f
+                }).Within(1e-6f));
+            }
+            finally
+            {
+                if (input != null) session.ReturnTempArray(commandBuffer, input);
+                UnityEngine.Object.DestroyImmediate(inputUpload);
+                UnityEngine.Object.DestroyImmediate(outputReadback);
+            }
+        }
+
+        [Test]
+        public void CommandBufferPack4_MvnDeclaresAndExecutesItsScratchRtArena()
+        {
+            RequireArgbFloatCompute();
+            const string model = "7767517\n"
+                + "1 2\n"
+                + "MVN mvn_0 1 1 data output 0=1 1=0 2=0.0001\n";
+            using var ops = new AexisOps();
+            using var session = new AexisGraphSession(ops)
+            {
+                TensorTextureFormat = RenderTextureFormat.ARGBFloat,
+                StrictTextureTargetDtype = "FP32"
+            };
+            using var reader = new AexisFloatArrayWeightReader(Array.Empty<float>());
+            session.LoadModel(model, reader);
+            using var commandBuffer = new CommandBuffer { name = "AexisMvnScratchRtArenaGolden" };
+            var inputUpload = CreatePack4Array(new[]
+            {
+                1f, 2f, 3f, 4f,
+                5f, 6f, 7f, 8f
+            }, 2, 1, 1);
+            var outputReadback = CreatePack4Target(2, 1, 1);
+            ComputeTexture input = null;
+            try
+            {
+                input = session.RentTempArray(commandBuffer, 2, 1, 1, RenderTextureFormat.ARGBFloat);
+                commandBuffer.CopyTexture(inputUpload, 0, 0, input.nameID, 0, 0);
+                using (var result = session.ForwardPack4Outputs(
+                    commandBuffer,
+                    new Dictionary<string, ComputeTexture>(StringComparer.Ordinal) { ["data"] = input },
+                    new Dictionary<string, AexisGraphSession.BufferShape>(StringComparer.Ordinal)
+                    {
+                        ["data"] = new AexisGraphSession.BufferShape(3, 2, 1, 1, 4)
+                    },
+                    new[] { "output" }))
+                {
+                    commandBuffer.CopyTexture(result.GetTexture("output").nameID, 0, 0, outputReadback, 0, 0);
+                }
+                session.ReturnTempArray(commandBuffer, input); input = null;
+                Graphics.ExecuteCommandBuffer(commandBuffer);
+
+                var node = session.LastTextureExecutionPlan.nodes.Single(candidate => candidate.layer == "mvn_0");
+                Assert.That(node.executionPath, Is.EqualTo("command-buffer-pack4:mvn-per-channel"));
+                Assert.That(node.scratch, Has.Length.EqualTo(2));
+                Assert.That(node.scratch.All(scratch => scratch.aliasGroup.StartsWith("scratch:mvn_0:", StringComparison.Ordinal)), Is.True);
+                Assert.That(session.LastTextureExecutionPlan.memory.resources.Count(resource => resource.scratch), Is.EqualTo(2));
+                Assert.That(session.LastCommandBufferRtArena.plannedTemporaryResources, Is.EqualTo(2));
+                Assert.That(session.LastCommandBufferRtArena.plannedPersistentResources, Is.EqualTo(1));
+                Assert.That(session.LastCommandBufferRtArena.plannedSlots, Is.EqualTo(3));
+                Assert.That(session.LastCommandBufferRtArena.unplannedTextureAllocations, Is.Zero);
+                Assert.That(ReadPack4Slice(outputReadback, 0).All(value => !float.IsNaN(value) && !float.IsInfinity(value)), Is.True);
+            }
+            finally
+            {
+                if (input != null) session.ReturnTempArray(commandBuffer, input);
+                UnityEngine.Object.DestroyImmediate(inputUpload);
+                UnityEngine.Object.DestroyImmediate(outputReadback);
+            }
+        }
+
+        [Test]
+        public void CommandBufferPack4_GroupNormBindsFp32ScratchByPlannedIdentity()
+        {
+            RequireArgbFloatCompute();
+            const string model = "7767517\n"
+                + "1 2\n"
+                + "GroupNorm groupnorm_0 1 1 data output 0=2 1=4 2=0.0001 3=1\n";
+            using var ops = new AexisOps();
+            using var session = new AexisGraphSession(ops)
+            {
+                TensorTextureFormat = RenderTextureFormat.ARGBFloat,
+                StrictTextureTargetDtype = "FP32",
+                UseNcnnStyleGroupNorm = true
+            };
+            using var reader = new AexisFloatArrayWeightReader(new[]
+            {
+                1f, 1f, 1f, 1f,
+                0f, 0f, 0f, 0f
+            });
+            session.LoadModel(model, reader);
+            using var commandBuffer = new CommandBuffer { name = "AexisGroupNormScratchRtArenaGolden" };
+            var inputUpload = CreatePack4Array(new[]
+            {
+                1f, 2f, 5f, 6f,
+                3f, 4f, 7f, 8f
+            }, 2, 1, 1);
+            var outputReadback = CreatePack4Target(2, 1, 1);
+            ComputeTexture input = null;
+            try
+            {
+                input = session.RentTempArray(commandBuffer, 2, 1, 1, RenderTextureFormat.ARGBFloat);
+                commandBuffer.CopyTexture(inputUpload, 0, 0, input.nameID, 0, 0);
+                using (var result = session.ForwardPack4Outputs(
+                    commandBuffer,
+                    new Dictionary<string, ComputeTexture>(StringComparer.Ordinal) { ["data"] = input },
+                    new Dictionary<string, AexisGraphSession.BufferShape>(StringComparer.Ordinal)
+                    {
+                        ["data"] = new AexisGraphSession.BufferShape(3, 2, 1, 1, 4)
+                    },
+                    new[] { "output" }))
+                {
+                    commandBuffer.CopyTexture(result.GetTexture("output").nameID, 0, 0, outputReadback, 0, 0);
+                }
+                session.ReturnTempArray(commandBuffer, input); input = null;
+                Graphics.ExecuteCommandBuffer(commandBuffer);
+
+                var node = session.LastTextureExecutionPlan.nodes.Single(candidate => candidate.layer == "groupnorm_0");
+                Assert.That(node.executionPath, Is.EqualTo("command-buffer-pack4:groupnorm"));
+                Assert.That(node.scratch.Select(scratch => scratch.blob), Is.EquivalentTo(new[]
+                {
+                    "scratch:groupnorm_0:groupnorm-stats-a",
+                    "scratch:groupnorm_0:groupnorm-stats-b"
+                }));
+                Assert.That(session.LastCommandBufferRtArena.unplannedTextureAllocations, Is.Zero);
+                Assert.That(session.LastCommandBufferRtArena.allPlannedResourcesBound, Is.True);
+                Assert.That(session.LastCommandBufferRtArena.allBoundResourcesReleased, Is.True);
+                Assert.That(ReadPack4Slice(outputReadback, 0), Is.EqualTo(new[]
+                {
+                    -1.341587f, -0.447196f, -1.341587f, -0.447196f,
+                    0.447196f, 1.341587f, 0.447196f, 1.341587f
+                }).Within(3e-4f));
+            }
+            finally
+            {
+                if (input != null) session.ReturnTempArray(commandBuffer, input);
+                UnityEngine.Object.DestroyImmediate(inputUpload);
+                UnityEngine.Object.DestroyImmediate(outputReadback);
+            }
+        }
+
+        [Test]
+        public void CommandBufferPack4_RoiAlignProcessesEachStaticRoiDepthSlice()
+        {
+            RequireArgbFloatCompute();
+            using var ops = new AexisOps();
+            using var session = new AexisGraphSession(ops) { TensorTextureFormat = RenderTextureFormat.ARGBFloat };
+            using var commandBuffer = new CommandBuffer { name = "AexisRoiAlignMultiRoiPack4Golden" };
+            var featureUpload = CreatePack4Array(new[]
+            {
+                1f, 0f, 0f, 0f, 2f, 0f, 0f, 0f,
+                3f, 0f, 0f, 0f, 4f, 0f, 0f, 0f
+            }, 2, 2, 1);
+            var roiValues = new float[4 * 2 * 4];
+            // half_pixel coordinates.  The shader removes 0.5 before sampling.
+            roiValues[0] = 0.5f; roiValues[4] = 0.5f; roiValues[8] = 2.5f; roiValues[12] = 2.5f;
+            roiValues[16] = 0.5f; roiValues[20] = 0.5f; roiValues[24] = 1.5f; roiValues[28] = 1.5f;
+            var roiUpload = CreatePack4Array(roiValues, 4, 2, 1);
+            var persistent = CreatePack4Target(2, 2, 2);
+            ComputeTexture feature = null;
+            ComputeTexture rois = null;
+            ComputeTexture output = null;
+            try
+            {
+                feature = session.RentTempArray(commandBuffer, 2, 2, 1, RenderTextureFormat.ARGBFloat);
+                rois = session.RentTempArray(commandBuffer, 4, 2, 1, RenderTextureFormat.ARGBFloat);
+                output = session.RentTempArray(commandBuffer, 2, 2, 2, RenderTextureFormat.ARGBFloat);
+                commandBuffer.CopyTexture(featureUpload, 0, 0, feature.nameID, 0, 0);
+                commandBuffer.CopyTexture(roiUpload, 0, 0, rois.nameID, 0, 0);
+                ops.P1VisionPack4(commandBuffer, new AexisP1VisionDispatch
+                {
+                    kernel = AexisP1VisionKernel.RoiAlign,
+                    input0 = new AexisGraphSession.BufferShape(3, 2, 2, 1, 1),
+                    input1 = new AexisGraphSession.BufferShape(2, 4, 2, 1, 1),
+                    input2 = new AexisGraphSession.BufferShape(3, 1, 1, 1, 0),
+                    output = new AexisGraphSession.BufferShape(4, 2, 2, 2, 1),
+                    pooledW = 2,
+                    pooledH = 2,
+                    samplingRatio = 1,
+                    aligned = 1,
+                    spatialScale = 1f
+                }, feature, rois, null, output);
+                commandBuffer.CopyTexture(output.nameID, 0, 0, persistent, 0, 0);
+                commandBuffer.CopyTexture(output.nameID, 1, 0, persistent, 1, 0);
+                session.ReturnTempArray(commandBuffer, output); output = null;
+                session.ReturnTempArray(commandBuffer, rois); rois = null;
+                session.ReturnTempArray(commandBuffer, feature); feature = null;
+                Graphics.ExecuteCommandBuffer(commandBuffer);
+
+                Assert.That(ReadPack4Slice(persistent, 0).Where((_, index) => index % 4 == 0).Take(4).ToArray(),
+                    Is.EqualTo(new[] { 2.5f, 3f, 3.5f, 4f }).Within(1e-5f));
+                Assert.That(ReadPack4Slice(persistent, 1).Where((_, index) => index % 4 == 0).Take(4).ToArray(),
+                    Is.EqualTo(new[] { 1.75f, 2.25f, 2.75f, 3.25f }).Within(1e-5f));
+            }
+            finally
+            {
+                if (output != null) session.ReturnTempArray(commandBuffer, output);
+                if (rois != null) session.ReturnTempArray(commandBuffer, rois);
+                if (feature != null) session.ReturnTempArray(commandBuffer, feature);
+                UnityEngine.Object.DestroyImmediate(featureUpload);
+                UnityEngine.Object.DestroyImmediate(roiUpload);
+                UnityEngine.Object.DestroyImmediate(persistent);
+            }
         }
 
         private static AexisModelPreflightRequest StrictTextureRequest(AexisTexturePlanTensorDescriptor[] textureInputs)
@@ -2807,20 +4659,183 @@ namespace Aexis.Tests.Editor
                 diagnostic.code + ": " + diagnostic.message + " blocking=" + diagnostic.blocking));
         }
 
+        private static void ExecuteBoundedRecurrentGolden(
+            string typeName,
+            AexisLayerTypeKey type,
+            AexisRecurrentKind kind,
+            int inputSize,
+            int hiddenSize,
+            float[] immutableWeights,
+            float[] inputByChannel)
+        {
+            RequireArgbFloatCompute();
+            Assert.That(inputByChannel.Length % inputSize, Is.EqualTo(0));
+            var sequenceLength = inputByChannel.Length / inputSize;
+            var layer = new AexisGraphModel.Layer
+            {
+                name = typeName.ToLowerInvariant() + "_pack4_golden",
+                typeName = typeName,
+                type = type,
+                bottoms = 1,
+                tops = 1,
+                bottomNames = new[] { "data" },
+                topNames = new[] { "output" },
+                intParams = { [0] = inputSize.ToString(CultureInfo.InvariantCulture), [1] = hiddenSize.ToString(CultureInfo.InvariantCulture), [2] = "0", [3] = "0", [4] = "0" }
+            };
+            using var ops = new AexisOps();
+            using var session = new AexisGraphSession(ops)
+            {
+                TensorTextureFormat = RenderTextureFormat.ARGBFloat,
+                StrictTextureTargetDtype = "FP32"
+            };
+            using var reader = new AexisFloatArrayWeightReader(immutableWeights);
+            session.LoadModel(SerializeSingleLayer(layer), reader);
+            using var upload = new ComputeBuffer(inputByChannel.Length, sizeof(float));
+            upload.SetData(inputByChannel);
+            using var commandBuffer = new CommandBuffer { name = "Aexis" + typeName + "Pack4Golden" };
+            ComputeTexture input = null;
+            var outputReadback = CreatePack4Target(sequenceLength, 1, Mathf.CeilToInt(hiddenSize / 4f));
+            try
+            {
+                input = session.RentTempArray(commandBuffer, sequenceLength, 1, Mathf.CeilToInt(inputSize / 4f), RenderTextureFormat.ARGBFloat);
+                ops.FillPack4FromBufferCHW(commandBuffer, upload, sequenceLength, 1, inputSize, input);
+                using (var result = session.ForwardPack4Outputs(
+                    commandBuffer,
+                    new Dictionary<string, ComputeTexture>(StringComparer.Ordinal) { ["data"] = input },
+                    new Dictionary<string, AexisGraphSession.BufferShape>(StringComparer.Ordinal)
+                    {
+                        ["data"] = new AexisGraphSession.BufferShape(3, sequenceLength, 1, 1, inputSize)
+                    },
+                    new[] { "output" }))
+                {
+                    Assert.That(result.GetLogicalShape("output"), Is.EqualTo(new AexisGraphSession.BufferShape(3, sequenceLength, 1, 1, hiddenSize)));
+                    for (var slice = 0; slice < Mathf.CeilToInt(hiddenSize / 4f); slice++)
+                        commandBuffer.CopyTexture(result.GetTexture("output").nameID, slice, 0, outputReadback, slice, 0);
+                }
+                session.ReturnTempArray(commandBuffer, input);
+                input = null;
+                Graphics.ExecuteCommandBuffer(commandBuffer);
+
+                Assert.That(session.LastTextureExecutionPlan.strictEligible, Is.True, session.LastTextureExecutionPlan.summary);
+                Assert.That(session.LastTextureExecutionPlan.nodes.Last().executionPath,
+                    Is.EqualTo("command-buffer-pack4:bounded-" + typeName.ToLowerInvariant() + "-fp32"));
+                Assert.That(session.LastCommandBufferRtArena.unplannedTextureAllocations, Is.EqualTo(0));
+                Assert.That(session.LastCommandBufferRtArena.allPlannedResourcesBound, Is.True);
+                Assert.That(session.LastCommandBufferRtArena.allBoundResourcesReleased, Is.True);
+                Assert.That(ReadPack4Slice(outputReadback, 0), Is.EqualTo(BoundedRecurrentReference(kind, sequenceLength, inputSize, hiddenSize, immutableWeights, inputByChannel)).Within(2e-5f));
+            }
+            finally
+            {
+                if (input != null)
+                    session.ReturnTempArray(commandBuffer, input);
+                UnityEngine.Object.DestroyImmediate(outputReadback);
+            }
+        }
+
+        // Explicit test oracle only. Runtime recurrence is the Pack4 CommandBuffer kernel.
+        private static float[] BoundedRecurrentReference(
+            AexisRecurrentKind kind,
+            int sequenceLength,
+            int inputSize,
+            int hiddenSize,
+            float[] weights,
+            float[] inputByChannel)
+        {
+            var gates = kind == AexisRecurrentKind.Gru ? 3 : kind == AexisRecurrentKind.Lstm ? 4 : 1;
+            var inputWeightCount = gates * hiddenSize * inputSize;
+            var stateWeightCount = gates * hiddenSize * hiddenSize;
+            var state = new float[hiddenSize];
+            var cell = new float[hiddenSize];
+            var next = new float[hiddenSize];
+            var nextCell = new float[hiddenSize];
+            var output = new float[sequenceLength * 4];
+            float DotInput(int gate, int unit, int token)
+            {
+                var sum = 0f;
+                var offset = (gate * hiddenSize + unit) * inputSize;
+                for (var index = 0; index < inputSize; index++)
+                    sum += weights[offset + index] * inputByChannel[index * sequenceLength + token];
+                return sum;
+            }
+            float DotState(int gate, int unit, float multiplier)
+            {
+                var sum = 0f;
+                var offset = inputWeightCount + (gate * hiddenSize + unit) * hiddenSize;
+                for (var index = 0; index < hiddenSize; index++)
+                    sum += weights[offset + index] * state[index] * multiplier;
+                return sum;
+            }
+            float Bias(int gate, int unit) => weights[inputWeightCount + stateWeightCount + gate * hiddenSize + unit];
+            float Sigmoid(float value) => 1f / (1f + Mathf.Exp(-Mathf.Clamp(value, -60f, 60f)));
+            float Tanh(float value) => (float)Math.Tanh(Mathf.Clamp(value, -16f, 16f));
+
+            for (var token = 0; token < sequenceLength; token++)
+            {
+                for (var unit = 0; unit < hiddenSize; unit++)
+                {
+                    if (kind == AexisRecurrentKind.Rnn)
+                        next[unit] = Tanh(DotInput(0, unit, token) + DotState(0, unit, 1f) + Bias(0, unit));
+                    else if (kind == AexisRecurrentKind.Gru)
+                    {
+                        var update = Sigmoid(DotInput(0, unit, token) + DotState(0, unit, 1f) + Bias(0, unit));
+                        var reset = Sigmoid(DotInput(1, unit, token) + DotState(1, unit, 1f) + Bias(1, unit));
+                        var candidate = Tanh(DotInput(2, unit, token) + DotState(2, unit, reset) + Bias(2, unit));
+                        next[unit] = (1f - update) * candidate + update * state[unit];
+                    }
+                    else
+                    {
+                        var inputGate = Sigmoid(DotInput(0, unit, token) + DotState(0, unit, 1f) + Bias(0, unit));
+                        var outputGate = Sigmoid(DotInput(1, unit, token) + DotState(1, unit, 1f) + Bias(1, unit));
+                        var forgetGate = Sigmoid(DotInput(2, unit, token) + DotState(2, unit, 1f) + Bias(2, unit));
+                        var candidate = Tanh(DotInput(3, unit, token) + DotState(3, unit, 1f) + Bias(3, unit));
+                        nextCell[unit] = forgetGate * cell[unit] + inputGate * candidate;
+                        next[unit] = outputGate * Tanh(nextCell[unit]);
+                    }
+                }
+                for (var unit = 0; unit < hiddenSize; unit++)
+                {
+                    state[unit] = next[unit];
+                    if (kind == AexisRecurrentKind.Lstm)
+                        cell[unit] = nextCell[unit];
+                    output[token * 4 + unit] = state[unit];
+                }
+            }
+            return output;
+        }
+
         private static string SerializeSingleLayer(AexisGraphModel.Layer layer)
         {
-            var blobs = new HashSet<string>((layer.bottomNames ?? Array.Empty<string>()).Concat(layer.topNames ?? Array.Empty<string>()), StringComparer.Ordinal);
+            return SerializeLayers(layer);
+        }
+
+        private static string SerializeLayers(params AexisGraphModel.Layer[] layers)
+        {
+            if (layers == null || layers.Length == 0)
+                throw new ArgumentException("At least one layer is required.", nameof(layers));
+
+            var blobs = new HashSet<string>(StringComparer.Ordinal);
             var builder = new StringBuilder();
             builder.AppendLine("7767517");
-            builder.Append("1 ").Append(blobs.Count.ToString(CultureInfo.InvariantCulture)).AppendLine();
-            builder.Append(layer.typeName).Append(' ').Append(layer.name).Append(' ')
-                .Append(layer.bottoms.ToString(CultureInfo.InvariantCulture)).Append(' ')
-                .Append(layer.tops.ToString(CultureInfo.InvariantCulture));
-            foreach (var name in layer.bottomNames ?? Array.Empty<string>()) builder.Append(' ').Append(name);
-            foreach (var name in layer.topNames ?? Array.Empty<string>()) builder.Append(' ').Append(name);
-            foreach (var pair in layer.intParams.OrderBy(pair => pair.Key)) builder.Append(' ').Append(pair.Key.ToString(CultureInfo.InvariantCulture)).Append('=').Append(pair.Value);
-            foreach (var pair in layer.stringParams.OrderBy(pair => pair.Key, StringComparer.Ordinal)) builder.Append(' ').Append(pair.Key).Append('=').Append(pair.Value);
-            builder.AppendLine();
+            foreach (var layer in layers)
+            {
+                if (layer == null)
+                    throw new ArgumentException("Layers cannot contain null.", nameof(layers));
+                foreach (var name in layer.bottomNames ?? Array.Empty<string>()) blobs.Add(name);
+                foreach (var name in layer.topNames ?? Array.Empty<string>()) blobs.Add(name);
+            }
+            builder.Append(layers.Length.ToString(CultureInfo.InvariantCulture)).Append(' ')
+                .Append(blobs.Count.ToString(CultureInfo.InvariantCulture)).AppendLine();
+            foreach (var layer in layers)
+            {
+                builder.Append(layer.typeName).Append(' ').Append(layer.name).Append(' ')
+                    .Append(layer.bottoms.ToString(CultureInfo.InvariantCulture)).Append(' ')
+                    .Append(layer.tops.ToString(CultureInfo.InvariantCulture));
+                foreach (var name in layer.bottomNames ?? Array.Empty<string>()) builder.Append(' ').Append(name);
+                foreach (var name in layer.topNames ?? Array.Empty<string>()) builder.Append(' ').Append(name);
+                foreach (var pair in layer.intParams.OrderBy(pair => pair.Key)) builder.Append(' ').Append(pair.Key.ToString(CultureInfo.InvariantCulture)).Append('=').Append(pair.Value);
+                foreach (var pair in layer.stringParams.OrderBy(pair => pair.Key, StringComparer.Ordinal)) builder.Append(' ').Append(pair.Key).Append('=').Append(pair.Value);
+                builder.AppendLine();
+            }
             return builder.ToString();
         }
 
@@ -2910,6 +4925,11 @@ namespace Aexis.Tests.Editor
         private static OnnxAttribute Int(long value)
         {
             return new OnnxAttribute { type = 2, i = value };
+        }
+
+        private static OnnxAttribute FloatAttribute(float value)
+        {
+            return new OnnxAttribute { type = 1, f = value };
         }
 
         private static OnnxAttribute StringAttribute(string value)

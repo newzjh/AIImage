@@ -196,11 +196,11 @@ namespace Aexis.Execution
             var outW = Mathf.Max(1, (srcShape.w + padLeft + padRight - kernelW) / Mathf.Max(1, strideW) + 1);
             var outH = Mathf.Max(1, (srcShape.h + padTop + padBottom - kernelH) / Mathf.Max(1, strideH) + 1);
             var outShape = new AexisGraphSession.BufferShape(3, outW, outH, 1, srcShape.c);
-            var outArr = owner.RentTempArray(cmd, outW, outH, src.packs, RenderTextureFormat.ARGBHalf);
+            var outArr = owner.RentTempArray(cmd, outW, outH, src.packs, RenderTextureFormat.ARGBHalf, layer.topNames[0]);
             ComputeTexture idxArr = null;
             if (layer.topNames.Length > 1)
             {
-                idxArr = owner.RentTempArray(cmd, outW, outH, src.packs, RenderTextureFormat.ARGBFloat);
+                idxArr = owner.RentTempArray(cmd, outW, outH, src.packs, RenderTextureFormat.ARGBFloat, layer.topNames[1]);
                 owner.Ops.MaxPoolingIndPack4(cmd, src.texture, src.packs, kernelW, kernelH, strideW, strideH, padLeft, padTop, outArr, idxArr);
             }
             else

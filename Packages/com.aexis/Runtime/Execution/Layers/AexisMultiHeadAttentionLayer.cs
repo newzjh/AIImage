@@ -380,29 +380,31 @@ namespace Aexis.Execution
             ComputeTexture contextFlat = null;
             ComputeTexture output = null;
             ComputeTexture outputPacked = null;
+            var useLegacyAttentionLayout = owner.UseLegacyPack4AttentionLayout || owner.PreserveLegacyFp32Execution;
+            var outputResourceName = layer.topNames[0];
 
             try
             {
-                qProj = owner.RentTempArray(cmd, plan.scalarStorageShape.w, plan.scalarStorageShape.h, 1, plan.scalarTextureFormat);
-                kProj = owner.RentTempArray(cmd, plan.scalarStorageShape.w, plan.scalarStorageShape.h, 1, plan.scalarTextureFormat);
-                vProj = owner.RentTempArray(cmd, plan.scalarStorageShape.w, plan.scalarStorageShape.h, 1, plan.scalarTextureFormat);
-                qScaled = owner.RentTempArray(cmd, plan.scalarStorageShape.w, plan.scalarStorageShape.h, 1, plan.scalarTextureFormat);
-                qHead = owner.RentTempArray(cmd, plan.headStorageShape.w, plan.headStorageShape.h, plan.headSlices, plan.pack4TextureFormat);
-                kHead = owner.RentTempArray(cmd, plan.headStorageShape.w, plan.headStorageShape.h, plan.headSlices, plan.pack4TextureFormat);
-                vHead = owner.RentTempArray(cmd, plan.headStorageShape.w, plan.headStorageShape.h, plan.headSlices, plan.pack4TextureFormat);
-                kHeadT = owner.RentTempArray(cmd, plan.keyTransposedStorageShape.w, plan.keyTransposedStorageShape.h, plan.keyTransposedSlices, plan.pack4TextureFormat);
-                scores = owner.RentTempArray(cmd, plan.scoresStorageShape.w, plan.scoresStorageShape.h, plan.scoresSlices, plan.pack4TextureFormat);
+                qProj = owner.RentTempArray(cmd, plan.scalarStorageShape.w, plan.scalarStorageShape.h, 1, plan.scalarTextureFormat, ScratchResource(layer, "mha-q-projection"));
+                kProj = owner.RentTempArray(cmd, plan.scalarStorageShape.w, plan.scalarStorageShape.h, 1, plan.scalarTextureFormat, ScratchResource(layer, "mha-k-projection"));
+                vProj = owner.RentTempArray(cmd, plan.scalarStorageShape.w, plan.scalarStorageShape.h, 1, plan.scalarTextureFormat, ScratchResource(layer, "mha-v-projection"));
+                qScaled = owner.RentTempArray(cmd, plan.scalarStorageShape.w, plan.scalarStorageShape.h, 1, plan.scalarTextureFormat, ScratchResource(layer, "mha-q-scaled"));
+                qHead = owner.RentTempArray(cmd, plan.headStorageShape.w, plan.headStorageShape.h, plan.headSlices, plan.pack4TextureFormat, ScratchResource(layer, "mha-q-heads"));
+                kHead = owner.RentTempArray(cmd, plan.headStorageShape.w, plan.headStorageShape.h, plan.headSlices, plan.pack4TextureFormat, ScratchResource(layer, "mha-k-heads"));
+                vHead = owner.RentTempArray(cmd, plan.headStorageShape.w, plan.headStorageShape.h, plan.headSlices, plan.pack4TextureFormat, ScratchResource(layer, "mha-v-heads"));
+                kHeadT = owner.RentTempArray(cmd, plan.keyTransposedStorageShape.w, plan.keyTransposedStorageShape.h, plan.keyTransposedSlices, plan.pack4TextureFormat, ScratchResource(layer, "mha-k-heads-transposed"));
+                scores = owner.RentTempArray(cmd, plan.scoresStorageShape.w, plan.scoresStorageShape.h, plan.scoresSlices, plan.pack4TextureFormat, ScratchResource(layer, "mha-scores"));
                 if (plan.hasAttnMask)
                 {
-                    attnMaskTiled = owner.RentTempArray(cmd, plan.scoresStorageShape.w, plan.scoresStorageShape.h, plan.scoresSlices, plan.pack4TextureFormat);
-                    scoresBiased = owner.RentTempArray(cmd, plan.scoresStorageShape.w, plan.scoresStorageShape.h, plan.scoresSlices, plan.pack4TextureFormat);
+                    attnMaskTiled = owner.RentTempArray(cmd, plan.scoresStorageShape.w, plan.scoresStorageShape.h, plan.scoresSlices, plan.pack4TextureFormat, ScratchResource(layer, "mha-attention-mask-tiled"));
+                    scoresBiased = owner.RentTempArray(cmd, plan.scoresStorageShape.w, plan.scoresStorageShape.h, plan.scoresSlices, plan.pack4TextureFormat, ScratchResource(layer, "mha-scores-biased"));
                 }
-                weights = owner.RentTempArray(cmd, plan.scoresStorageShape.w, plan.scoresStorageShape.h, plan.scoresSlices, plan.pack4TextureFormat);
-                contextHeads = owner.RentTempArray(cmd, plan.headStorageShape.w, plan.headStorageShape.h, plan.headSlices, plan.pack4TextureFormat);
-                contextPermuted = owner.RentTempArray(cmd, plan.contextPermutedStorageShape.w, plan.contextPermutedStorageShape.h, plan.contextPermutedSlices, plan.pack4TextureFormat);
-                contextFlat = owner.RentTempArray(cmd, plan.scalarStorageShape.w, plan.scalarStorageShape.h, 1, plan.scalarTextureFormat);
-                output = owner.RentTempArray(cmd, plan.outputScalarStorageShape.w, plan.outputScalarStorageShape.h, 1, plan.scalarTextureFormat);
-                outputPacked = owner.RentTempArray(cmd, plan.outputStorageShape.w, plan.outputStorageShape.h, 1, plan.scalarTextureFormat);
+                weights = owner.RentTempArray(cmd, plan.scoresStorageShape.w, plan.scoresStorageShape.h, plan.scoresSlices, plan.pack4TextureFormat, ScratchResource(layer, "mha-weights"));
+                contextHeads = owner.RentTempArray(cmd, plan.headStorageShape.w, plan.headStorageShape.h, plan.headSlices, plan.pack4TextureFormat, ScratchResource(layer, "mha-context-heads"));
+                contextPermuted = owner.RentTempArray(cmd, plan.contextPermutedStorageShape.w, plan.contextPermutedStorageShape.h, plan.contextPermutedSlices, plan.pack4TextureFormat, ScratchResource(layer, "mha-context-permuted"));
+                contextFlat = owner.RentTempArray(cmd, plan.scalarStorageShape.w, plan.scalarStorageShape.h, 1, plan.scalarTextureFormat, ScratchResource(layer, "mha-context-flat"));
+                output = owner.RentTempArray(cmd, plan.outputScalarStorageShape.w, plan.outputScalarStorageShape.h, 1, plan.scalarTextureFormat, useLegacyAttentionLayout ? outputResourceName : ScratchResource(layer, "mha-output-scalar"));
+                outputPacked = owner.RentTempArray(cmd, plan.outputStorageShape.w, plan.outputStorageShape.h, 1, plan.scalarTextureFormat, useLegacyAttentionLayout ? ScratchResource(layer, "mha-output-packed") : outputResourceName);
 
                 ComputeTexture qScalarInput = null;
                 ComputeTexture kScalarInput = null;
@@ -412,7 +414,7 @@ namespace Aexis.Execution
                 ComputeTexture vScalarMaterialized = null;
                 try
                 {
-                    qScalarInput = MaterializeScalar2DArrayInput(owner, cmd, plan.qTex, plan.qShape, plan.scalarTextureFormat, ref qScalarMaterialized);
+                    qScalarInput = MaterializeScalar2DArrayInput(owner, cmd, plan.qTex, plan.qShape, plan.scalarTextureFormat, ref qScalarMaterialized, ScratchResource(layer, "mha-q-scalar-input"));
                     if (plan.kTex.texture != null
                         && plan.qTex.texture != null
                         && plan.kTex.texture.nameID == plan.qTex.texture.nameID
@@ -423,7 +425,7 @@ namespace Aexis.Execution
                     }
                     else
                     {
-                        kScalarInput = MaterializeScalar2DArrayInput(owner, cmd, plan.kTex, plan.kShape, plan.scalarTextureFormat, ref kScalarMaterialized);
+                        kScalarInput = MaterializeScalar2DArrayInput(owner, cmd, plan.kTex, plan.kShape, plan.scalarTextureFormat, ref kScalarMaterialized, ScratchResource(layer, "mha-k-scalar-input"));
                     }
 
                     if (plan.vTex.texture != null
@@ -444,7 +446,7 @@ namespace Aexis.Execution
                     }
                     else
                     {
-                        vScalarInput = MaterializeScalar2DArrayInput(owner, cmd, plan.vTex, plan.vShape, plan.scalarTextureFormat, ref vScalarMaterialized);
+                        vScalarInput = MaterializeScalar2DArrayInput(owner, cmd, plan.vTex, plan.vShape, plan.scalarTextureFormat, ref vScalarMaterialized, ScratchResource(layer, "mha-v-scalar-input"));
                     }
 
                     owner.Ops.Gemm2DTextureA(cmd, qScalarInput, plan.pack.qW, plan.pack.qB, plan.rows, plan.embedDim, plan.qShape.w, transB: true, alpha: 1f, beta: 1f, useC: true, broadcastTypeC: 4, qProj);
@@ -501,7 +503,7 @@ namespace Aexis.Execution
                     ComputeTexture attnMaskScalarMaterialized = null;
                     try
                     {
-                        attnMaskScalarInput = MaterializeScalar2DArrayInput(owner, cmd, plan.attnMaskTex, plan.attnMaskShape, plan.scalarTextureFormat, ref attnMaskScalarMaterialized);
+                        attnMaskScalarInput = MaterializeScalar2DArrayInput(owner, cmd, plan.attnMaskTex, plan.attnMaskShape, plan.scalarTextureFormat, ref attnMaskScalarMaterialized, ScratchResource(layer, "mha-attention-mask-scalar-input"));
                         owner.Ops.TilePack4(cmd, attnMaskScalarInput, plan.attnMaskShape, plan.scoresShape, ResolveAttentionMaskTileRepeats(plan.scoresShape), attnMaskTiled);
                         owner.Ops.BinaryOpPack4(cmd, scores, attnMaskTiled, plan.scoresSlices, 0, scoresBiased);
                     }
@@ -575,7 +577,6 @@ namespace Aexis.Execution
                     output);
                 owner.Ops.Pack4LinearFromScalar2D(cmd, output, plan.outputLogicalShape.w, plan.outputLogicalShape.h, outputPacked);
 
-                var useLegacyAttentionLayout = owner.UseLegacyPack4AttentionLayout || owner.PreserveLegacyFp32Execution;
                 var outputTexture = useLegacyAttentionLayout ? output : outputPacked;
                 var outputStorageShape = useLegacyAttentionLayout ? plan.outputScalarStorageShape : plan.outputStorageShape;
                 context.blobs[layer.topNames[0]] = new AexisGraphSession.CmdTensorRef
@@ -589,7 +590,13 @@ namespace Aexis.Execution
                     hasLogicalShape = true,
                     logicalShape = plan.outputLogicalShape,
                     hasStorageShape = true,
-                    storageShape = outputStorageShape
+                    storageShape = outputStorageShape,
+                    // The legacy output is a scalar Texture2DArray consumed by
+                    // BinaryOpPack4LinearMixedArray. It is not a Pack4-linear
+                    // activation despite sharing the same logical rank-two shape.
+                    layoutKind = useLegacyAttentionLayout
+                        ? AexisTextureTensorLayoutKind.LinearMat
+                        : AexisTextureTensorLayoutKind.Pack4Image
                 };
                 context.shapes[layer.topNames[0]] = plan.outputLogicalShape;
                 if (useLegacyAttentionLayout)
@@ -1070,7 +1077,8 @@ namespace Aexis.Execution
             AexisGraphSession.CmdTensorRef source,
             AexisGraphSession.BufferShape shape,
             RenderTextureFormat outputFormat,
-            ref ComputeTexture materialized)
+            ref ComputeTexture materialized,
+            string plannedResourceName)
         {
             if (owner == null)
                 throw new ArgumentNullException(nameof(owner));
@@ -1081,7 +1089,13 @@ namespace Aexis.Execution
             if (!RequiresScalar2DMaterialization(source, shape))
                 return source.texture;
 
-            materialized = owner.RentTempArray(cmd, Mathf.Max(1, shape.w), Mathf.Max(1, shape.h), 1, outputFormat);
+            materialized = owner.RentTempArray(
+                cmd,
+                Mathf.Max(1, shape.w),
+                Mathf.Max(1, shape.h),
+                1,
+                outputFormat,
+                plannedResourceName);
             if (AexisGraphSession.IsPack4LinearMatTexture(source, shape))
             {
                 owner.Ops.ReshapePack4ToScalar2D(
@@ -1110,6 +1124,11 @@ namespace Aexis.Execution
                     materialized);
             }
             return materialized;
+        }
+
+        private static string ScratchResource(AexisGraphModel.Layer layer, string suffix)
+        {
+            return AexisGraphSession.GetStrictPack4ScratchIdentity(layer, suffix);
         }
 
         private static void ReturnTemp(AexisGraphSession owner, ref RenderTexture texture)

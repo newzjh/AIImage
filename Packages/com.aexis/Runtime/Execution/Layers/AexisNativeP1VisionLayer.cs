@@ -254,12 +254,12 @@ namespace Aexis.Execution
                     dispatch.samplingRatio = layer.GetInt(3, 0);
                     dispatch.aligned = layer.GetInt(4, 0);
                     dispatch.roiVersion = layer.GetInt(5, 0);
-                    dispatch.output = RoiOutput(dispatch, dispatch.input0, layer.name);
+                    dispatch.output = RoiOutput(dispatch, dispatch.input0, dispatch.input1, layer.name);
                     break;
                 case "ROIPooling":
                     dispatch.kernel = AexisP1VisionKernel.RoiPooling;
                     SetRoiParameters(ref dispatch, layer);
-                    dispatch.output = RoiOutput(dispatch, dispatch.input0, layer.name);
+                    dispatch.output = RoiOutput(dispatch, dispatch.input0, dispatch.input1, layer.name);
                     break;
                 case "PSROIPooling":
                     dispatch.kernel = AexisP1VisionKernel.PsRoiPooling;
@@ -365,11 +365,21 @@ namespace Aexis.Execution
             dispatch.spatialScale = layer.GetFloat(2, 1f);
         }
 
-        private static AexisGraphSession.BufferShape RoiOutput(AexisP1VisionDispatch dispatch, AexisGraphSession.BufferShape feature, string layerName)
+        private static AexisGraphSession.BufferShape RoiOutput(
+            AexisP1VisionDispatch dispatch,
+            AexisGraphSession.BufferShape feature,
+            AexisGraphSession.BufferShape rois,
+            string layerName)
         {
             if (feature.dims != 3)
                 throw new InvalidOperationException("ROI P1 kernels require rank-3 Pack4 feature input: " + layerName);
-            return new AexisGraphSession.BufferShape(3, dispatch.pooledW, dispatch.pooledH, 1, feature.c);
+            var roiElements = checked(rois.w * rois.h * rois.d * rois.c);
+            if (roiElements <= 0 || roiElements % 4 != 0)
+                throw new InvalidOperationException("ROI P1 kernels require a statically bounded linear [num_rois,4] ROI tensor: " + layerName);
+            var roiCount = roiElements / 4;
+            // Each ROI is an independent Texture2DArray depth slice. This keeps the
+            // standard ONNX ROI axis on GPU and never requires a CPU loop/readback.
+            return new AexisGraphSession.BufferShape(4, dispatch.pooledW, dispatch.pooledH, roiCount, feature.c);
         }
 
         private static AexisGraphSession.BufferShape ResolveGridOutput(AexisGraphSession.BufferShape input, AexisGraphSession.BufferShape grid, int permute, string layerName)

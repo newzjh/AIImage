@@ -23,6 +23,10 @@ namespace Aexis.Onnx
         public readonly List<OnnxValueInfo> outputs = new List<OnnxValueInfo>();
         public readonly List<OnnxValueInfo> valueInfos = new List<OnnxValueInfo>();
         public readonly Dictionary<string, OnnxTensor> initializers = new Dictionary<string, OnnxTensor>(StringComparer.Ordinal);
+        // SparseTensorProto is normalized to an immutable dense initializer at
+        // import time. Keep the source record for validation/reporting while
+        // execution consumes only the one texture-native immutable upload.
+        public readonly Dictionary<string, OnnxSparseTensor> sparseInitializers = new Dictionary<string, OnnxSparseTensor>(StringComparer.Ordinal);
 
         public int CountNodes(string opType)
         {
@@ -61,6 +65,11 @@ namespace Aexis.Onnx
         public readonly List<long> ints = new List<long>();
         public readonly List<string> strings = new List<string>();
         public OnnxTensor tensor;
+        // Graph-valued attributes are used by ONNX control-flow operators. Keep
+        // them in the parsed model so strict lowering can prove and inline a
+        // bounded graph before any GPU execution plan is created.
+        public OnnxGraph graph;
+        public readonly List<OnnxGraph> graphs = new List<OnnxGraph>();
 
         public string GetUtf8String()
         {
@@ -252,6 +261,261 @@ namespace Aexis.Onnx
         }
     }
 
+    [Serializable]
+    public sealed class OnnxSparseTensor
+    {
+        // This is an import/upload bound, never an activation allocation. It
+        // prevents a malformed sparse initializer from silently requesting an
+        // unbounded CPU staging allocation before the immutable texture upload.
+        public const int MaximumDenseElementCount = 16 * 1024 * 1024;
+
+        public OnnxTensor values;
+        public OnnxTensor indices;
+        public long[] dims = Array.Empty<long>();
+
+        public bool TryMaterializeDense(out OnnxTensor dense, out string reason)
+        {
+            dense = null;
+            if (values == null || indices == null)
+            {
+                reason = "values and indices tensors are required";
+                return false;
+            }
+            if (string.IsNullOrWhiteSpace(values.name))
+            {
+                reason = "values tensor has no initializer name";
+                return false;
+            }
+            if (dims == null || dims.Length < 1 || dims.Length > 4)
+            {
+                reason = "dense shape rank must be in [1,4]";
+                return false;
+            }
+
+            long denseCount = 1;
+            try
+            {
+                for (var axis = 0; axis < dims.Length; axis++)
+                {
+                    if (dims[axis] <= 0)
+                    {
+                        reason = "dense shape contains a non-positive extent";
+                        return false;
+                    }
+                    denseCount = checked(denseCount * dims[axis]);
+                }
+            }
+            catch (OverflowException)
+            {
+                reason = "dense shape element count overflows Int64";
+                return false;
+            }
+            if (denseCount > MaximumDenseElementCount)
+            {
+                reason = "dense shape exceeds the immutable sparse upload capacity of "
+                    + MaximumDenseElementCount.ToString(CultureInfo.InvariantCulture) + " elements";
+                return false;
+            }
+            if (!values.TryValidatePayload(out reason))
+                return false;
+            if (!indices.TryValidatePayload(out reason))
+                return false;
+            if (values.dataType != TensorDataType.Float32 && values.dataType != TensorDataType.Int32)
+            {
+                reason = "values elem_type must be Float32, Int32, Int64, or Bool for the immutable texture upload";
+                return false;
+            }
+            if (indices.onnxDataType != 7)
+            {
+                reason = "indices elem_type must be ONNX INT64";
+                return false;
+            }
+
+            var nnz = values.ElementCount;
+            if (nnz < 0 || nnz > int.MaxValue)
+            {
+                reason = "values count is outside the importer range";
+                return false;
+            }
+            if (!TryGetPayloadBytes(values, out var valueBytes, out var elementWidth, out reason))
+                return false;
+            if (!TryValidateIndexShape(indices, (int)nnz, dims.Length, out var coordinateIndices, out reason))
+                return false;
+
+            byte[] denseBytes;
+            try
+            {
+                denseBytes = new byte[checked((int)denseCount * elementWidth)];
+            }
+            catch (OverflowException)
+            {
+                reason = "dense immutable upload byte count overflows Int32";
+                return false;
+            }
+
+            var visited = new HashSet<long>();
+            for (var item = 0; item < (int)nnz; item++)
+            {
+                if (!TryResolveDenseIndex(indices, item, dims, coordinateIndices, out var denseIndex, out reason))
+                    return false;
+                if (!visited.Add(denseIndex))
+                {
+                    reason = "indices contain a duplicate dense coordinate; sparse write ordering is not a strict immutable contract";
+                    return false;
+                }
+                Buffer.BlockCopy(valueBytes, item * elementWidth, denseBytes, checked((int)denseIndex * elementWidth), elementWidth);
+            }
+
+            dense = new OnnxTensor
+            {
+                name = values.name,
+                dataType = values.dataType,
+                onnxDataType = values.onnxDataType,
+                dims = (long[])dims.Clone(),
+                rawData = denseBytes
+            };
+            reason = null;
+            return true;
+        }
+
+        private static bool TryValidateIndexShape(OnnxTensor tensor, int nnz, int rank, out bool coordinateIndices, out string reason)
+        {
+            coordinateIndices = false;
+            if (tensor.dims == null)
+            {
+                reason = "indices shape is missing";
+                return false;
+            }
+            if (tensor.dims.Length == 1 && tensor.dims[0] == nnz)
+            {
+                reason = null;
+                return true;
+            }
+            if (tensor.dims.Length == 2 && tensor.dims[0] == nnz && tensor.dims[1] == rank)
+            {
+                coordinateIndices = true;
+                reason = null;
+                return true;
+            }
+            reason = "indices shape must be [nnz] or [nnz,rank]";
+            return false;
+        }
+
+        private static bool TryResolveDenseIndex(
+            OnnxTensor tensor,
+            int item,
+            long[] denseShape,
+            bool coordinateIndices,
+            out long denseIndex,
+            out string reason)
+        {
+            denseIndex = 0;
+            if (!coordinateIndices)
+            {
+                if (!TryGetInt64(tensor, item, out denseIndex))
+                {
+                    reason = "indices payload is not a readable INT64 tensor";
+                    return false;
+                }
+                long denseCount = 1;
+                for (var axis = 0; axis < denseShape.Length; axis++) denseCount = checked(denseCount * denseShape[axis]);
+                if (denseIndex < 0 || denseIndex >= denseCount)
+                {
+                    reason = "linear index is outside the dense shape";
+                    return false;
+                }
+                reason = null;
+                return true;
+            }
+
+            try
+            {
+                for (var axis = 0; axis < denseShape.Length; axis++)
+                {
+                    if (!TryGetInt64(tensor, item * denseShape.Length + axis, out var coordinate))
+                    {
+                        reason = "indices payload is not a readable INT64 tensor";
+                        return false;
+                    }
+                    if (coordinate < 0 || coordinate >= denseShape[axis])
+                    {
+                        reason = "coordinate index is outside the dense shape";
+                        return false;
+                    }
+                    denseIndex = checked(denseIndex * denseShape[axis] + coordinate);
+                }
+            }
+            catch (OverflowException)
+            {
+                reason = "coordinate index calculation overflows Int64";
+                return false;
+            }
+            reason = null;
+            return true;
+        }
+
+        private static bool TryGetInt64(OnnxTensor tensor, int index, out long value)
+        {
+            value = 0;
+            if (tensor?.int64Data != null && index >= 0 && index < tensor.int64Data.Length)
+            {
+                value = tensor.int64Data[index];
+                return true;
+            }
+            if (tensor?.rawData == null || index < 0 || tensor.rawData.Length != checked((int)tensor.ElementCount * sizeof(long)))
+                return false;
+            value = BitConverter.ToInt64(tensor.rawData, index * sizeof(long));
+            return true;
+        }
+
+        private static bool TryGetPayloadBytes(OnnxTensor tensor, out byte[] bytes, out int elementWidth, out string reason)
+        {
+            bytes = null;
+            elementWidth = 0;
+            reason = null;
+            if (!OnnxTensor.TryGetElementByteWidth(tensor.onnxDataType, out elementWidth))
+            {
+                reason = "values elem_type has no fixed byte width";
+                return false;
+            }
+            var count = tensor.ElementCount;
+            if (count < 0 || count > int.MaxValue || checked(count * elementWidth) > int.MaxValue)
+            {
+                reason = "values payload is outside the importer byte range";
+                return false;
+            }
+            var byteCount = checked((int)count * elementWidth);
+            if (tensor.rawData != null && tensor.rawData.Length == byteCount)
+            {
+                bytes = (byte[])tensor.rawData.Clone();
+                return true;
+            }
+            bytes = new byte[byteCount];
+            if (tensor.onnxDataType == 1 && tensor.floatData != null && tensor.floatData.Length == count)
+            {
+                Buffer.BlockCopy(tensor.floatData, 0, bytes, 0, byteCount);
+                return true;
+            }
+            if (tensor.onnxDataType == 6 && tensor.int32Data != null && tensor.int32Data.Length == count)
+            {
+                Buffer.BlockCopy(tensor.int32Data, 0, bytes, 0, byteCount);
+                return true;
+            }
+            if (tensor.onnxDataType == 7 && tensor.int64Data != null && tensor.int64Data.Length == count)
+            {
+                Buffer.BlockCopy(tensor.int64Data, 0, bytes, 0, byteCount);
+                return true;
+            }
+            if (tensor.onnxDataType == 9 && tensor.int32Data != null && tensor.int32Data.Length == count)
+            {
+                for (var i = 0; i < tensor.int32Data.Length; i++) bytes[i] = tensor.int32Data[i] == 0 ? (byte)0 : (byte)1;
+                return true;
+            }
+            reason = "values payload has no decoded representation";
+            return false;
+        }
+    }
+
     // Minimal ONNX protobuf reader for import planning and model lowering.
     // It does not execute ONNX and intentionally keeps unsupported protobuf
     // constructs as parse errors instead of silently guessing.
@@ -377,14 +641,39 @@ namespace Aexis.Onnx
         {
             if (model?.graph == null)
                 yield break;
-            foreach (var pair in model.graph.initializers)
+            foreach (var tensor in EnumerateGraphTensors(model.graph))
+                yield return tensor;
+        }
+
+        private static IEnumerable<OnnxTensor> EnumerateGraphTensors(OnnxGraph graph)
+        {
+            if (graph == null)
+                yield break;
+            foreach (var pair in graph.initializers)
                 if (pair.Value != null)
                     yield return pair.Value;
-            foreach (var node in model.graph.nodes)
+            foreach (var pair in graph.sparseInitializers)
+            {
+                if (pair.Value?.values != null)
+                    yield return pair.Value.values;
+                if (pair.Value?.indices != null)
+                    yield return pair.Value.indices;
+            }
+            foreach (var node in graph.nodes)
                 if (node != null)
                     foreach (var pair in node.attributes)
-                        if (pair.Value?.tensor != null)
-                            yield return pair.Value.tensor;
+                    {
+                        var attribute = pair.Value;
+                        if (attribute?.tensor != null)
+                            yield return attribute.tensor;
+                        if (attribute?.graph != null)
+                            foreach (var tensor in EnumerateGraphTensors(attribute.graph))
+                                yield return tensor;
+                        if (attribute?.graphs != null)
+                            foreach (var nestedGraph in attribute.graphs)
+                                foreach (var tensor in EnumerateGraphTensors(nestedGraph))
+                                    yield return tensor;
+                    }
         }
 
         private static string TensorName(OnnxTensor tensor)
@@ -433,6 +722,16 @@ namespace Aexis.Onnx
                     graph.outputs.Add(ParseValueInfo(reader.ReadBytes()));
                 else if (field == 13 && wire == 2)
                     graph.valueInfos.Add(ParseValueInfo(reader.ReadBytes()));
+                else if (field == 15 && wire == 2)
+                {
+                    var sparse = ParseSparseTensor(reader.ReadBytes());
+                    if (!sparse.TryMaterializeDense(out var tensor, out var reason))
+                        throw new InvalidDataException("ONNX sparse initializer is not a bounded immutable texture upload: " + reason + ".");
+                    if (graph.initializers.ContainsKey(tensor.name) || graph.sparseInitializers.ContainsKey(tensor.name))
+                        throw new InvalidDataException("ONNX graph has duplicate dense/sparse initializer name: " + tensor.name + ".");
+                    graph.sparseInitializers[tensor.name] = sparse;
+                    graph.initializers[tensor.name] = tensor;
+                }
                 else
                     reader.Skip(wire);
             }
@@ -483,12 +782,16 @@ namespace Aexis.Onnx
                     attr.s = reader.ReadBytes();
                 else if (field == 5 && wire == 2)
                     attr.tensor = ParseTensor(reader.ReadBytes());
+                else if (field == 6 && wire == 2)
+                    attr.graph = ParseGraph(reader.ReadBytes());
                 else if (field == 7)
                     ReadFloatField(reader, wire, attr.floats);
                 else if (field == 8)
                     ReadInt64Field(reader, wire, attr.ints);
                 else if (field == 9 && wire == 2)
                     attr.strings.Add(reader.ReadString());
+                else if (field == 11 && wire == 2)
+                    attr.graphs.Add(ParseGraph(reader.ReadBytes()));
                 else if (field == 20 && wire == 0)
                     attr.type = (int)reader.ReadVarint();
                 else
@@ -541,6 +844,26 @@ namespace Aexis.Onnx
             tensor.int32Data = int32s.ToArray();
             tensor.int64Data = int64s.ToArray();
             return tensor;
+        }
+
+        private static OnnxSparseTensor ParseSparseTensor(byte[] bytes)
+        {
+            var sparse = new OnnxSparseTensor();
+            var dimensions = new List<long>();
+            var reader = new ProtoReader(bytes);
+            while (reader.TryRead(out var field, out var wire))
+            {
+                if (field == 1 && wire == 2)
+                    sparse.values = ParseTensor(reader.ReadBytes());
+                else if (field == 2 && wire == 2)
+                    sparse.indices = ParseTensor(reader.ReadBytes());
+                else if (field == 3)
+                    ReadInt64Field(reader, wire, dimensions);
+                else
+                    reader.Skip(wire);
+            }
+            sparse.dims = dimensions.ToArray();
+            return sparse;
         }
 
         private static void ParseExternalDataEntry(byte[] bytes, out string key, out string value)

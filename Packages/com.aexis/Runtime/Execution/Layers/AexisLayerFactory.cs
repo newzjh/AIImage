@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Aexis.Async;
@@ -17,9 +18,21 @@ namespace Aexis.Execution
             { "CumulativeSum", "CumSum" },
             { "CumSum", "CumSum" },
             { "ConvolutionDepthWise1D", "Convolution1D" },
+            { "ConvolutionDepthWise3D", "ConvDw3D" },
             { "Deconvolution1D", "Deconvolution" },
+            { "DeconvolutionDepthWise1D", "DeconvDw1D" },
+            { "DeconvolutionDepthWise3D", "DeconvDw3D" },
             { "YoloDetectionOutput", "YoloDetectOut" },
             { "Yolov3DetectionOutput", "Yolov3DetectOut" },
+            { "NonMaxSuppression", "Nms" },
+            { "RandomUniformLike", "RandomLike" },
+            { "RandomNormalLike", "RandomLike" },
+            { "RandomUniform", "RandomLike" },
+            { "RandomNormal", "RandomLike" },
+            { "Bernoulli", "RandomLike" },
+            { "Multinomial", "Multinomial" },
+            { "StatisticsPooling", "StatsPooling" },
+            { "InverseSpectrogram", "InvSpectrogram" },
         };
 
         private static readonly Dictionary<AexisLayerTypeKey, Func<AexisBaseLayer>> Registry = new Dictionary<AexisLayerTypeKey, Func<AexisBaseLayer>>
@@ -40,11 +53,14 @@ namespace Aexis.Execution
             { AexisLayerTypes.Crop, () => new AexisCropLayer() },
             { AexisLayerTypes.Convolution, () => new AexisConvolutionLayer() },
             { AexisLayerTypes.Convolution3D, () => new AexisConvolution3DLayer() },
+            { AexisLayerTypes.ConvDw3D, () => new AexisConvolutionDepthWise3DLayer() },
             { AexisLayerTypes.Convolution1D, () => new AexisConvolution1DLayer() },
             { AexisLayerTypes.ConvolutionDepthWise, () => new AexisConvolutionDepthWiseLayer() },
             { AexisLayerTypes.Deconvolution, () => new AexisDeconvolutionLayer() },
             { AexisLayerTypes.Deconvolution3D, () => new AexisDeconvolution3DLayer() },
             { AexisLayerTypes.DeconvolutionDepthWise, () => new AexisDeconvolutionDepthWiseLayer() },
+            { AexisLayerTypes.DeconvDw3D, () => new AexisDeconvolutionDepthWise3DLayer() },
+            { AexisLayerTypes.DeconvDw1D, () => new AexisDeconvolutionDepthWise1DLayer() },
             { AexisLayerTypes.Interp, () => new AexisInterpLayer() },
             { AexisLayerTypes.Dropout, () => new AexisDropoutLayer() },
             { AexisLayerTypes.Eltwise, () => new AexisEltwiseLayer() },
@@ -131,6 +147,7 @@ namespace Aexis.Execution
             { AexisLayerTypes.ArgMin, () => new AexisArgReduceLayer(AexisLayerTypes.ArgMin, reduceMax: false) },
             { AexisLayerTypes.Where, () => new AexisWhereLayer() },
             { AexisLayerTypes.TopK, () => new AexisTopKLayer() },
+            { AexisLayerTypes.Nms, () => new AexisNonMaxSuppressionLayer() },
             { AexisLayerTypes.NonZero, () => new AexisNonZeroLayer() },
             { AexisLayerTypes.OneHot, () => new AexisOneHotLayer() },
             { AexisLayerTypes.CumSum, () => new AexisCumSumLayer() },
@@ -153,6 +170,14 @@ namespace Aexis.Execution
             { AexisLayerTypes.Scatter, () => new AexisScatterLayer(AexisLayerTypes.Scatter) },
             { AexisLayerTypes.ShortConv, () => new AexisShortConvLayer() },
             { AexisLayerTypes.GatedDeltaRule, () => new AexisGatedDeltaRuleLayer() },
+            { AexisLayerTypes.RandomLike, () => new AexisDeterministicRandomLayer() },
+            { AexisLayerTypes.Multinomial, () => new AexisMultinomialLayer() },
+            { AexisLayerTypes.StatsPooling, () => new AexisStatisticsPoolingLayer() },
+            { AexisLayerTypes.Spectrogram, () => new AexisSpectrogramLayer(inverse: false) },
+            { AexisLayerTypes.InvSpectrogram, () => new AexisSpectrogramLayer(inverse: true) },
+            { AexisLayerTypes.RNN, () => new AexisRecurrentLayer(AexisRecurrentKind.Rnn) },
+            { AexisLayerTypes.GRU, () => new AexisRecurrentLayer(AexisRecurrentKind.Gru) },
+            { AexisLayerTypes.LSTM, () => new AexisRecurrentLayer(AexisRecurrentKind.Lstm) },
         };
 
         public static IReadOnlyList<AexisBaseLayer> CreateModelLayers(IList<AexisGraphModel.Layer> layers)
@@ -205,6 +230,8 @@ namespace Aexis.Execution
                 return new AexisConvolutionDepthWise1DLayer();
             if (string.Equals(layer.typeName, "Deconvolution1D", StringComparison.Ordinal))
                 return new AexisDeconvolution1DLayer();
+            if (string.Equals(layer.typeName, "DeconvolutionDepthWise1D", StringComparison.Ordinal))
+                return new AexisDeconvolutionDepthWise1DLayer();
 
             var canonicalName = ResolveCanonicalLayerTypeName(layer.typeName);
             if (!string.IsNullOrEmpty(canonicalName)
@@ -1219,9 +1246,16 @@ namespace Aexis.Execution
         {
             if (cmd == null)
                 throw new ArgumentNullException(nameof(cmd));
-            if ((textureInputs == null || textureInputs.Count == 0)
-                && (fixedBufferInputs == null || fixedBufferInputs.Count == 0))
+            if (textureInputs == null)
                 throw new ArgumentNullException(nameof(textureInputs));
+            if (textureInputs.Count == 0 && (fixedBufferInputs == null || fixedBufferInputs.Count == 0)
+                && Model != null && Model.layers != null
+                && Model.layers.Any(layer => layer?.bottomNames != null && layer.bottomNames.Any(name => !string.IsNullOrWhiteSpace(name))))
+            {
+                throw new ArgumentException(
+                    "A zero-input CommandBuffer invocation is valid only for a statically closed texture plan; this model declares external activation bottoms.",
+                    nameof(textureInputs));
+            }
 
             var resolvedInputs = textureInputs == null
                 ? new Dictionary<string, ComputeTexture>(StringComparer.Ordinal)
@@ -1252,7 +1286,11 @@ namespace Aexis.Execution
                     }
                 }
 
-                EnsureCommandBufferTextureExecutionPlan(resolvedInputs, resolvedShapes, fixedUploadNames);
+                EnsureCommandBufferTextureExecutionPlan(
+                    resolvedInputs,
+                    resolvedShapes,
+                    fixedUploadNames,
+                    stopAfterTopName);
             }
             catch
             {
@@ -1260,6 +1298,7 @@ namespace Aexis.Execution
                     ReturnTempArray(cmd, upload);
                 throw;
             }
+            BeginCommandBufferRtArena(cmd);
             BeginInferenceTempResourceTracking();
             Dictionary<string, CmdTensorRef> blobs = null;
             var returned = false;
@@ -1345,6 +1384,7 @@ namespace Aexis.Execution
                 }
 
                 FinishLayerRuntimeProfile(runtimeProfile);
+                CompleteCommandBufferRtArena();
                 var outBlobName = !string.IsNullOrWhiteSpace(stopAfterTopName)
                     ? stopAfterTopName
                     : (!string.IsNullOrWhiteSpace(outputBlobName) ? outputBlobName : ResolveDefaultOutputBlobName());
@@ -1387,6 +1427,7 @@ namespace Aexis.Execution
                 if (!returned && blobs != null)
                     ReleaseAllCmdTemporaryTensors(cmd, blobs);
                 EndInferenceTempResourceTracking();
+                EndCommandBufferRtArena();
             }
         }
     }
