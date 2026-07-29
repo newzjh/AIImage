@@ -21,7 +21,7 @@ The engine keeps logical tensor shapes separate from physical storage shapes. In
 
 ## Examples
 
-The images below are documentation copies of actual runner artifacts. Unless marked **archived**, timings are Windows/Vulkan batch results captured on 2026-07-28. They are evidence for the listed input and environment, not universal performance claims.
+The images below are documentation copies of actual runner artifacts. Each timing names its test input and capture date. They are evidence for the listed input and environment, not universal performance claims.
 
 ### Qwen3.5 0.8B Mobile Q4 and Q8
 
@@ -29,7 +29,7 @@ The images below are documentation copies of actual runner artifacts. Unless mar
 
 | Variant | Runner evidence | Strict texture execution | Result |
 | --- | --- | --- | --- |
-| Q4 | Text smoke report, 65.533 s, 48 cache textures | Yes; no ComputeBuffer fallback | Valid execution; generated one end-of-turn token and no visible response text. This is a smoke result, not a quality demo. |
+| Q4 | Windows text smoke: 65.533 s and 48 cache textures; Android MuMu Vulkan Main2 pass: 326.821 s and 103 decoder steps | Yes; no ComputeBuffer fallback | Both runs executed successfully. The Windows smoke generated only an end-of-turn token; the MuMu pass emitted 397 visible characters and detected four people. |
 | Q8 | Multimodal smoke with the image above, 71.618 s, 6 generated tokens | Yes; texture-backed activations and no ComputeBuffer fallback | Valid execution; generated text begins with a Chinese-language phrase. |
 
 The Q4 and Q8 labels describe mobile model archive formats. They do not imply that every engine operator supports generic INT4 or INT8 execution.
@@ -40,9 +40,9 @@ CLIP produces an embedding and ranked labels rather than a transformed image. Th
 
 ### CodeFormer Face Restoration
 
-![CodeFormer face restoration result](Packages/com.aexis/Documentation~/images/codeformer-face-restoration.png)
+![CodeFormer before and after on 03.jpg](Packages/com.aexis/Documentation~/images/codeformer-03-before-after.png)
 
-The face-restoration runner completed in **16,075 ms** on `ref/test_img.jpg`.
+The face-restoration runner completed in **17,958 ms** on `ref/03.jpg`, detected one face, and composited the restoration shown above (Windows/Vulkan, 2026-07-29).
 
 ### Foreground Matting
 
@@ -54,29 +54,27 @@ The matting runner completed at **360x202** in **1,103 ms** with the strict text
 
 ### GFPGAN Face Restoration
 
-![GFPGAN face restoration result](Packages/com.aexis/Documentation~/images/gfpgan-face-restoration.png)
+![GFPGAN before and after on 03.jpg](Packages/com.aexis/Documentation~/images/gfpgan-03-before-after.png)
 
-The GFPGAN runner completed in **4,786 ms**. Its weights are excluded from the package payload and are delivered separately.
+The GFPGAN runner completed in **6,053 ms** on `ref/03.jpg` with the strict Pack4 guard (Windows/Vulkan, 2026-07-29). This is the raw runner output: this input visibly produces facial distortion, so it is shown as execution evidence rather than a quality claim. Its weights are excluded from the package payload and are delivered separately.
 
 ### YOLO Person Segmentation plus DeepFillV2
 
-![YOLO person segmentation overlay](Packages/com.aexis/Documentation~/images/yolo-deepfill-overlay.png)
+![YOLO plus DeepFillV2 before and after on 3.png](Packages/com.aexis/Documentation~/images/yolo-deepfillv2-3-before-after.png)
 
-![DeepFillV2 inpainting output](Packages/com.aexis/Documentation~/images/yolo-deepfill-output.png)
-
-YOLO found one person in **1,529 ms** (mask coverage `0.460974`); the NCNN DeepFillV2 pass completed in **1,686 ms** (`1,542 ms` inference).
+On `ref/deepfillv2/DeepFillv2-main/test_data/3.png`, YOLO found seven people (mask coverage `0.042730`). The NCNN DeepFillV2 pass completed in **2,196 ms** (**1,995 ms** inference; Windows/Vulkan, 2026-07-29). The comparison intentionally retains the residual removal artifacts in the documented output.
 
 ### Real-ESRGAN AnimeVideo v3 x4
 
-![Real-ESRGAN x4 result](Packages/com.aexis/Documentation~/images/realesrgan-x4.png)
+![Real-ESRGAN before and after on 03.jpg](Packages/com.aexis/Documentation~/images/realesrgan-03-before-after.png)
 
-The Pack4 CommandBuffer-only validation completed in **661 ms** for `ref/03.jpg`. The compared output had RGB mean and maximum absolute difference of `0` against the paired run.
+The Real-ESRGAN AnimeVideo v3 x4 CommandBuffer Pack4-only validation completed in **1,057 ms** for `ref/03.jpg` (Windows/Vulkan, 2026-07-29).
 
 ### YOLO plus Stable Diffusion Inpainting
 
-![YOLO plus Stable Diffusion inpainting result](Packages/com.aexis/Documentation~/images/yolo-sd-inpainting.png)
+![YOLO plus Stable Diffusion inpainting before and after on 3.png](Packages/com.aexis/Documentation~/images/yolo-sd-inpainting-3-before-after.png)
 
-This is an **archived validated artifact** captured on 2026-07-16, not a fresh 2026-07-28 benchmark. Stable Diffusion inpainting weights are external and are not included in the package sample.
+On `ref/deepfillv2/DeepFillv2-main/test_data/3.png`, YOLO found seven people (mask coverage `0.042730`) and the 12-step Stable Diffusion inpainting run completed in **630,213 ms** (Windows/Vulkan, 2026-07-29). It removes people more completely than the DeepFillV2 run above, but the documented raw output still contains residual objects and artifacts. Stable Diffusion inpainting weights are external and are not included in the package sample.
 
 ### MONAI and VISTA
 
@@ -90,12 +88,16 @@ The application resolves model assets from [newzjh/AIImage releases](https://git
 
 | Runner or model group | GitHub Release download page | Package payload |
 | --- | --- | --- |
-| Qwen3.5 mobile Q4, CLIP, CodeFormer, Matting, YOLO, SD inpainting configuration | [`model`](https://github.com/newzjh/AIImage/releases/tag/model) | Q4/CLIP/CodeFormer/Matting/YOLO are group-dependent; SD weights are external. |
+| Qwen3.5 mobile Q4 | [`qwen3.5_0.8b_mobile_q4`](https://github.com/newzjh/AIImage/releases/tag/qwen3.5_0.8b_mobile_q4) | External download. |
 | Qwen3.5 mobile Q8 | [`qwen3.5_0.8b_mobile_q8`](https://github.com/newzjh/AIImage/releases/tag/qwen3.5_0.8b_mobile_q8) | External download. |
+| CLIP, CodeFormer, Matting, and YOLO configuration | [`model`](https://github.com/newzjh/AIImage/releases/tag/model) | Group-dependent package/sample payload. |
 | Real-ESRGAN | [`realesr`](https://github.com/newzjh/AIImage/releases/tag/realesr) | Default Real-ESRGAN NCNN pair is allowed only after provenance review. |
 | GFPGAN | [`gfpgan`](https://github.com/newzjh/AIImage/releases/tag/gfpgan) | External download; not in the package sample. |
 | DeepFillV2 | [`DeepFileV2`](https://github.com/newzjh/AIImage/releases/tag/DeepFileV2) | Default NCNN case is sample-dependent; verify its release record. |
-| MONAI / VISTA | No package release asset | Obtain upstream model and data only under their own terms. |
+| Stable Diffusion inpainting | [`sdinpainting`](https://github.com/newzjh/AIImage/releases/tag/sdinpainting) | External download; not in the package sample. |
+| MONAI WholeBrain | [`MONAI_WholeBrain`](https://github.com/newzjh/AIImage/releases/tag/MONAI_WholeBrain) | External model; medical input and data remain excluded. |
+| VISTA3D skull | [`vista3d_skull`](https://github.com/newzjh/AIImage/releases/tag/vista3d_skull) | External model; medical input and data remain excluded. |
+| VISTA3D spine | [`vista3d_spine`](https://github.com/newzjh/AIImage/releases/tag/vista3d_spine) | External model; medical input and data remain excluded. |
 
 Release tags are part of the application delivery configuration. A successful download does not grant a model license; see [model distribution](Packages/com.aexis/Documentation~/model-distribution.md) before redistributing a model artifact.
 
@@ -118,12 +120,14 @@ Compatible Unity targets and completed validation are different claims. The curr
 
 | Platform | Device / GPU | Unity | Graphics API | Current runner evidence | Status |
 | --- | --- | --- | --- | --- | --- |
-| Windows 11 Pro 64-bit | Intel Arc Graphics | 6000.2.7f2 | Vulkan | CodeFormer 16,075 ms; Matting 1,103 ms; GFPGAN 4,786 ms; YOLO + DeepFillV2 1,529 + 1,686 ms; Real-ESRGAN 661 ms | Passed for the documented runs |
+| Windows 11 Pro 64-bit | Intel Arc Graphics | 6000.2.7f2 | Vulkan | 2026-07-29: CodeFormer 17,958 ms; GFPGAN 6,053 ms; DeepFillV2 2,196 ms; Real-ESRGAN 1,057 ms; SD inpainting 630,213 ms | Passed for the documented runs |
 | macOS | **TBD: machine and GPU** | **TBD: Unity version** | **TBD** | Existing build-failure log at `Tools/AIImage_MACOS.build-failure.txt`; no passing measurement recorded | Blocked / not validated |
-| Android phone | **TBD: model, SoC, GPU** | **TBD: Unity version** | **TBD** | **TBD: build, thermal state, runner, timing** | Not yet validated |
+| Android (MuMu emulator) | MuMu ADB `127.0.0.1:16384`; runtime report: vivo V2241A, Adreno (TM) 650, 8961 MiB | 6000.2.7f2 | Vulkan, GameActivity | 2026-07-26 full default Main2 pass: CodeFormer 6,946 ms; Real-ESRGAN 519 ms; GFPGAN 3,160 ms; YOLO 657 ms (four persons); DeepFillV2 3,442 ms; Matting 1,014 ms; CLIP 2,208 ms; Qwen Q4 326,821 ms (103 steps, 397 visible characters) | Passed; conservative Android fallback |
 | iPhone / iPad | **TBD: model, SoC, GPU** | **TBD: Unity version** | **TBD** | **TBD: build, thermal state, runner, timing** | Not yet validated |
 
 Use a real graphics device for all Aexis validation. `-nographics` is not a valid package, shader, or runner test mode.
+
+The MuMu result is a conservative Android fallback measurement, not a physical-device benchmark. A Snapdragon 888 handset has been reported as materially faster; record the handset, build, thermal state, graphics API, runner configuration, and timing before adding an exact physical-device value.
 
 ## How to Install
 
