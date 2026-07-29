@@ -16,35 +16,53 @@
 
 ## Runner evidence
 
-AIImage Main2 is the complete application example built on Aexis. It contains runner configuration for Qwen3.5 Q4/Q8, CLIP, CodeFormer, Matting, Real-ESRGAN, GFPGAN, YOLO plus DeepFillV2, YOLO plus Stable Diffusion inpainting, and MONAI/VISTA. The images below are actual runner artifacts copied into package documentation; the complete evidence and release table are in the [repository README](../../README.md).
+AIImage Main2 is the complete application example built on Aexis. It contains runner configuration for Qwen3.5 Q4/Q8, CLIP, CodeFormer, Matting, Real-ESRGAN, GFPGAN, YOLO plus DeepFillV2, YOLO plus Stable Diffusion inpainting, and MONAI/VISTA. The following images are actual runner artifacts. In each comparison, the left panel is the input and the right panel is that runner's output.
 
-| Runner | Evidence | Result |
-| --- | --- | --- |
-| Qwen3.5 mobile Q4 | Windows strict texture text smoke: 65.533 s, 48 cache textures; Android MuMu Vulkan full-runner pass: 326.821 s, 103 decoder steps | Both runs passed. The MuMu pass emitted 397 visible characters and detected four people. |
-| Qwen3.5 mobile Q8 | Strict texture multimodal smoke, 71.618 s, 6 generated tokens | Valid execution; generated text begins with a Chinese-language phrase. |
-| CLIP MobileCLIP S0 | Successful 2026-07-23 score artifact | `Photo` 0.332389; `Portrait` 0.265945. The current strict profile rejects an undeclared temporary RT at `transpose_121`. |
-| CodeFormer | Windows/Vulkan batch, `ref/03.jpg`, 2026-07-29 | 17,958 ms; one detected face. |
-| Matting | Windows/Vulkan batch, 360x202 | 1,103 ms |
-| GFPGAN | Windows/Vulkan strict Pack4 batch, `ref/03.jpg`, 2026-07-29 | 6,053 ms; the raw output is visibly distorted and is not presented as a quality result. |
-| YOLO + DeepFillV2 | Windows/Vulkan batch, `test_data/3.png`, 2026-07-29 | Seven people; mask coverage `0.042730`; 2,196 ms total, 1,995 ms inference. |
-| Real-ESRGAN AnimeVideo v3 x4 | Windows/Vulkan Pack4 CommandBuffer validation, `ref/03.jpg`, 2026-07-29 | 1,057 ms. |
-| YOLO + SD inpainting | Windows/Vulkan batch, `test_data/3.png`, 2026-07-29 | Seven people; mask coverage `0.042730`; 12 steps; 630,213 ms. |
+### Qwen3.5 Mobile Q4/Q8 and CLIP MobileCLIP S0
 
-![Qwen multimodal input](Documentation~/images/qwen-and-clip-input.jpg)
+![Qwen and CLIP multimodal input](Documentation~/images/qwen-and-clip-input.jpg)
+
+Qwen Q4 passed a Windows strict-texture text smoke in 65.533 s using 48 cache textures. It also passed the Android MuMu Vulkan Main2 run in 326.821 s across 103 decoder steps, emitted 397 visible characters, and detected four people. Q8 passed a strict multimodal smoke in 71.618 s with six generated tokens. CLIP's successful 2026-07-23 score artifact ranked `Photo` at `0.332389` and `Portrait` at `0.265945`; its current strict CommandBuffer profile rejects an undeclared temporary RT at `transpose_121`.
+
+### CodeFormer Face Restoration
 
 ![CodeFormer before and after on 03.jpg](Documentation~/images/codeformer-03-before-after.png)
 
+The CodeFormer runner processed `ref/03.jpg`, detected one face, and completed in 17,958 ms (Windows/Vulkan, 2026-07-29).
+
+### Foreground Matting
+
 ![Matting composite](Documentation~/images/matting-composite.png)
+
+The matting runner completed at 360x202 in 1,103 ms with the strict texture plan and CommandBuffer path.
+
+### GFPGAN Face Restoration
 
 ![GFPGAN before and after on 03.jpg](Documentation~/images/gfpgan-03-before-after.png)
 
+The GFPGAN runner processed `ref/03.jpg` in 6,053 ms with the strict Pack4 guard (Windows/Vulkan, 2026-07-29). The image is the raw output; this input visibly produces facial distortion, so it is execution evidence rather than a quality claim.
+
+### YOLO Person Segmentation plus DeepFillV2
+
 ![YOLO and DeepFillV2 before and after on 3.png](Documentation~/images/yolo-deepfillv2-3-before-after.png)
+
+For `ref/deepfillv2/DeepFillv2-main/test_data/3.png`, YOLO found seven people with mask coverage `0.042730`. DeepFillV2 completed in 2,196 ms, including 1,995 ms inference (Windows/Vulkan, 2026-07-29). The result retains the actual residual removal artifacts.
+
+### Real-ESRGAN AnimeVideo v3 x4
 
 ![Real-ESRGAN before and after on 03.jpg](Documentation~/images/realesrgan-03-before-after.png)
 
+The CommandBuffer Pack4-only Real-ESRGAN validation processed `ref/03.jpg` in 1,057 ms (Windows/Vulkan, 2026-07-29).
+
+### YOLO plus Stable Diffusion Inpainting
+
 ![YOLO and SD inpainting before and after on 3.png](Documentation~/images/yolo-sd-inpainting-3-before-after.png)
 
-> **MONAI/VISTA screenshot slot:** Reserved for a reproducible run with distributable medical input and confirmed data/model permissions. No medical image is published by this package.
+For `ref/deepfillv2/DeepFillv2-main/test_data/3.png`, YOLO found seven people with mask coverage `0.042730`; the 12-step Stable Diffusion inpainting run completed in 630,213 ms (Windows/Vulkan, 2026-07-29). It removes people more completely than the DeepFillV2 result, while retaining the actual residual objects and artifacts.
+
+### MONAI and VISTA
+
+> **Screenshot slot reserved:** A visual example requires reproducible, distributable medical input and confirmed data/model permissions. No medical image, private golden, checkpoint, or data result is published by this package.
 
 ## Release downloads
 
