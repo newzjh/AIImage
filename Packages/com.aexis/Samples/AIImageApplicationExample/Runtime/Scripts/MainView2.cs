@@ -160,6 +160,22 @@ public sealed class MainView2 : BasePageView
         return Host != null && Host.TryOpenAdjacentMainImage(direction);
     }
 
+    protected override void BuildPage(VisualElement contentRoot)
+    {
+        PageRoot.RegisterCallback<KeyDownEvent>(OnPageKeyDown, TrickleDown.TrickleDown);
+        BuildPageContent(contentRoot);
+    }
+
+    private void OnPageKeyDown(KeyDownEvent evt)
+    {
+        if ((evt.keyCode != KeyCode.Delete && evt.keyCode != KeyCode.Backspace) || IsTextFieldFocused())
+            return;
+
+        DeleteSelectedHistoryEntry();
+        evt.StopPropagation();
+        evt.PreventDefault();
+    }
+
     protected override void OnLayoutChanged(bool isPortrait, Rect layoutRect)
     {
         if (_adjustPanel == null || _adjustHost == null)
@@ -192,7 +208,7 @@ public sealed class MainView2 : BasePageView
         _presetScroll?.schedule.Execute(() => _presetScroll.horizontalScroller.value = 0f);
     }
 
-    protected override void BuildPage(VisualElement contentRoot)
+    private void BuildPageContent(VisualElement contentRoot)
     {
         contentRoot.style.flexDirection = FlexDirection.Column;
         contentRoot.style.flexGrow = 1;
@@ -373,38 +389,6 @@ public sealed class MainView2 : BasePageView
         AddTool("CF", "🤦‍", OnCodeFormerRepro);
         AddTool("GFP", "🤦‍", OnGfpganRepro);
 
-        var languageRow = new VisualElement();
-        languageRow.style.flexDirection = FlexDirection.Row;
-        languageRow.style.alignItems = Align.Center;
-        languageRow.style.flexShrink = 0;
-        shell.Add(languageRow);
-
-        Button AddLanguageButton(string text, AppLanguage language)
-        {
-            var button = new Button(() => Host?.SetLanguage(language)) { text = text };
-            button.tooltip = language == AppLanguage.SimplifiedChinese
-                ? L("Switch to Simplified Chinese", "切换到简体中文")
-                : L("Switch to English", "切换到英语");
-            button.style.width = 38;
-            button.style.height = 36;
-            button.style.marginLeft = 6;
-            button.style.paddingLeft = 0;
-            button.style.paddingRight = 0;
-            button.style.color = Color.white;
-            button.style.backgroundColor = new StyleColor(
-                AppLocalization.CurrentLanguage == language
-                    ? new Color(0.18f, 0.48f, 0.93f, 1f)
-                    : new Color(0.13f, 0.14f, 0.18f, 1f));
-            button.style.borderTopLeftRadius = 8;
-            button.style.borderTopRightRadius = 8;
-            button.style.borderBottomLeftRadius = 8;
-            button.style.borderBottomRightRadius = 8;
-            languageRow.Add(button);
-            return button;
-        }
-
-        AddLanguageButton("中", AppLanguage.SimplifiedChinese);
-        AddLanguageButton("En", AppLanguage.English);
         return shell;
     }
 

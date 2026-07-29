@@ -1560,14 +1560,6 @@ public abstract class BasePageView : MonoBehaviour
             return;
         }
 
-        if (evt.keyCode == KeyCode.Delete || evt.keyCode == KeyCode.Backspace)
-        {
-            DeleteSelectedHistoryEntry();
-            evt.StopPropagation();
-            evt.PreventDefault();
-            return;
-        }
-
         if (evt.keyCode == KeyCode.LeftArrow || evt.keyCode == KeyCode.RightArrow)
         {
             var direction = evt.keyCode == KeyCode.LeftArrow ? -1 : 1;
@@ -1579,12 +1571,24 @@ public abstract class BasePageView : MonoBehaviour
         }
     }
 
+    protected bool IsTextFieldFocused()
+    {
+        var current = _pageRoot?.focusController?.focusedElement as VisualElement;
+        while (current != null)
+        {
+            if (current is TextField)
+                return true;
+
+            current = current.parent;
+        }
+
+        return false;
+    }
+
     private bool ShouldLetFocusedControlHandleKey(KeyDownEvent evt)
     {
         var isArrowKey = evt.keyCode == KeyCode.LeftArrow || evt.keyCode == KeyCode.RightArrow;
-        var isTextEditingKey = evt.keyCode == KeyCode.Delete ||
-                               evt.keyCode == KeyCode.Backspace ||
-                               ((evt.ctrlKey || evt.commandKey) && !evt.shiftKey && evt.keyCode == KeyCode.Z);
+        var isTextEditingKey = (evt.ctrlKey || evt.commandKey) && !evt.shiftKey && evt.keyCode == KeyCode.Z;
         if (!isArrowKey && !isTextEditingKey)
             return false;
 

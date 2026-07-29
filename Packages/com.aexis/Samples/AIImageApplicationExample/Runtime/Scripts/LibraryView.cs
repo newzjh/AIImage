@@ -350,22 +350,64 @@ public sealed class LibraryView : BasePageView
         bar.style.paddingBottom = 8;
         bar.style.flexDirection = FlexDirection.Row;
         bar.style.alignItems = Align.Center;
-        bar.style.flexWrap = Wrap.Wrap;
+
+        var filterRow = new VisualElement();
+        filterRow.style.flexGrow = 1;
+        filterRow.style.flexShrink = 1;
+        filterRow.style.minWidth = 0;
+        filterRow.style.flexDirection = FlexDirection.Row;
+        filterRow.style.alignItems = Align.Center;
+        filterRow.style.flexWrap = Wrap.Wrap;
+        bar.Add(filterRow);
 
         var title = new Label("\u56FE\u5E93");
         title.style.fontSize = 18;
         title.style.color = Color.white;
         title.style.unityFontStyleAndWeight = FontStyle.Bold;
         title.style.marginRight = 14;
-        bar.Add(title);
+        filterRow.Add(title);
 
-        bar.Add(CreateFilterToggle("\u540D\u79F0", "\u540D", "A", "\u6309\u540D\u79F0\u6392\u5E8F", true, out _sortTimeToggle, OnSortToggleChanged));
-        bar.Add(CreateFilterToggle("\u4EBA\u8138", "\u4EBA", "\u263a", "\u6309\u4EBA\u8138\u6392\u5E8F", false, out _sortFaceToggle, OnSortToggleChanged));
-        bar.Add(CreateFilterToggle("\u5730\u70B9", "\u5730", "\u2316", "\u6309\u5730\u70B9\u6392\u5E8F", false, out _sortLocationToggle, OnSortToggleChanged));
-        bar.Add(CreateFilterToggle("\u539F\u56FE", "\u539F", "\u25ce", "\u663E\u793A\u539F\u56FE", true, out _showOriginalToggle, ApplyFilters));
-        bar.Add(CreateFilterToggle("\u4FEE\u56FE", "\u4FEE", "\u270e", "\u663E\u793A\u4FEE\u56FE", true, out _showEditedToggle, ApplyFilters));
-        bar.Add(CreateFilterToggle("\u672A\u77E5", "\u672A", "?", "\u663E\u793A\u672A\u77E5\u7C7B\u578B", true, out _showUnknownToggle, ApplyFilters));
-        bar.Add(CreateFilterToggle("\u6536\u85CF", "\u85CF", "\u2605", "\u4EC5\u663E\u793A\u6536\u85CF", false, out _favoritesOnlyToggle, ApplyFilters));
+        filterRow.Add(CreateFilterToggle("\u540D\u79F0", "\u540D", "A", "\u6309\u540D\u79F0\u6392\u5E8F", true, out _sortTimeToggle, OnSortToggleChanged));
+        filterRow.Add(CreateFilterToggle("\u4EBA\u8138", "\u4EBA", "\u263a", "\u6309\u4EBA\u8138\u6392\u5E8F", false, out _sortFaceToggle, OnSortToggleChanged));
+        filterRow.Add(CreateFilterToggle("\u5730\u70B9", "\u5730", "\u2316", "\u6309\u5730\u70B9\u6392\u5E8F", false, out _sortLocationToggle, OnSortToggleChanged));
+        filterRow.Add(CreateFilterToggle("\u539F\u56FE", "\u539F", "\u25ce", "\u663E\u793A\u539F\u56FE", true, out _showOriginalToggle, ApplyFilters));
+        filterRow.Add(CreateFilterToggle("\u4FEE\u56FE", "\u4FEE", "\u270e", "\u663E\u793A\u4FEE\u56FE", true, out _showEditedToggle, ApplyFilters));
+        filterRow.Add(CreateFilterToggle("\u672A\u77E5", "\u672A", "?", "\u663E\u793A\u672A\u77E5\u7C7B\u578B", true, out _showUnknownToggle, ApplyFilters));
+        filterRow.Add(CreateFilterToggle("\u6536\u85CF", "\u85CF", "\u2605", "\u4EC5\u663E\u793A\u6536\u85CF", false, out _favoritesOnlyToggle, ApplyFilters));
+
+        var languageRow = new VisualElement();
+        languageRow.style.flexDirection = FlexDirection.Row;
+        languageRow.style.alignItems = Align.Center;
+        languageRow.style.flexShrink = 0;
+        languageRow.style.marginLeft = 8;
+        bar.Add(languageRow);
+
+        Button AddLanguageButton(string text, AppLanguage language)
+        {
+            var button = new Button(() => Host?.SetLanguage(language)) { text = text };
+            button.tooltip = language == AppLanguage.SimplifiedChinese
+                ? L("Switch to Simplified Chinese", "\u5207\u6362\u5230\u7B80\u4F53\u4E2D\u6587")
+                : L("Switch to English", "\u5207\u6362\u5230\u82F1\u8BED");
+            button.style.width = 38;
+            button.style.height = 36;
+            button.style.marginLeft = 6;
+            button.style.paddingLeft = 0;
+            button.style.paddingRight = 0;
+            button.style.color = Color.white;
+            button.style.backgroundColor = new StyleColor(
+                AppLocalization.CurrentLanguage == language
+                    ? new Color(0.18f, 0.48f, 0.93f, 1f)
+                    : new Color(0.13f, 0.14f, 0.18f, 1f));
+            button.style.borderTopLeftRadius = 8;
+            button.style.borderTopRightRadius = 8;
+            button.style.borderBottomLeftRadius = 8;
+            button.style.borderBottomRightRadius = 8;
+            languageRow.Add(button);
+            return button;
+        }
+
+        AddLanguageButton("\u4E2D", AppLanguage.SimplifiedChinese);
+        AddLanguageButton("En", AppLanguage.English);
         return bar;
     }
 
@@ -412,8 +454,9 @@ public sealed class LibraryView : BasePageView
                 return;
 
             NavigateToEnteredDirectory();
-            evt.StopPropagation();
-        });
+            evt.StopImmediatePropagation();
+            evt.PreventDefault();
+        }, TrickleDown.TrickleDown);
         CrossPlatformClipboard.EnableTextFieldClipboard(_directoryPathField);
         pathRow.Add(_directoryPathField);
 

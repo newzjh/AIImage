@@ -75,6 +75,22 @@ public sealed class DesignView : BasePageView
         return Host != null && Host.TryOpenAdjacentMainImage(direction);
     }
 
+    protected override void BuildPage(VisualElement contentRoot)
+    {
+        PageRoot.RegisterCallback<KeyDownEvent>(OnPageKeyDown, TrickleDown.TrickleDown);
+        BuildPageContent(contentRoot);
+    }
+
+    private void OnPageKeyDown(KeyDownEvent evt)
+    {
+        if ((evt.keyCode != KeyCode.Delete && evt.keyCode != KeyCode.Backspace) || IsTextFieldFocused())
+            return;
+
+        DeleteSelectedHistoryEntry();
+        evt.StopPropagation();
+        evt.PreventDefault();
+    }
+
     protected override void OnShown()
     {
         if (CompareView != null)
@@ -105,7 +121,7 @@ public sealed class DesignView : BasePageView
         base.OnDestroy();
     }
 
-    protected override void BuildPage(VisualElement contentRoot)
+    private void BuildPageContent(VisualElement contentRoot)
     {
         _hasAppliedTipsLayout = false;
         contentRoot.style.flexDirection = FlexDirection.Column;
