@@ -1013,7 +1013,7 @@ public sealed class LibraryView : BasePageView
         _loadedDirectoryIds.Clear();
 
         var rootDisplayName = driveRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        var rootItem = BuildDirectoryItem(driveRoot, rootDisplayName, 0);
+        var rootItem = BuildDirectoryItem(driveRoot, rootDisplayName);
         _directoryTree.SetRootItems(new[] { rootItem });
         _directoryTree.Rebuild();
         _directoryTree.schedule.Execute(() =>
@@ -1025,10 +1025,10 @@ public sealed class LibraryView : BasePageView
         });
     }
 
-    private TreeViewItemData<DirectoryEntryData> BuildDirectoryItem(string path, string displayName, int depth)
+    private TreeViewItemData<DirectoryEntryData> BuildDirectoryItem(string path, string displayName)
     {
         var children = new List<TreeViewItemData<DirectoryEntryData>>();
-        if (depth < 4 && HasSubDirectoriesSafe(path))
+        if (HasSubDirectoriesSafe(path))
             children.Add(BuildPlaceholderItem(path));
 
         return new TreeViewItemData<DirectoryEntryData>(StableId(path), new DirectoryEntryData
@@ -1083,7 +1083,7 @@ public sealed class LibraryView : BasePageView
         _loadedDirectoryIds.Add(parentId);
         RegisterHiddenOriginalDirectories(directoryPath);
         var children = EnumerateDirectoriesSafe(directoryPath, 150)
-            .Select(path => BuildDirectoryItem(path, DirectoryNameFromPath(path), GetDepthForPath(path)))
+            .Select(path => BuildDirectoryItem(path, DirectoryNameFromPath(path)))
             .ToList();
 
         RemovePlaceholderChildren(directoryPath);
@@ -2354,22 +2354,6 @@ public sealed class LibraryView : BasePageView
     {
         var ext = Path.GetExtension(filePath);
         return !string.IsNullOrWhiteSpace(ext) && (ImageExtensions.Contains(ext) || RawPhotoParser.IsRawExtension(filePath));
-    }
-
-    private int GetDepthForPath(string path)
-    {
-        if (string.IsNullOrWhiteSpace(_currentDriveRoot) || string.IsNullOrWhiteSpace(path))
-            return 0;
-
-        try
-        {
-            var relative = Path.GetRelativePath(_currentDriveRoot, path);
-            return relative.Split(new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar }, StringSplitOptions.RemoveEmptyEntries).Length;
-        }
-        catch
-        {
-            return 0;
-        }
     }
 
     private static string DirectoryNameFromPath(string directoryPath)
