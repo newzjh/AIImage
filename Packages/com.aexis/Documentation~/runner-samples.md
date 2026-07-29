@@ -14,17 +14,23 @@ This is the only application/runner sample. Its installer copies the sample's co
 
 The package README and repository README carry the current evidence-backed runner gallery. These images are copied artifacts, not promotional mockups.
 
-![CodeFormer face restoration](images/codeformer-face-restoration.png)
+![CodeFormer before and after on 03.jpg](images/codeformer-03-before-after.png)
 
 ![Matting composite](images/matting-composite.png)
 
-![YOLO and DeepFillV2 output](images/yolo-deepfill-output.png)
+![GFPGAN before and after on 03.jpg](images/gfpgan-03-before-after.png)
 
-![Real-ESRGAN output](images/realesrgan-x4.png)
+![YOLO and DeepFillV2 before and after on 3.png](images/yolo-deepfillv2-3-before-after.png)
 
-The Windows 11 / Intel Arc / Vulkan / Unity 6000.2.7f2 batch record from 2026-07-28 is: CodeFormer 16,075 ms; Matting 1,103 ms at 360x202; GFPGAN 4,786 ms; YOLO 1,529 ms plus DeepFillV2 1,686 ms; and Real-ESRGAN 661 ms for `ref/03.jpg`. Qwen Q4 and Q8 passed strict texture execution smoke reports; Q4 did not produce visible response text, while Q8 emitted six tokens. The successful CLIP score artifact is from 2026-07-23; the 2026-07-28 strict CommandBuffer run was rejected because `transpose_121` requested an undeclared temporary RT.
+![Real-ESRGAN before and after on 03.jpg](images/realesrgan-03-before-after.png)
+
+![YOLO and Stable Diffusion inpainting before and after on 3.png](images/yolo-sd-inpainting-3-before-after.png)
+
+The Windows 11 / Intel Arc / Vulkan / Unity 6000.2.7f2 batch record from 2026-07-29 is: CodeFormer 17,958 ms with one detected face on `ref/03.jpg`; GFPGAN 6,053 ms on the same image; Real-ESRGAN 1,057 ms on the same image; and the specified `ref/deepfillv2/DeepFillv2-main/test_data/3.png` run found seven people with mask coverage `0.042730`, then completed DeepFillV2 in 2,196 ms (1,995 ms inference) and 12-step Stable Diffusion inpainting in 630,213 ms. The GFPGAN result is visibly distorted on this input, and both inpainting outputs retain residual artifacts; these are raw runner outputs, not quality claims. Qwen Q4 and Q8 passed strict texture execution smoke reports; the MuMu Vulkan Main2 pass also ran Q4 in 326,821 ms for 103 decoder steps and emitted 397 visible characters. The successful CLIP score artifact is from 2026-07-23; the 2026-07-28 strict CommandBuffer run was rejected because `transpose_121` requested an undeclared temporary RT.
 
 Qwen, GFPGAN, Stable Diffusion inpainting, MONAI, and VISTA weights are external. The model-delivery table in the [package README](../README.md#release-downloads) links their configured GitHub Release pages. MONAI/VISTA retains a screenshot slot until a reproducible run has distributable medical input and verified data/model permissions.
+
+The Android evidence is a 2026-07-26 full Main2 pass through MuMu ADB `127.0.0.1:16384` (runtime report: ARM64, vivo V2241A, Adreno (TM) 650, Unity 6000.2.7f2, Vulkan GameActivity): CodeFormer 6,946 ms; Real-ESRGAN 519 ms; GFPGAN 3,160 ms; YOLO 657 ms for four people; DeepFillV2 3,442 ms; Matting 1,014 ms; CLIP 2,208 ms; and Qwen Q4 326,821 ms across 103 decoder steps. MuMu is a conservative fallback measurement, not a physical-device benchmark. A Snapdragon 888 handset has been reported as materially faster; its exact result remains TBD until device, build, thermal state, graphics API, runner configuration, and timing are recorded.
 
 ## Included reusable runners
 

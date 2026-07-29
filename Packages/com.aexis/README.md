@@ -20,29 +20,29 @@ AIImage Main2 is the complete application example built on Aexis. It contains ru
 
 | Runner | Evidence | Result |
 | --- | --- | --- |
-| Qwen3.5 mobile Q4 | Strict texture text smoke, 65.533 s, 48 cache textures | Valid execution; only one end-of-turn token, so it is not presented as a quality demo. |
+| Qwen3.5 mobile Q4 | Windows strict texture text smoke: 65.533 s, 48 cache textures; Android MuMu Vulkan full-runner pass: 326.821 s, 103 decoder steps | Both runs passed. The MuMu pass emitted 397 visible characters and detected four people. |
 | Qwen3.5 mobile Q8 | Strict texture multimodal smoke, 71.618 s, 6 generated tokens | Valid execution; generated text begins with a Chinese-language phrase. |
 | CLIP MobileCLIP S0 | Successful 2026-07-23 score artifact | `Photo` 0.332389; `Portrait` 0.265945. The current strict profile rejects an undeclared temporary RT at `transpose_121`. |
-| CodeFormer | Windows/Vulkan batch, 2026-07-28 | 16,075 ms |
+| CodeFormer | Windows/Vulkan batch, `ref/03.jpg`, 2026-07-29 | 17,958 ms; one detected face. |
 | Matting | Windows/Vulkan batch, 360x202 | 1,103 ms |
-| GFPGAN | Windows/Vulkan batch | 4,786 ms |
-| YOLO + DeepFillV2 | Windows/Vulkan batch | 1,529 ms YOLO; 1,686 ms DeepFillV2 |
-| Real-ESRGAN AnimeVideo v3 x4 | Windows/Vulkan Pack4 CommandBuffer validation | 661 ms for `ref/03.jpg`; paired output parity mean/max RGB error was 0. |
-| YOLO + SD inpainting | Archived validation artifact, 2026-07-16 | Visual sample only; not a current benchmark. |
+| GFPGAN | Windows/Vulkan strict Pack4 batch, `ref/03.jpg`, 2026-07-29 | 6,053 ms; the raw output is visibly distorted and is not presented as a quality result. |
+| YOLO + DeepFillV2 | Windows/Vulkan batch, `test_data/3.png`, 2026-07-29 | Seven people; mask coverage `0.042730`; 2,196 ms total, 1,995 ms inference. |
+| Real-ESRGAN AnimeVideo v3 x4 | Windows/Vulkan Pack4 CommandBuffer validation, `ref/03.jpg`, 2026-07-29 | 1,057 ms. |
+| YOLO + SD inpainting | Windows/Vulkan batch, `test_data/3.png`, 2026-07-29 | Seven people; mask coverage `0.042730`; 12 steps; 630,213 ms. |
 
 ![Qwen multimodal input](Documentation~/images/qwen-and-clip-input.jpg)
 
-![CodeFormer result](Documentation~/images/codeformer-face-restoration.png)
+![CodeFormer before and after on 03.jpg](Documentation~/images/codeformer-03-before-after.png)
 
 ![Matting composite](Documentation~/images/matting-composite.png)
 
-![GFPGAN result](Documentation~/images/gfpgan-face-restoration.png)
+![GFPGAN before and after on 03.jpg](Documentation~/images/gfpgan-03-before-after.png)
 
-![YOLO and DeepFillV2 result](Documentation~/images/yolo-deepfill-output.png)
+![YOLO and DeepFillV2 before and after on 3.png](Documentation~/images/yolo-deepfillv2-3-before-after.png)
 
-![Real-ESRGAN x4 result](Documentation~/images/realesrgan-x4.png)
+![Real-ESRGAN before and after on 03.jpg](Documentation~/images/realesrgan-03-before-after.png)
 
-![YOLO and SD inpainting result](Documentation~/images/yolo-sd-inpainting.png)
+![YOLO and SD inpainting before and after on 3.png](Documentation~/images/yolo-sd-inpainting-3-before-after.png)
 
 > **MONAI/VISTA screenshot slot:** Reserved for a reproducible run with distributable medical input and confirmed data/model permissions. No medical image is published by this package.
 
@@ -52,12 +52,16 @@ The Main2 model-delivery configuration resolves its assets from [newzjh/AIImage 
 
 | Model group | Release download page |
 | --- | --- |
-| Qwen3.5 Q4, CLIP, CodeFormer, Matting, YOLO, SD inpainting configuration | [`model`](https://github.com/newzjh/AIImage/releases/tag/model) |
+| Qwen3.5 Q4 | [`qwen3.5_0.8b_mobile_q4`](https://github.com/newzjh/AIImage/releases/tag/qwen3.5_0.8b_mobile_q4) |
 | Qwen3.5 Q8 | [`qwen3.5_0.8b_mobile_q8`](https://github.com/newzjh/AIImage/releases/tag/qwen3.5_0.8b_mobile_q8) |
+| CLIP, CodeFormer, Matting, and YOLO configuration | [`model`](https://github.com/newzjh/AIImage/releases/tag/model) |
 | Real-ESRGAN | [`realesr`](https://github.com/newzjh/AIImage/releases/tag/realesr) |
 | GFPGAN | [`gfpgan`](https://github.com/newzjh/AIImage/releases/tag/gfpgan) |
 | DeepFillV2 | [`DeepFileV2`](https://github.com/newzjh/AIImage/releases/tag/DeepFileV2) |
-| MONAI / VISTA | External model and data acquisition only |
+| Stable Diffusion inpainting | [`sdinpainting`](https://github.com/newzjh/AIImage/releases/tag/sdinpainting) |
+| MONAI WholeBrain | [`MONAI_WholeBrain`](https://github.com/newzjh/AIImage/releases/tag/MONAI_WholeBrain) (external model and medical data only) |
+| VISTA3D skull | [`vista3d_skull`](https://github.com/newzjh/AIImage/releases/tag/vista3d_skull) (external model and medical data only) |
+| VISTA3D spine | [`vista3d_spine`](https://github.com/newzjh/AIImage/releases/tag/vista3d_spine) (external model and medical data only) |
 
 Model weights have their own licenses and redistribution conditions. The listed release pages are download locations, not license grants.
 
@@ -113,12 +117,14 @@ P1 visual operators (`GridSample`, deformable/ROI/detection families, `Fold`, `F
 
 | Platform | Hardware and Unity | Current evidence | Status |
 | --- | --- | --- | --- |
-| Windows 11 Pro 64-bit | Intel Arc Graphics, Unity 6000.2.7f2, Vulkan | Documented 2026-07-28 runner results above | Passed for those runs |
+| Windows 11 Pro 64-bit | Intel Arc Graphics, Unity 6000.2.7f2, Vulkan | 2026-07-29: CodeFormer 17,958 ms; GFPGAN 6,053 ms; DeepFillV2 2,196 ms; Real-ESRGAN 1,057 ms; SD inpainting 630,213 ms | Passed for those runs |
 | macOS | **TBD: machine/GPU/Unity** | `Tools/AIImage_MACOS.build-failure.txt` records a failure, not a pass | Blocked / not validated |
-| Android phone | **TBD: device/SoC/GPU/Unity** | **TBD: runner and timing** | Not yet validated |
+| Android (MuMu emulator) | MuMu ADB `127.0.0.1:16384`; runtime reports vivo V2241A, Adreno (TM) 650, Unity 6000.2.7f2, Vulkan GameActivity | 2026-07-26 full Main2 pass: CodeFormer 6,946 ms; Real-ESRGAN 519 ms; GFPGAN 3,160 ms; YOLO 657 ms (four persons); DeepFillV2 3,442 ms; Matting 1,014 ms; CLIP 2,208 ms; Qwen Q4 326,821 ms (103 steps, 397 visible characters) | Passed; conservative Android fallback |
 | iPhone / iPad | **TBD: device/SoC/GPU/Unity** | **TBD: runner and timing** | Not yet validated |
 
 Validation must use a real graphics device. `-nographics` is not valid for Aexis shader, package, or runner validation.
+
+MuMu is a conservative Android fallback measurement, not a physical-device benchmark. A Snapdragon 888 handset has been reported as materially faster; its exact result remains TBD until device, build, thermal state, graphics API, runner configuration, and timing are recorded.
 
 ## Quick start
 

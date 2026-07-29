@@ -23,12 +23,16 @@ Do not put model files for GFPGAN, Stable Diffusion, SD Inpainting, MONAI/VISTA,
 
 | Group | Release download page |
 | --- | --- |
-| Qwen3.5 mobile Q4, CLIP, CodeFormer, Matting, YOLO, SD inpainting configuration | [`model`](https://github.com/newzjh/AIImage/releases/tag/model) |
+| Qwen3.5 mobile Q4 | [`qwen3.5_0.8b_mobile_q4`](https://github.com/newzjh/AIImage/releases/tag/qwen3.5_0.8b_mobile_q4) |
 | Qwen3.5 mobile Q8 | [`qwen3.5_0.8b_mobile_q8`](https://github.com/newzjh/AIImage/releases/tag/qwen3.5_0.8b_mobile_q8) |
+| CLIP, CodeFormer, Matting, and YOLO configuration | [`model`](https://github.com/newzjh/AIImage/releases/tag/model) |
 | Real-ESRGAN | [`realesr`](https://github.com/newzjh/AIImage/releases/tag/realesr) |
 | GFPGAN | [`gfpgan`](https://github.com/newzjh/AIImage/releases/tag/gfpgan) |
 | DeepFillV2 | [`DeepFileV2`](https://github.com/newzjh/AIImage/releases/tag/DeepFileV2) |
-| MONAI / VISTA | No package release asset; obtain model and data externally |
+| Stable Diffusion inpainting | [`sdinpainting`](https://github.com/newzjh/AIImage/releases/tag/sdinpainting) |
+| MONAI WholeBrain | [`MONAI_WholeBrain`](https://github.com/newzjh/AIImage/releases/tag/MONAI_WholeBrain) (external model and medical data only) |
+| VISTA3D skull | [`vista3d_skull`](https://github.com/newzjh/AIImage/releases/tag/vista3d_skull) (external model and medical data only) |
+| VISTA3D spine | [`vista3d_spine`](https://github.com/newzjh/AIImage/releases/tag/vista3d_spine) (external model and medical data only) |
 
 `Aexis/Release/Build Reduced/Prepare Model Release Assets` writes the current `AIImageModelReleaseManifest.json`. That manifest, not this documentation, is the authoritative list of exact generated ZIP asset names.
 
@@ -43,7 +47,7 @@ The current repository contains `RealESRGAN/LICENSE`; copy that notice with the 
 The reduced Main2 release policy is defined by `AIImageModelDelivery`. Its bundled Player set is
 limited to MobileCLIP S0, CodeFormer, Matting, Real-ESRGAN AnimeVideo v3 x4, GFPGAN, YOLOv8 person
 segmentation, DeepFillV2 case1 NCNN, and Qwen3.5 mobile Q8. The Q8 archive is used instead of the FP32 Qwen
-weights. MONAI and VISTA are never added to the reduced release catalog.
+weights. MONAI and VISTA are never bundled into the reduced release catalog; their external Release pages above do not make medical input or data part of this package.
 
 `Aexis/Release/Build Reduced/Prepare Model Release Assets` writes one ZIP per delivery group and
 `AIImageModelReleaseManifest.json`. Release managers must review the provenance gate above before

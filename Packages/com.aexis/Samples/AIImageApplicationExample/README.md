@@ -17,6 +17,22 @@ The sample carries the permitted default model files for Clip, CodeFormer, DeepF
 
 GFPGAN, Stable Diffusion, SD Inpainting, MONAI/VISTA, and QWEN runners and configuration are included, but their model weights are deliberately omitted because of package-size and redistribution constraints. Add licensed weights to the paths expected by the corresponding runner before running inference.
 
+## External model releases
+
+Use the current asset list on the relevant GitHub Release page or the model-download UI; do not infer archive names from a runner name.
+
+| Model group | Release download page |
+| --- | --- |
+| Qwen3.5 mobile Q4 | [`qwen3.5_0.8b_mobile_q4`](https://github.com/newzjh/AIImage/releases/tag/qwen3.5_0.8b_mobile_q4) |
+| Qwen3.5 mobile Q8 | [`qwen3.5_0.8b_mobile_q8`](https://github.com/newzjh/AIImage/releases/tag/qwen3.5_0.8b_mobile_q8) |
+| GFPGAN | [`gfpgan`](https://github.com/newzjh/AIImage/releases/tag/gfpgan) |
+| Stable Diffusion inpainting | [`sdinpainting`](https://github.com/newzjh/AIImage/releases/tag/sdinpainting) |
+| MONAI WholeBrain | [`MONAI_WholeBrain`](https://github.com/newzjh/AIImage/releases/tag/MONAI_WholeBrain) |
+| VISTA3D skull | [`vista3d_skull`](https://github.com/newzjh/AIImage/releases/tag/vista3d_skull) |
+| VISTA3D spine | [`vista3d_spine`](https://github.com/newzjh/AIImage/releases/tag/vista3d_spine) |
+
+These are external model downloads, not package payloads or license grants. Medical input, data, and checkpoints remain excluded from `com.aexis`; obtain and use them only under their applicable terms.
+
 ## Reduced player release and model delivery
 
 Use `Aexis/Release/Build Reduced` for Main2 player builds. The release builder never moves,

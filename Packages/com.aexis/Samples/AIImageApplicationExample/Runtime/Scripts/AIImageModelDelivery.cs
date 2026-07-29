@@ -213,7 +213,8 @@ public static class AIImageModelDelivery
                 "QWEN35/qwen3.5_0.8b_mobile_q4/weights/qwen3.5_vision_embed_patch.ncnn.bin.q4.part000",
                 "QWEN35/qwen3.5_0.8b_mobile_q4/weights/qwen3.5_vision_embed_pos.ncnn.bin.q4.part000",
                 "QWEN35/qwen3.5_0.8b_mobile_q4/weights/qwen3.5_vision_encoder.ncnn.bin.q4.part000"
-            }),
+            },
+            flatReleaseTag: "qwen3.5_0.8b_mobile_q4"),
         new AIImageModelGroup(
             AIImageModelGroupId.Qwen35MobileQ8,
             "Qwen3.5 0.8B mobile Q8",
