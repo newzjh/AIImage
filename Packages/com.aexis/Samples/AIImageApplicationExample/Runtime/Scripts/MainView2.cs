@@ -295,9 +295,14 @@ public sealed class MainView2 : BasePageView
         shell.style.paddingRight = 12;
         shell.style.paddingTop = 10;
         shell.style.paddingBottom = 8;
+        shell.style.flexDirection = FlexDirection.Row;
+        shell.style.alignItems = Align.Center;
 
         _toolbarScroll = new ScrollView(ScrollViewMode.Horizontal);
-        _toolbarScroll.style.flexShrink = 0;
+        _toolbarScroll.style.flexGrow = 1;
+        _toolbarScroll.style.flexShrink = 1;
+        _toolbarScroll.style.minWidth = 0;
+        _toolbarScroll.style.marginRight = 8;
         _toolbarScroll.horizontalScrollerVisibility = ScrollerVisibility.Hidden;
         _toolbarScroll.verticalScrollerVisibility = ScrollerVisibility.Hidden;
         shell.Add(_toolbarScroll);
@@ -352,7 +357,7 @@ public sealed class MainView2 : BasePageView
         //AddTool("浏览", "▣", OnBrowseOriginalImage);
         AddTool("CLIP", "✨", OnClipClassify, new Color(0.73f, 0.56f, 1f));
         _qwenAnalysisButton = AddTool("Qwen", "◉", OnQwenAnalyze, new Color(0.33f, 0.86f, 0.72f));
-        _qwenAnalysisButton.tooltip = "使用 Qwen3.5 分析当前历史图像";
+        _qwenAnalysisButton.tooltip = L("Analyze the current history image with Qwen3.5", "使用 Qwen3.5 分析当前历史图像");
         //AddTool("换脸", "☺", OnFaceSwap, new Color(0.99f, 0.74f, 0.35f));
         //AddTool("清晰", "✦", OnSharpen);
         //AddTool("美白", "◌", OnWhiten);
@@ -367,6 +372,39 @@ public sealed class MainView2 : BasePageView
         AddTool("抠图", "🖼", OnMattingRepro);
         AddTool("CF", "🤦‍", OnCodeFormerRepro);
         AddTool("GFP", "🤦‍", OnGfpganRepro);
+
+        var languageRow = new VisualElement();
+        languageRow.style.flexDirection = FlexDirection.Row;
+        languageRow.style.alignItems = Align.Center;
+        languageRow.style.flexShrink = 0;
+        shell.Add(languageRow);
+
+        Button AddLanguageButton(string text, AppLanguage language)
+        {
+            var button = new Button(() => Host?.SetLanguage(language)) { text = text };
+            button.tooltip = language == AppLanguage.SimplifiedChinese
+                ? L("Switch to Simplified Chinese", "切换到简体中文")
+                : L("Switch to English", "切换到英语");
+            button.style.width = 38;
+            button.style.height = 36;
+            button.style.marginLeft = 6;
+            button.style.paddingLeft = 0;
+            button.style.paddingRight = 0;
+            button.style.color = Color.white;
+            button.style.backgroundColor = new StyleColor(
+                AppLocalization.CurrentLanguage == language
+                    ? new Color(0.18f, 0.48f, 0.93f, 1f)
+                    : new Color(0.13f, 0.14f, 0.18f, 1f));
+            button.style.borderTopLeftRadius = 8;
+            button.style.borderTopRightRadius = 8;
+            button.style.borderBottomLeftRadius = 8;
+            button.style.borderBottomRightRadius = 8;
+            languageRow.Add(button);
+            return button;
+        }
+
+        AddLanguageButton("中", AppLanguage.SimplifiedChinese);
+        AddLanguageButton("En", AppLanguage.English);
         return shell;
     }
 
@@ -518,7 +556,7 @@ public sealed class MainView2 : BasePageView
         modelDirectory = ResolveQwen35ModelDirectory();
         if (!HasQwen35ModelPayload(modelDirectory))
         {
-            ShowToast("Qwen3.5 模型文件不完整: " + modelDirectory, 5000);
+            ShowToast(L("Qwen3.5 model files are incomplete: ", "Qwen3.5 模型文件不完整: ") + modelDirectory, 5000);
             return;
         }
 
@@ -558,7 +596,7 @@ public sealed class MainView2 : BasePageView
                     (completed, total) =>
                     {
                         var progress = 86f + 14f * completed / Mathf.Max(1, total);
-                        SetQwenAnalysisProgress(progress, "正在生成 " + completed + " / " + total);
+                        SetQwenAnalysisProgress(progress, L("Generating " + completed + " / " + total, "正在生成 " + completed + " / " + total));
                     },
                     null,
                     progress => SetQwenPipelineProgress(progress, 10f, 100f));
@@ -568,17 +606,20 @@ public sealed class MainView2 : BasePageView
                     : result.Text.Trim();
                 _qwenAnalysisOutput.text = finalText;
                 SetQwenAnalysisProgress(100f, "分析完成");
-                _qwenAnalysisStatus.text = "当前历史图像 · " + GetCurrentHistoryLabel()
-                    + " · " + stopwatch.Elapsed.TotalSeconds.ToString("0.0") + " 秒";
+                _qwenAnalysisStatus.text = L(
+                    "Current history image · " + AppLocalization.Translate(GetCurrentHistoryLabel())
+                    + " · " + stopwatch.Elapsed.TotalSeconds.ToString("0.0") + " s",
+                    "当前历史图像 · " + GetCurrentHistoryLabel()
+                    + " · " + stopwatch.Elapsed.TotalSeconds.ToString("0.0") + " 秒");
             }
         }
         catch (OperationCanceledException)
         {
-            _qwenAnalysisStatus.text = "分析已取消";
+            _qwenAnalysisStatus.text = AppLocalization.Translate("分析已取消");
         }
         catch (Exception exception)
         {
-            _qwenAnalysisStatus.text = "分析失败";
+            _qwenAnalysisStatus.text = AppLocalization.Translate("分析失败");
             var partial = streamedText.ToString().Trim();
             _qwenAnalysisOutput.text = string.IsNullOrEmpty(partial)
                 ? exception.Message
@@ -654,7 +695,7 @@ public sealed class MainView2 : BasePageView
     private void ShowQwenAnalysisOverlay()
     {
         _qwenAnalysisOutput.text = string.Empty;
-        _qwenAnalysisStatus.text = "准备分析当前历史图像";
+        _qwenAnalysisStatus.text = AppLocalization.Translate("准备分析当前历史图像");
         _qwenAnalysisProgress.value = 0;
         _qwenAnalysisProgress.title = "0%";
         _qwenAnalysisCancelButton?.SetEnabled(true);
@@ -704,7 +745,7 @@ public sealed class MainView2 : BasePageView
             value = Mathf.Max(value, _qwenAnalysisProgress.value);
         _qwenAnalysisProgress.value = value;
         _qwenAnalysisProgress.title = Mathf.RoundToInt(value) + "%";
-        _qwenAnalysisStatus.text = status ?? string.Empty;
+        _qwenAnalysisStatus.text = AppLocalization.Translate(status ?? string.Empty);
     }
 
     private void CancelQwenAnalysis()
@@ -712,7 +753,7 @@ public sealed class MainView2 : BasePageView
         if (!_qwenAnalysisRunning)
             return;
         _qwenAnalysisCancelButton?.SetEnabled(false);
-        _qwenAnalysisStatus.text = "正在取消";
+        _qwenAnalysisStatus.text = AppLocalization.Translate("正在取消");
         try { _qwenAnalysisCts?.Cancel(); } catch { }
     }
 
@@ -729,7 +770,7 @@ public sealed class MainView2 : BasePageView
         var text = _qwenAnalysisOutput?.text;
         if (string.IsNullOrWhiteSpace(text))
             return;
-        GUIUtility.systemCopyBuffer = text;
+        CrossPlatformClipboard.Copy(text);
         ShowToast("分析结果已复制", 1600);
     }
 
@@ -1082,6 +1123,7 @@ public sealed class MainView2 : BasePageView
         card.Add(apiLabel);
 
         _apiKeyField = new TextField();
+        CrossPlatformClipboard.EnableTextFieldClipboard(_apiKeyField);
         _apiKeyField.isPasswordField = true;
         _apiKeyField.RegisterValueChangedCallback(evt =>
         {
@@ -1135,7 +1177,7 @@ public sealed class MainView2 : BasePageView
                 _adjustPanel.style.bottom = collapsed ? new StyleLength(StyleKeyword.Auto) : 18;
         }
         if (_panelToggleButton != null)
-            _panelToggleButton.text = collapsed ? "展开调节" : "收起调节";
+            _panelToggleButton.text = AppLocalization.Translate(collapsed ? "展开调节" : "收起调节");
         if (showToast)
             ShowToast(collapsed ? "调节面板已折叠" : "调节面板已展开", 1400);
     }

@@ -146,7 +146,7 @@ public sealed class DesignView : BasePageView
         _canvasOverlay.pickingMode = PickingMode.Ignore;
         canvasHost.Add(_canvasOverlay);
 
-        canvasHost.Add(CreateFloatingHistoryPanel(230f, "设计历史"));
+        canvasHost.Add(CreateFloatingHistoryPanel(230f, L("Design history", "设计历史")));
 
         _tipsPanel = new VisualElement();
         _tipsPanel.style.position = Position.Absolute;
@@ -170,7 +170,7 @@ public sealed class DesignView : BasePageView
         tipsHeader.style.alignItems = Align.Center;
         _tipsPanel.Add(tipsHeader);
 
-        var tipsTitle = new Label("设计说明");
+        var tipsTitle = new Label(L("Design notes", "设计说明"));
         tipsTitle.style.color = Color.white;
         tipsTitle.style.unityFontStyleAndWeight = FontStyle.Bold;
         tipsTitle.style.flexGrow = 1;
@@ -194,7 +194,9 @@ public sealed class DesignView : BasePageView
         _tipsBody = new VisualElement();
         _tipsPanel.Add(_tipsBody);
 
-        _tipsLabel = new Label("点击“识别图层”后，会基于 YOLO Seg 结果生成可拖动、可缩放的图层。识别出的人物或对象会放进图层框里，被切走的背景区域会变黑。");
+        _tipsLabel = new Label(L(
+            "Select Detect layers to create draggable, resizable layers from YOLO Seg results. Detected people or objects are placed in layer boxes, and the removed background area is shown in black.",
+            "点击“识别图层”后，会基于 YOLO Seg 结果生成可拖动、可缩放的图层。识别出的人物或对象会放进图层框里，被切走的背景区域会变黑。"));
         _tipsLabel.style.color = new Color(0.82f, 0.86f, 0.92f, 1f);
         _tipsLabel.style.whiteSpace = WhiteSpace.Normal;
         _tipsLabel.style.marginTop = 4;
@@ -305,17 +307,17 @@ public sealed class DesignView : BasePageView
         bar.style.flexDirection = FlexDirection.Row;
         bar.style.alignItems = Align.Center;
 
-        var title = new Label("设计");
+        var title = new Label(L("Design", "设计"));
         title.style.fontSize = 18;
         title.style.color = Color.white;
         title.style.unityFontStyleAndWeight = FontStyle.Bold;
         title.style.marginRight = 12;
         bar.Add(title);
 
-        _detectButton = CreateActionButton("识别图层", OnDetectLayers);
+        _detectButton = CreateActionButton(L("Detect layers", "识别图层"), OnDetectLayers);
         bar.Add(_detectButton);
 
-        _applyButton = CreateActionButton("应用生成", OnApplyDesign);
+        _applyButton = CreateActionButton(L("Apply design", "应用生成"), OnApplyDesign);
         _applyButton.style.marginLeft = 8;
         bar.Add(_applyButton);
         return bar;
@@ -344,20 +346,22 @@ public sealed class DesignView : BasePageView
         host.style.borderTopWidth = 1;
         host.style.borderTopColor = new StyleColor(new Color(1f, 1f, 1f, 0.08f));
 
-        var title = new Label("边缘融合");
+        var title = new Label(L("Edge blending", "边缘融合"));
         title.style.color = Color.white;
         title.style.unityFontStyleAndWeight = FontStyle.Bold;
         host.Add(title);
 
-        var desc = new Label("默认会对人物边缘做轻量形态学闭运算和 alpha 羽化，适合发丝、半透明边缘和轻微锯齿。");
+        var desc = new Label(L(
+            "Applies light morphological closing and alpha feathering to subject edges, suitable for hair, translucent edges, and minor jaggies.",
+            "默认会对人物边缘做轻量形态学闭运算和 alpha 羽化，适合发丝、半透明边缘和轻微锯齿。"));
         desc.style.color = new Color(0.76f, 0.82f, 0.9f, 1f);
         desc.style.whiteSpace = WhiteSpace.Normal;
         desc.style.marginTop = 4;
         host.Add(desc);
 
-        host.Add(CreateBlendSliderRow("闭运算", 0, 4, _edgeCloseRadius, "px", v => _edgeCloseRadius = Mathf.RoundToInt(v)));
-        host.Add(CreateBlendSliderRow("羽化", 0, 80, _edgeFeatherRadius, "px", v => _edgeFeatherRadius = Mathf.RoundToInt(v)));
-        host.Add(CreateBlendSliderRow("边缘保真", 0f, 1f, _edgePreserve, "", v => _edgePreserve = Mathf.Clamp01(v), "0.00"));
+        host.Add(CreateBlendSliderRow(L("Closing", "闭运算"), 0, 4, _edgeCloseRadius, "px", v => _edgeCloseRadius = Mathf.RoundToInt(v)));
+        host.Add(CreateBlendSliderRow(L("Feather", "羽化"), 0, 80, _edgeFeatherRadius, "px", v => _edgeFeatherRadius = Mathf.RoundToInt(v)));
+        host.Add(CreateBlendSliderRow(L("Edge fidelity", "边缘保真"), 0f, 1f, _edgePreserve, "", v => _edgePreserve = Mathf.Clamp01(v), "0.00"));
 
         host.Add(CreateToggleRow("Debug Composite Export", _exportCompositeDebug, v => _exportCompositeDebug = v));
         return host;
@@ -433,7 +437,7 @@ public sealed class DesignView : BasePageView
         if (src == null || Host?.YoloSegRunner == null)
             return;
 
-        ShowProgress("识别图层");
+        ShowProgress(L("Detect layers", "识别图层"));
         YoloSegResult result = default;
         DetectionBuildArtifacts artifacts = null;
         try
@@ -473,7 +477,9 @@ public sealed class DesignView : BasePageView
             artifacts.maskedBackgroundHoleMask = null;
 
             if (_tipsLabel != null)
-                _tipsLabel.text = $"已生成 {_layerData.Count} 个图层。图层里是切出的人物或对象，背景对应区域已变黑，移动或缩放图层时内容会一起跟随。";
+                _tipsLabel.text = L(
+                    $"Created {_layerData.Count} layers. They contain the extracted people or objects, with their background areas shown in black. Moving or resizing a layer moves its content with it.",
+                    $"已生成 {_layerData.Count} 个图层。图层里是切出的人物或对象，背景对应区域已变黑，移动或缩放图层时内容会一起跟随。");
         }
         finally
         {
@@ -499,7 +505,9 @@ public sealed class DesignView : BasePageView
     {
         ClearDetectedLayerState();
         if (_tipsLabel != null)
-            _tipsLabel.text = "点击“识别图层”后，会基于 YOLO Seg 结果生成可拖动、可缩放的图层。识别出的人物或对象会放进图层框里，被切走的背景区域会变黑。";
+            _tipsLabel.text = L(
+                "Select Detect layers to create draggable, resizable layers from YOLO Seg results. Detected people or objects are placed in layer boxes, and the removed background area is shown in black.",
+                "点击“识别图层”后，会基于 YOLO Seg 结果生成可拖动、可缩放的图层。识别出的人物或对象会放进图层框里，被切走的背景区域会变黑。");
     }
 
     private void RebuildLayerBoxes()
@@ -1106,7 +1114,7 @@ public sealed class DesignView : BasePageView
             return;
         }
 
-        ShowBusy("应用生成");
+        ShowBusy(L("Apply design", "应用生成"));
         if (_maskedBackgroundPreview == null || _maskedBackgroundHoleMask == null)
         {
             ShowToast("缺少背景或遮罩数据，请先重新识别图层", 2600);
@@ -1146,14 +1154,22 @@ public sealed class DesignView : BasePageView
             if (_tipsLabel != null)
             {
                 _tipsLabel.text = applyResult.remainingMaskPixels > 0
-                    ? $"已生成新的设计结果，剩余 {applyResult.remainingMaskPixels} 个待补区域像素，SD inpainting 接口已预留但暂未调用。"
-                    : "已生成新的设计结果，当前图层已全部合成回背景。";
+                    ? L(
+                        $"Created a new design result. {applyResult.remainingMaskPixels} pixels remain to be filled; the SD inpainting integration is reserved but not invoked.",
+                        $"已生成新的设计结果，剩余 {applyResult.remainingMaskPixels} 个待补区域像素，SD inpainting 接口已预留但暂未调用。")
+                    : L(
+                        "Created a new design result. All current layers have been composited into the background.",
+                        "已生成新的设计结果，当前图层已全部合成回背景。");
             }
 
             ShowToast(
                 applyResult.remainingMaskPixels > 0
-                    ? "已合成到背景，仍有黑色缺口，后续可从预留的 SD inpainting 接口补洞。"
-                    : "已合成到背景，并已清除所有图层。",
+                    ? L(
+                        "Composited into the background. Black gaps remain and can be filled through the reserved SD inpainting integration.",
+                        "已合成到背景，仍有黑色缺口，后续可从预留的 SD inpainting 接口补洞。")
+                    : L(
+                        "Composited into the background and cleared all layers.",
+                        "已合成到背景，并已清除所有图层。"),
                 3200);
         }
         finally

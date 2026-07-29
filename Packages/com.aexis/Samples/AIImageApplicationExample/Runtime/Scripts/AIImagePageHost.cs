@@ -123,6 +123,16 @@ public sealed class AIImagePageHost : MonoBehaviour
         return true;
     }
 
+    public void SetLanguage(AppLanguage language)
+    {
+        if (AppLocalization.CurrentLanguage == language)
+            return;
+
+        AppLocalization.SetLanguage(language);
+        if (_activePage != null)
+            ShowImmediate(_activePage);
+    }
+
     public bool ReloadMainImageFromDisk(string filePath, bool bypassOriginalNameGuard = true)
     {
         if (string.IsNullOrWhiteSpace(filePath))

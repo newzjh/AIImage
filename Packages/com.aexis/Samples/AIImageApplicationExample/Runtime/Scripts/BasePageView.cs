@@ -295,6 +295,11 @@ public abstract class BasePageView : MonoBehaviour
     protected virtual float GetSwitchPillAlignment01() => 0.5f;
     protected abstract void BuildPage(VisualElement contentRoot);
 
+    protected static string L(string english, string simplifiedChinese)
+    {
+        return AppLocalization.Text(english, simplifiedChinese);
+    }
+
     protected virtual void OnDestroy()
     {
         ClearHistory();
@@ -389,7 +394,7 @@ public abstract class BasePageView : MonoBehaviour
         _historyList.bindItem = (element, index) =>
         {
             var label = element.Q<Label>();
-            label.text = _historyEntries[index].label;
+            label.text = AppLocalization.Translate(_historyEntries[index].label);
         };
         _historyList.selectionChanged += OnHistorySelectionChanged;
         panel.Add(_historyList);
@@ -652,7 +657,7 @@ public abstract class BasePageView : MonoBehaviour
         _historyList?.ScrollToItem(index);
         var current = _historyEntries[index].texture;
         var original = GetOriginalHistoryTexture();
-        _compareView?.SetSources(current, original, _historyEntries[index].label);
+        _compareView?.SetSources(current, original, AppLocalization.Translate(_historyEntries[index].label));
         _compareView?.FitToView();
     }
 
@@ -988,7 +993,7 @@ public abstract class BasePageView : MonoBehaviour
         if (_toastOverlay == null)
             return;
 
-        _toastText.text = text ?? string.Empty;
+        _toastText.text = AppLocalization.Translate(text ?? string.Empty);
         _toastOverlay.style.display = DisplayStyle.Flex;
         _toastOverlay.BringToFront();
 
@@ -1005,7 +1010,7 @@ public abstract class BasePageView : MonoBehaviour
         if (_busyOverlay == null)
             return;
 
-        _busyText.text = string.IsNullOrWhiteSpace(text) ? "处理中" : text;
+        _busyText.text = AppLocalization.Translate(string.IsNullOrWhiteSpace(text) ? "处理中" : text);
         _busyOverlay.style.display = DisplayStyle.Flex;
         _busyOverlay.BringToFront();
         _busyPhase = 0f;
@@ -1051,7 +1056,7 @@ public abstract class BasePageView : MonoBehaviour
             _progressText = string.Empty;
         }
 
-        _progressTitle.text = string.IsNullOrWhiteSpace(title) ? "处理中" : title;
+        _progressTitle.text = AppLocalization.Translate(string.IsNullOrWhiteSpace(title) ? "处理中" : title);
         _progressBar.value = 0f;
         _progressBar.title = "0%";
         _progressDetail.text = string.Empty;
@@ -1217,6 +1222,7 @@ public abstract class BasePageView : MonoBehaviour
 
         BuildPage(_contentRoot);
         BuildSwitchZone(_pageRoot);
+        AppLocalization.LocalizeVisualTree(_pageRoot);
     }
 
     private static Rect ResolveLayoutRect(VisualElement element)
@@ -1302,7 +1308,7 @@ public abstract class BasePageView : MonoBehaviour
         if (first is not HistoryEntry entry)
             return;
         var original = GetOriginalHistoryTexture();
-        _compareView?.SetSources(entry.texture, original, entry.label);
+        _compareView?.SetSources(entry.texture, original, AppLocalization.Translate(entry.label));
     }
 
     private void RefreshHistoryUi()
@@ -1542,7 +1548,7 @@ public abstract class BasePageView : MonoBehaviour
     {
         if (_pageRoot == null)
             return;
-        if (ShouldLetFocusedControlHandleArrowKeys(evt))
+        if (ShouldLetFocusedControlHandleKey(evt))
             return;
 
         var ctrlOrCmd = evt.ctrlKey || evt.commandKey;
@@ -1573,9 +1579,13 @@ public abstract class BasePageView : MonoBehaviour
         }
     }
 
-    private bool ShouldLetFocusedControlHandleArrowKeys(KeyDownEvent evt)
+    private bool ShouldLetFocusedControlHandleKey(KeyDownEvent evt)
     {
-        if (evt.keyCode != KeyCode.LeftArrow && evt.keyCode != KeyCode.RightArrow)
+        var isArrowKey = evt.keyCode == KeyCode.LeftArrow || evt.keyCode == KeyCode.RightArrow;
+        var isTextEditingKey = evt.keyCode == KeyCode.Delete ||
+                               evt.keyCode == KeyCode.Backspace ||
+                               ((evt.ctrlKey || evt.commandKey) && !evt.shiftKey && evt.keyCode == KeyCode.Z);
+        if (!isArrowKey && !isTextEditingKey)
             return false;
 
         var current = _pageRoot?.focusController?.focusedElement as VisualElement;
@@ -1584,13 +1594,14 @@ public abstract class BasePageView : MonoBehaviour
             if (current is TextField)
                 return true;
 
-            if (current is Slider ||
+            if (isArrowKey &&
+                (current is Slider ||
                 current is ListView ||
                 current is TreeView ||
                 current is PopupField<string> ||
                 current is DropdownField ||
                 current is Scroller ||
-                current is ScrollView)
+                current is ScrollView))
                 return true;
 
             current = current.parent;

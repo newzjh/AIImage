@@ -463,6 +463,7 @@ public class CodeOnlyFileDialog : MonoBehaviour
 
         // 文件名输入框
         _fileNameInput = new TextField();
+        CrossPlatformClipboard.EnableTextFieldClipboard(_fileNameInput);
         _fileNameInput.value = "";
         _fileNameInput.style.flexGrow = 1;
         //_fileNameInput.style.borderWidth = 1;

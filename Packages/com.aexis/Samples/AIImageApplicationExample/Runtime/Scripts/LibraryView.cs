@@ -138,6 +138,7 @@ public sealed class LibraryView : BasePageView
     {
         public string label;
         public string icon;
+        public string englishIcon;
         public string tooltip;
     }
 
@@ -148,6 +149,8 @@ public sealed class LibraryView : BasePageView
     private ScrollView _thumbnailScroll;
     private VisualElement _thumbnailGrid;
     private Label _directorySummary;
+    private TextField _directoryPathField;
+    private Button _directoryPathGoButton;
     private Toggle _showOriginalToggle;
     private Toggle _showEditedToggle;
     private Toggle _showUnknownToggle;
@@ -241,6 +244,7 @@ public sealed class LibraryView : BasePageView
     protected override void OnShown()
     {
         SyncInitialSelectionFromCurrentImagePath();
+        SetDirectoryPathInput(_selectedDirectoryPath);
         PopulateDrives();
         if (_startupDefaultDirectoryRequested)
             ResolveStartupDefaultDirectoryAsync(_startupDefaultDirectoryGeneration).Forget();
@@ -355,13 +359,13 @@ public sealed class LibraryView : BasePageView
         title.style.marginRight = 14;
         bar.Add(title);
 
-        bar.Add(CreateFilterToggle("\u540D\u79F0", "\u540D", "\u6309\u540D\u79F0\u6392\u5E8F", true, out _sortTimeToggle, OnSortToggleChanged));
-        bar.Add(CreateFilterToggle("\u4EBA\u8138", "\u4EBA", "\u6309\u4EBA\u8138\u6392\u5E8F", false, out _sortFaceToggle, OnSortToggleChanged));
-        bar.Add(CreateFilterToggle("\u5730\u70B9", "\u5730", "\u6309\u5730\u70B9\u6392\u5E8F", false, out _sortLocationToggle, OnSortToggleChanged));
-        bar.Add(CreateFilterToggle("\u539F\u56FE", "\u539F", "\u663E\u793A\u539F\u56FE", true, out _showOriginalToggle, ApplyFilters));
-        bar.Add(CreateFilterToggle("\u4FEE\u56FE", "\u4FEE", "\u663E\u793A\u4FEE\u56FE", true, out _showEditedToggle, ApplyFilters));
-        bar.Add(CreateFilterToggle("\u672A\u77E5", "\u672A", "\u663E\u793A\u672A\u77E5\u7C7B\u578B", true, out _showUnknownToggle, ApplyFilters));
-        bar.Add(CreateFilterToggle("\u6536\u85CF", "\u85CF", "\u4EC5\u663E\u793A\u6536\u85CF", false, out _favoritesOnlyToggle, ApplyFilters));
+        bar.Add(CreateFilterToggle("\u540D\u79F0", "\u540D", "A", "\u6309\u540D\u79F0\u6392\u5E8F", true, out _sortTimeToggle, OnSortToggleChanged));
+        bar.Add(CreateFilterToggle("\u4EBA\u8138", "\u4EBA", "\u263a", "\u6309\u4EBA\u8138\u6392\u5E8F", false, out _sortFaceToggle, OnSortToggleChanged));
+        bar.Add(CreateFilterToggle("\u5730\u70B9", "\u5730", "\u2316", "\u6309\u5730\u70B9\u6392\u5E8F", false, out _sortLocationToggle, OnSortToggleChanged));
+        bar.Add(CreateFilterToggle("\u539F\u56FE", "\u539F", "\u25ce", "\u663E\u793A\u539F\u56FE", true, out _showOriginalToggle, ApplyFilters));
+        bar.Add(CreateFilterToggle("\u4FEE\u56FE", "\u4FEE", "\u270e", "\u663E\u793A\u4FEE\u56FE", true, out _showEditedToggle, ApplyFilters));
+        bar.Add(CreateFilterToggle("\u672A\u77E5", "\u672A", "?", "\u663E\u793A\u672A\u77E5\u7C7B\u578B", true, out _showUnknownToggle, ApplyFilters));
+        bar.Add(CreateFilterToggle("\u6536\u85CF", "\u85CF", "\u2605", "\u4EC5\u663E\u793A\u6536\u85CF", false, out _favoritesOnlyToggle, ApplyFilters));
         return bar;
     }
 
@@ -389,6 +393,39 @@ public sealed class LibraryView : BasePageView
         _drivePopup.style.flexGrow = 1;
         _drivePopup.RegisterValueChangedCallback(evt => OnStorageRootChanged(evt.newValue));
         driveRow.Add(_drivePopup);
+
+        var pathRow = new VisualElement();
+        pathRow.style.flexDirection = FlexDirection.Row;
+        pathRow.style.alignItems = Align.Center;
+        pathRow.style.marginTop = 8;
+        pane.Add(pathRow);
+
+        _directoryPathField = new TextField();
+        _directoryPathField.isDelayed = false;
+        _directoryPathField.tooltip = L("Paste a folder path", "\u7c98\u8d34\u76ee\u5f55\u8def\u5f84");
+        _directoryPathField.style.flexGrow = 1;
+        _directoryPathField.style.minWidth = 0;
+        _directoryPathField.style.marginRight = 6;
+        _directoryPathField.RegisterCallback<KeyDownEvent>(evt =>
+        {
+            if (evt.keyCode != KeyCode.Return && evt.keyCode != KeyCode.KeypadEnter)
+                return;
+
+            NavigateToEnteredDirectory();
+            evt.StopPropagation();
+        });
+        CrossPlatformClipboard.EnableTextFieldClipboard(_directoryPathField);
+        pathRow.Add(_directoryPathField);
+
+        _directoryPathGoButton = new Button(NavigateToEnteredDirectory)
+        {
+            text = L("Go", "\u8f6c\u5230")
+        };
+        _directoryPathGoButton.tooltip = L("Open this folder", "\u8df3\u8f6c\u5230\u8be5\u76ee\u5f55");
+        _directoryPathGoButton.style.height = 30;
+        _directoryPathGoButton.style.paddingLeft = 10;
+        _directoryPathGoButton.style.paddingRight = 10;
+        pathRow.Add(_directoryPathGoButton);
 
         _directorySummary = new Label("\u8BF7\u9009\u62E9\u76EE\u5F55");
         _directorySummary.style.marginTop = 10;
@@ -531,7 +568,7 @@ public sealed class LibraryView : BasePageView
         return pane;
     }
 
-    private VisualElement CreateFilterToggle(string text, string icon, string tooltip, bool defaultValue, out Toggle toggle, Action onChanged)
+    private VisualElement CreateFilterToggle(string text, string icon, string englishIcon, string tooltip, bool defaultValue, out Toggle toggle, Action onChanged)
     {
         toggle = new Toggle(text);
         var localToggle = toggle;
@@ -539,6 +576,7 @@ public sealed class LibraryView : BasePageView
         {
             label = text,
             icon = icon,
+            englishIcon = englishIcon,
             tooltip = tooltip
         };
         localToggle.tooltip = tooltip;
@@ -647,10 +685,12 @@ public sealed class LibraryView : BasePageView
             if (toggle == null || toggle.userData is not FilterTogglePresentation presentation)
                 continue;
 
-            var displayText = isPortrait ? presentation.icon : presentation.label;
+            var displayText = isPortrait
+                ? (AppLocalization.IsEnglish ? presentation.englishIcon : presentation.icon)
+                : AppLocalization.Translate(presentation.label);
             toggle.label = displayText;
             toggle.text = displayText;
-            toggle.tooltip = presentation.tooltip;
+            toggle.tooltip = AppLocalization.Translate(presentation.tooltip);
             var input = toggle.Q(className: "unity-toggle__input");
             if (input != null)
                 input.style.display = DisplayStyle.None;
@@ -730,7 +770,7 @@ public sealed class LibraryView : BasePageView
         if (_selectionTipsToggleButton != null)
         {
             _selectionTipsToggleButton.text = collapsed ? "\u25BE" : "\u25B4";
-            _selectionTipsToggleButton.tooltip = collapsed ? "\u5C55\u5F00\u56FE\u7247\u8BE6\u60C5" : "\u6536\u8D77\u56FE\u7247\u8BE6\u60C5";
+            _selectionTipsToggleButton.tooltip = AppLocalization.Translate(collapsed ? "\u5C55\u5F00\u56FE\u7247\u8BE6\u60C5" : "\u6536\u8D77\u56FE\u7247\u8BE6\u60C5");
         }
     }
 
@@ -834,17 +874,17 @@ public sealed class LibraryView : BasePageView
     private static string GetStorageRootLabel()
     {
 #if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
-        return "\u76D8\u7B26";
+        return L("Drive", "\u76D8\u7B26");
 #elif UNITY_STANDALONE_OSX || UNITY_EDITOR_OSX
-        return "\u5B58\u50A8";
+        return L("Storage", "\u5B58\u50A8");
 #elif UNITY_STANDALONE_LINUX || UNITY_EDITOR_LINUX
-        return "\u5B58\u50A8";
+        return L("Storage", "\u5B58\u50A8");
 #elif UNITY_ANDROID
-        return "\u5B58\u50A8";
+        return L("Storage", "\u5B58\u50A8");
 #elif UNITY_IOS
-        return "\u4F4D\u7F6E";
+        return L("Location", "\u4F4D\u7F6E");
 #else
-        return "\u5B58\u50A8";
+        return L("Storage", "\u5B58\u50A8");
 #endif
     }
 
@@ -1134,7 +1174,7 @@ public sealed class LibraryView : BasePageView
         roots.Add(new StorageRootOption
         {
             rootPath = normalized,
-            displayName = displayName
+            displayName = AppLocalization.Translate(displayName)
         });
     }
 
@@ -1155,7 +1195,7 @@ public sealed class LibraryView : BasePageView
                 roots.Add(new StorageRootOption
                 {
                     rootPath = normalized,
-                    displayName = string.IsNullOrWhiteSpace(name) ? labelPrefix : (labelPrefix + " · " + name)
+                    displayName = AppLocalization.Translate(string.IsNullOrWhiteSpace(name) ? labelPrefix : (labelPrefix + " · " + name))
                 });
             }
         }
@@ -1531,9 +1571,96 @@ public sealed class LibraryView : BasePageView
         if (!accessOk)
             return;
 
+        if (string.Equals(_selectedDirectoryPath, directoryPath, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(_materializedDirectoryPath, directoryPath, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        ApplyDirectorySelection(directoryPath, !string.Equals(_materializedDirectoryPath, directoryPath, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private void SetDirectoryPathInput(string directoryPath)
+    {
+        if (_directoryPathField != null)
+        _directoryPathField.SetValueWithoutNotify(directoryPath ?? string.Empty);
+    }
+
+    private void ApplyDirectorySelection(string directoryPath, bool forceRescan)
+    {
         _selectedDirectoryPath = directoryPath;
         _directorySummary.text = directoryPath;
-        RefreshThumbnailGrid(directoryPath, !string.Equals(_materializedDirectoryPath, directoryPath, StringComparison.OrdinalIgnoreCase));
+        SetDirectoryPathInput(directoryPath);
+        RefreshThumbnailGrid(directoryPath, forceRescan);
+    }
+
+    private void NavigateToEnteredDirectory()
+    {
+        if (_directoryPathField == null)
+            return;
+
+        // Text remains current while the field has focus, including immediately after a paste.
+        var inputPath = string.IsNullOrWhiteSpace(_directoryPathField.text)
+            ? _directoryPathField.value
+            : _directoryPathField.text;
+        NavigateToDirectoryPathAsync(inputPath).Forget();
+    }
+
+    private async UniTaskVoid NavigateToDirectoryPathAsync(string inputPath)
+    {
+        var requestedPath = inputPath?.Trim();
+        if (string.IsNullOrWhiteSpace(requestedPath))
+            return;
+
+        if (requestedPath.Length >= 2 && requestedPath[0] == '"' && requestedPath[requestedPath.Length - 1] == '"')
+            requestedPath = requestedPath.Substring(1, requestedPath.Length - 2).Trim();
+
+        string directoryPath;
+        try
+        {
+            directoryPath = Path.GetFullPath(requestedPath);
+            if (File.Exists(directoryPath))
+                directoryPath = Path.GetDirectoryName(directoryPath);
+        }
+        catch
+        {
+            ShowToast("\u8def\u5f84\u4e0d\u5b58\u5728\u6216\u4e0d\u662f\u76ee\u5f55", 2400);
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(directoryPath) || !Directory.Exists(directoryPath))
+        {
+            ShowToast("\u8def\u5f84\u4e0d\u5b58\u5728\u6216\u4e0d\u662f\u76ee\u5f55", 2400);
+            return;
+        }
+
+        if (_storageRoots.Count == 0)
+            PopulateDrives();
+
+        var root = GetBestStorageRootForPath(directoryPath);
+        if (string.IsNullOrWhiteSpace(root))
+        {
+            ShowToast("\u5f53\u524d\u5b58\u50a8\u4f4d\u7f6e\u65e0\u6cd5\u8bbf\u95ee", 2600);
+            return;
+        }
+
+        if (!await EnsureStorageAccessAsync(directoryPath, true))
+            return;
+
+        if (!string.Equals(_currentDriveRoot, root, StringComparison.OrdinalIgnoreCase))
+        {
+            var option = _storageRoots.FirstOrDefault(item => string.Equals(item.rootPath, root, StringComparison.OrdinalIgnoreCase));
+            if (option != null)
+                _drivePopup?.SetValueWithoutNotify(option.displayName);
+            SetDrive(root, false);
+        }
+
+        ExpandToDirectory(directoryPath);
+        _directoryTree?.schedule.Execute(() =>
+        {
+            ExpandToDirectory(directoryPath);
+            _directoryTree?.SetSelectionById(StableId(directoryPath));
+        });
+
+        ApplyDirectorySelection(directoryPath, true);
     }
 
     private void RefreshThumbnailGrid(string directoryPath, bool forceRescan)
@@ -1844,21 +1971,21 @@ public sealed class LibraryView : BasePageView
         var apertureText = ResolveDisplayAperture(entry);
         var captureTime = ResolveDisplayCaptureTime(entry);
         var mappedOriginalText = ResolveMappedOriginalSummary(entry);
-        _selectionTipsDetail.text =
+        _selectionTipsDetail.text = AppLocalization.Translate(
             $"\u62CD\u6444\u65F6\u95F4: {captureTime:yyyy-MM-dd HH:mm:ss}\n" +
             $"\u6587\u4EF6\u5927\u5C0F: {FormatBytes(entry.fileSize)}\n" +
             $"\u5730\u70B9: {NormalizeDisplay(locationText)}\n" +
             $"\u76F8\u673A: {NormalizeDisplay(cameraText)}\n" +
             $"\u5149\u5708: {NormalizeDisplay(apertureText)}\n" +
             $"\u4EBA\u8138: {NormalizeDisplay(entry.faceText)}\n" +
-            $"CLIP: {NormalizeDisplay(entry.clipText)}";
+            $"CLIP: {NormalizeDisplay(entry.clipText)}");
 
         if (_mappedOriginalLinkButton != null)
         {
             var canOpenMappedOriginal = entry.type == LibraryImageType.Edited &&
                                         !string.IsNullOrWhiteSpace(entry.mappedOriginalPath) &&
                                         File.Exists(entry.mappedOriginalPath);
-            _mappedOriginalLinkButton.text = NormalizeDisplay(mappedOriginalText);
+            _mappedOriginalLinkButton.text = AppLocalization.Translate(NormalizeDisplay(mappedOriginalText));
             _mappedOriginalLinkButton.style.display = DisplayStyle.Flex;
             _mappedOriginalLinkButton.SetEnabled(canOpenMappedOriginal);
             _mappedOriginalLinkButton.style.color = canOpenMappedOriginal
@@ -2159,7 +2286,7 @@ public sealed class LibraryView : BasePageView
             }
             else
             {
-                status.text = entry.thumbnailFailed ? "\u65E0\u6CD5\u9884\u89C8" : (entry.thumbnailLoading ? "\u52A0\u8F7D\u4E2D..." : "\u7B49\u5F85\u52A0\u8F7D");
+                status.text = AppLocalization.Translate(entry.thumbnailFailed ? "\u65E0\u6CD5\u9884\u89C8" : (entry.thumbnailLoading ? "\u52A0\u8F7D\u4E2D..." : "\u7B49\u5F85\u52A0\u8F7D"));
                 status.style.display = DisplayStyle.Flex;
             }
         }
@@ -2336,7 +2463,7 @@ public sealed class LibraryView : BasePageView
         _timeLabelByPath.Clear();
         _typeBadgeByPath.Clear();
 
-        var label = new Label(text);
+        var label = new Label(AppLocalization.Translate(text));
         label.style.color = new Color(0.82f, 0.86f, 0.92f, 1f);
         label.style.unityTextAlign = TextAnchor.MiddleCenter;
         label.style.width = Length.Percent(100);
@@ -2519,8 +2646,8 @@ public sealed class LibraryView : BasePageView
         return type switch
         {
             LibraryImageType.RawOriginal => "RAW",
-            LibraryImageType.Original => "\u539F\u56FE",
-            LibraryImageType.Edited => "\u4FEE\u8FC7\u56FE",
+            LibraryImageType.Original => AppLocalization.Text("Original", "\u539F\u56FE"),
+            LibraryImageType.Edited => AppLocalization.Text("Edited image", "\u4FEE\u8FC7\u56FE"),
             _ => "?"
         };
     }
