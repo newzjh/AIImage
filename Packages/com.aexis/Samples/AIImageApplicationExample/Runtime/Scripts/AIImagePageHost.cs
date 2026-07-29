@@ -36,6 +36,7 @@ public sealed class AIImagePageHost : MonoBehaviour
     private VisualElement _pageLayer;
     private BasePageView _activePage;
     private bool _transitioning;
+    private System.Threading.CancellationTokenSource _startupNavigationCts;
 
     private Image2ImageAI _image2ImageAI;
     private CodeOnlyFileDialog _fileDialog;
@@ -73,11 +74,15 @@ public sealed class AIImagePageHost : MonoBehaviour
         if (_pageLayer == null)
             return;
         if (_mainView2 != null)
+        {
             ShowImmediate(_mainView2);
+            SwitchToLibraryWhenStartupImageIsMissingAsync().Forget();
+        }
     }
 
     private void OnDisable()
     {
+        CancelStartupNavigation();
         _activePage?.Detach();
         _activePage = null;
         if (_pageLayer != null)
@@ -86,6 +91,7 @@ public sealed class AIImagePageHost : MonoBehaviour
 
     private void OnDestroy()
     {
+        CancelStartupNavigation();
         foreach (var pair in _textureCache)
         {
             if (pair.Value != null)
@@ -285,6 +291,50 @@ public sealed class AIImagePageHost : MonoBehaviour
         page.SetPageOffset(0f, 1f);
         _activePage = page;
         PrepareIncomingPage(page);
+    }
+
+    private async UniTaskVoid SwitchToLibraryWhenStartupImageIsMissingAsync()
+    {
+        CancelStartupNavigation();
+        var cts = new System.Threading.CancellationTokenSource();
+        _startupNavigationCts = cts;
+        try
+        {
+            await UniTask.Delay(180, cancellationToken: cts.Token);
+            if (cts.IsCancellationRequested ||
+                !isActiveAndEnabled ||
+                _transitioning ||
+                !ReferenceEquals(_activePage, _mainView2) ||
+                _mainView2 == null ||
+                _mainView2.HasCurrentImage)
+            {
+                return;
+            }
+
+            _libraryView?.SelectStartupDefaultDirectory();
+            RequestPageSwitch(_mainView2, AppPageId.LibraryView, SwipeDirection.Left);
+        }
+        catch (System.OperationCanceledException)
+        {
+        }
+        finally
+        {
+            if (ReferenceEquals(_startupNavigationCts, cts))
+            {
+                _startupNavigationCts = null;
+                cts.Dispose();
+            }
+        }
+    }
+
+    private void CancelStartupNavigation()
+    {
+        if (_startupNavigationCts == null)
+            return;
+
+        _startupNavigationCts.Cancel();
+        _startupNavigationCts.Dispose();
+        _startupNavigationCts = null;
     }
 
     private async UniTaskVoid SwitchToAsync(BasePageView incomingPage, SwipeDirection direction)

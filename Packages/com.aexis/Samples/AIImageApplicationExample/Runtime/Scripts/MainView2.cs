@@ -55,6 +55,7 @@ public sealed class MainView2 : BasePageView
     public Texture2D CurrentEditedTextureForSync => GetCurrentHistoryTexture();
     public Texture2D CurrentOriginalTextureForSync => GetOriginalHistoryTexture();
     public string CurrentDisplayLabelForSync => GetCurrentHistoryLabel();
+    public bool HasCurrentImage => GetCurrentHistoryTexture() != null || GetOriginalHistoryTexture() != null;
 
     private Texture2D _maleFaceTexture;
     private Texture2D _femaleFaceTexture;

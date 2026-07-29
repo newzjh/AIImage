@@ -41,6 +41,13 @@ public sealed class LibraryView : BasePageView
         Unknown
     }
 
+    private enum StartupDirectoryProbeResult
+    {
+        Found,
+        Missing,
+        Unavailable
+    }
+
     private sealed class DirectoryEntryData
     {
         public string path;
@@ -172,6 +179,8 @@ public sealed class LibraryView : BasePageView
     private readonly SemaphoreSlim _clipClassificationSemaphore = new SemaphoreSlim(1, 1);
     private readonly Dictionary<string, StorageAccessSnapshot> _storageAccessByPath = new Dictionary<string, StorageAccessSnapshot>(StringComparer.OrdinalIgnoreCase);
     private bool _didInitialPathSync;
+    private bool _startupDefaultDirectoryRequested;
+    private int _startupDefaultDirectoryGeneration;
     private string _currentDriveRoot;
     private string _selectedDirectoryPath;
     private string _selectedThumbnailPath;
@@ -190,6 +199,7 @@ public sealed class LibraryView : BasePageView
 
     private sealed class StorageAccessSnapshot
     {
+        public bool pathExists;
         public bool filesAccessible;
         public bool directoriesAccessible;
         public bool sawUnauthorized;
@@ -232,7 +242,10 @@ public sealed class LibraryView : BasePageView
     {
         SyncInitialSelectionFromCurrentImagePath();
         PopulateDrives();
-        RestoreSelectionState().Forget();
+        if (_startupDefaultDirectoryRequested)
+            ResolveStartupDefaultDirectoryAsync(_startupDefaultDirectoryGeneration).Forget();
+        else
+            RestoreSelectionState().Forget();
         if (!string.IsNullOrWhiteSpace(_materializedDirectoryPath) &&
             string.Equals(_materializedDirectoryPath, _selectedDirectoryPath, StringComparison.OrdinalIgnoreCase))
         {
@@ -244,6 +257,7 @@ public sealed class LibraryView : BasePageView
 
     protected override void OnBeforeDetach()
     {
+        _startupDefaultDirectoryGeneration++;
         CancelDirectoryScan();
         CancelThumbnailRefresh();
         CancelClipClassification();
@@ -260,6 +274,8 @@ public sealed class LibraryView : BasePageView
 
     protected override void OnDestroy()
     {
+        _startupDefaultDirectoryRequested = false;
+        _startupDefaultDirectoryGeneration++;
         CancelDirectoryScan();
         CancelThumbnailRefresh();
         CancelClipClassification();
@@ -309,6 +325,15 @@ public sealed class LibraryView : BasePageView
         catch
         {
         }
+    }
+
+    public void SelectStartupDefaultDirectory()
+    {
+        _startupDefaultDirectoryRequested = true;
+        _startupDefaultDirectoryGeneration++;
+        _selectedDirectoryPath = EnumerateStartupLibraryDirectoryCandidates()
+            .FirstOrDefault(path => !string.IsNullOrWhiteSpace(path));
+        _selectedThumbnailPath = null;
     }
 
     private VisualElement BuildTopBar()
@@ -867,6 +892,172 @@ public sealed class LibraryView : BasePageView
         }
     }
 
+    private async UniTaskVoid ResolveStartupDefaultDirectoryAsync(int generation)
+    {
+        foreach (var candidate in EnumerateStartupLibraryDirectoryCandidates())
+        {
+            var result = await ProbeStartupDirectoryAsync(candidate);
+            if (!IsCurrentStartupDirectoryRequest(generation))
+                return;
+
+            if (result == StartupDirectoryProbeResult.Found)
+            {
+                ApplyStartupDirectory(candidate);
+                return;
+            }
+
+            // An authorization prompt may still be active or was denied. Do not
+            // reinterpret that state as a missing library and switch to Downloads.
+            if (result == StartupDirectoryProbeResult.Unavailable)
+                return;
+        }
+
+        foreach (var candidate in EnumerateStartupDownloadDirectoryCandidates())
+        {
+            var result = await ProbeStartupDirectoryAsync(candidate);
+            if (!IsCurrentStartupDirectoryRequest(generation))
+                return;
+
+            if (result == StartupDirectoryProbeResult.Found)
+            {
+                ApplyStartupDirectory(candidate);
+                return;
+            }
+
+            if (result == StartupDirectoryProbeResult.Unavailable)
+                return;
+        }
+
+        if (!IsCurrentStartupDirectoryRequest(generation))
+            return;
+
+        _startupDefaultDirectoryRequested = false;
+        _selectedDirectoryPath = null;
+    }
+
+    private async UniTask<StartupDirectoryProbeResult> ProbeStartupDirectoryAsync(string directoryPath)
+    {
+        if (string.IsNullOrWhiteSpace(directoryPath))
+            return StartupDirectoryProbeResult.Missing;
+
+        _storageAccessByPath.Remove(directoryPath);
+        var accessGranted = await EnsureStorageAccessAsync(directoryPath, true);
+        var snapshot = GetStorageAccessSnapshot(directoryPath);
+        if (accessGranted && snapshot != null && snapshot.pathExists)
+            return StartupDirectoryProbeResult.Found;
+
+        // A failed authorization request has no storage snapshot. Keep the
+        // library target rather than falling back while the user is deciding.
+        if (snapshot == null)
+            return StartupDirectoryProbeResult.Unavailable;
+
+        return snapshot.pathExists
+            ? StartupDirectoryProbeResult.Unavailable
+            : StartupDirectoryProbeResult.Missing;
+    }
+
+    private bool IsCurrentStartupDirectoryRequest(int generation)
+    {
+        return _startupDefaultDirectoryRequested &&
+               generation == _startupDefaultDirectoryGeneration;
+    }
+
+    private void ApplyStartupDirectory(string directoryPath)
+    {
+        if (string.IsNullOrWhiteSpace(directoryPath))
+            return;
+
+        try
+        {
+            _selectedDirectoryPath = Path.GetFullPath(directoryPath);
+        }
+        catch
+        {
+            _selectedDirectoryPath = directoryPath;
+        }
+
+        _selectedThumbnailPath = null;
+        _startupDefaultDirectoryRequested = false;
+        PopulateDrives();
+        RestoreSelectionState().Forget();
+    }
+
+    private static IEnumerable<string> EnumerateStartupLibraryDirectoryCandidates()
+    {
+#if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
+        var pictures = Environment.GetFolderPath(Environment.SpecialFolder.MyPictures);
+        if (!string.IsNullOrWhiteSpace(pictures))
+            yield return pictures;
+
+        var profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        if (!string.IsNullOrWhiteSpace(profile))
+        {
+            yield return Path.Combine(profile, "Pictures");
+            yield return Path.Combine(profile, "\u56FE\u5E93");
+        }
+#elif UNITY_STANDALONE_OSX || UNITY_EDITOR_OSX
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        if (!string.IsNullOrWhiteSpace(home))
+        {
+            yield return Path.Combine(home, "Pictures");
+            yield return Path.Combine(home, "\u56FE\u5E93");
+        }
+#elif UNITY_STANDALONE_LINUX || UNITY_EDITOR_LINUX
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        if (!string.IsNullOrWhiteSpace(home))
+        {
+            yield return Path.Combine(home, "Pictures");
+            yield return Path.Combine(home, "\u56FE\u5E93");
+        }
+#elif UNITY_ANDROID
+        yield return "/storage/emulated/0/Pictures";
+        yield return "/storage/emulated/0/DCIM";
+#elif UNITY_IOS
+        var documents = Application.persistentDataPath;
+        if (!string.IsNullOrWhiteSpace(documents))
+        {
+            var appContainer = Directory.GetParent(documents)?.FullName;
+            if (!string.IsNullOrWhiteSpace(appContainer))
+            {
+                yield return Path.Combine(appContainer, "Library");
+                yield return Path.Combine(appContainer, "\u56FE\u5E93");
+            }
+
+            yield return Path.Combine(documents, "Library");
+            yield return Path.Combine(documents, "\u56FE\u5E93");
+            yield return Path.Combine(documents, "Pictures");
+        }
+#else
+        var pictures = Environment.GetFolderPath(Environment.SpecialFolder.MyPictures);
+        if (!string.IsNullOrWhiteSpace(pictures))
+            yield return pictures;
+#endif
+    }
+
+    private static IEnumerable<string> EnumerateStartupDownloadDirectoryCandidates()
+    {
+#if UNITY_ANDROID
+        yield return "/storage/emulated/0/Download";
+        yield return "/storage/emulated/0/Downloads";
+#elif UNITY_IOS
+        var documents = Application.persistentDataPath;
+        if (!string.IsNullOrWhiteSpace(documents))
+        {
+            yield return Path.Combine(documents, "Downloads");
+            yield return Path.Combine(documents, "Download");
+            yield return Path.Combine(documents, "\u4E0B\u8F7D");
+        }
+#else
+        var profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        if (!string.IsNullOrWhiteSpace(profile))
+        {
+            yield return Path.Combine(profile, "Downloads");
+            yield return Path.Combine(profile, "Download");
+            yield return Path.Combine(profile, "\u4E0B\u8F7D");
+        }
+#endif
+    }
+
     private List<StorageRootOption> BuildStorageRoots()
     {
         var roots = new List<StorageRootOption>();
@@ -1269,6 +1460,7 @@ public sealed class LibraryView : BasePageView
         {
             if (Directory.Exists(path))
             {
+                snapshot.pathExists = true;
                 snapshot.directoriesAccessible = true;
                 try
                 {
@@ -1304,6 +1496,7 @@ public sealed class LibraryView : BasePageView
             }
             else if (File.Exists(path))
             {
+                snapshot.pathExists = true;
                 snapshot.filesAccessible = true;
                 snapshot.directoriesAccessible = true;
             }
