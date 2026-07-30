@@ -166,13 +166,18 @@ Qwen Q4 passed a Windows strict-texture smoke without a visible response, then c
 | Platform | Device / Unity / graphics API | Current result |
 | --- | --- | --- |
 | Windows 11 Pro 64-bit | Intel Arc Graphics, Unity 6000.2.7f2, Vulkan | Passed for the documented 2026-07-29 runner results |
-| macOS | **Pending command-run report: machine, GPU, Unity; Metal required** | Run the [macOS Metal Player procedure](../Packages/com.aexis/Documentation~/apple-runtime-smoke.md#macos-metal-player) and return the build JSON, runner JSON, and Player log. |
+| macOS Editor | macOS 15.3.1, Mac16,10, Apple M4, 16 GB, Unity 6000.2.7f2, Metal | 2026-07-30 one-click report, 600 x 337 input: CLIP 11,755 ms; CodeFormer 15,332 ms; GFPGAN 4,696 ms; Real-ESRGAN 1,295 ms; Matting 2,182 ms; YOLO 986 ms (two people, 78.69% mask); YOLO + DeepFillV2 13,811 ms. Qwen3.5 Q4 and SD inpainting were skipped because models were absent. Editor evidence only. |
+| macOS Player | macOS 15.3.1, Mac16,10, Apple M4, 16 GB, Unity 6000.2.7f2, Metal | 2026-07-30 one-click report, 600 x 337 input: CLIP 97 ms; CodeFormer 2,515 ms; GFPGAN 1,136 ms; Real-ESRGAN 707 ms; Matting 421 ms; YOLO 294 ms (two people, 78.69% mask); YOLO + DeepFillV2 3,528 ms. Qwen3.5 Q4 and SD inpainting were skipped because models were absent. |
 | Android (MuMu emulator) | MuMu ADB `127.0.0.1:16384`; runtime report: vivo V2241A, ARM64, Adreno (TM) 650, 8961 MiB, Unity 6000.2.7f2, Vulkan GameActivity | Passed 2026-07-26 full default Main2: CodeFormer 6,946 ms; Real-ESRGAN 519 ms; GFPGAN 3,160 ms; YOLO 657 ms (four persons); DeepFillV2 3,442 ms; Matting 1,014 ms; CLIP 2,208 ms; Qwen Q4 326,821 ms (103 steps, 397 visible characters). |
 | iOS | **Pending command-run report: device, SoC/GPU, Unity; Metal required** | Run the [iOS Metal device procedure](../Packages/com.aexis/Documentation~/apple-runtime-smoke.md#ios-metal-device) and return the build JSON plus `runner-report=` console log. |
 
+| iPadOS Simulator (`iPad8,6` profile) | iPadOS 18.3, Apple M4 host GPU, 16 GB host memory, Unity 6000.2.7f2, Metal | 2026-07-30 one-click report, 600 x 337 input: CLIP 111 ms; CodeFormer 2,974 ms; GFPGAN 1,336 ms; Real-ESRGAN 903 ms; Matting 486 ms; YOLO 475 ms (two people, 78.69% mask); YOLO + DeepFillV2 4,731 ms. Qwen3.5 Q4 and SD inpainting were skipped because models were absent. Simulator evidence only. |
+
+The `iOS` pending row refers to a physical device, not the simulator result above.
+
 Unity 2022.3 through 6000.3 is the package compatibility target, not a record that every editor/platform combination has passed this application workload. Always validate with a real graphics device; `-nographics` is forbidden for Aexis package, shader, or runner validation.
 
-The MuMu result is a conservative Android fallback measurement, not a physical-device benchmark. A Snapdragon 888 handset has been reported as materially faster; its exact measurement remains a placeholder until the device, build, thermal state, graphics API, runner configuration, and timing are recorded.
+The MuMu result is a conservative Android fallback measurement, not a physical-device benchmark. The iPadOS report is a simulator measurement, not a physical-device benchmark. A Snapdragon 888 handset has been reported as materially faster; its exact measurement remains a placeholder until the device, build, thermal state, graphics API, runner configuration, and timing are recorded.
 
 ### Development runner report
 

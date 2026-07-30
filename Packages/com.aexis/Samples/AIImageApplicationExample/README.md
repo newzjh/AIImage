@@ -60,6 +60,18 @@ The copied Editor directory contains the existing AIImage tests and batch-debug 
 
 For target-machine macOS and iOS timing evidence, use the [Apple runtime smoke guide](../../Documentation~/apple-runtime-smoke.md). It builds a Metal test Player, runs the default runner set, and writes a JSON report without adding the test inputs to package or project source assets.
 
+## Tested environments
+
+The following one-click Test reports use the current 600 x 337 image. The iPadOS Simulator record is not a physical-device benchmark.
+
+| Environment | Runtime and graphics | Passed runner timings | Skipped model groups |
+| --- | --- | --- | --- |
+| macOS Editor, 2026-07-30 | macOS 15.3.1; Mac16,10; Apple M4; 16 GB; Unity 6000.2.7f2; Metal | CLIP 11,755 ms; CodeFormer 15,332 ms; GFPGAN 4,696 ms; Real-ESRGAN 1,295 ms; Matting 2,182 ms; YOLO 986 ms (two people, 78.69% mask); YOLO + DeepFillV2 13,811 ms | Qwen3.5 Q4; SD inpainting |
+| macOS Player, 2026-07-30 | macOS 15.3.1; Mac16,10; Apple M4; 16 GB; Unity 6000.2.7f2; Metal | CLIP 97 ms; CodeFormer 2,515 ms; GFPGAN 1,136 ms; Real-ESRGAN 707 ms; Matting 421 ms; YOLO 294 ms (two people, 78.69% mask); YOLO + DeepFillV2 3,528 ms | Qwen3.5 Q4; SD inpainting |
+| iPadOS Simulator (`iPad8,6` profile), 2026-07-30 | iPadOS 18.3; Apple M4 host GPU; 16 GB host memory; Unity 6000.2.7f2; Metal | CLIP 111 ms; CodeFormer 2,974 ms; GFPGAN 1,336 ms; Real-ESRGAN 903 ms; Matting 486 ms; YOLO 475 ms (two people, 78.69% mask); YOLO + DeepFillV2 4,731 ms | Qwen3.5 Q4; SD inpainting |
+
+All three reports completed with seven passed runners. The skipped groups were not installed or bundled in the tested runtime.
+
 ## Development Player one-click report
 
 MainView2 adds a **Test** button immediately before the Chinese and English language controls only in the Editor and Development Players. It uses the current history image for CLIP, CodeFormer, GFPGAN, Real-ESRGAN, Matting, Qwen3.5, YOLO segmentation, YOLO + DeepFillV2, and YOLO + SD inpainting. No model download is requested: missing local or bundled payloads are skipped. Each runner has a 600-second cancellation budget.

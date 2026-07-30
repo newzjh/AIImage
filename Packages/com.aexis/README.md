@@ -136,13 +136,15 @@ P1 visual operators (`GridSample`, deformable/ROI/detection families, `Fold`, `F
 | Platform | Hardware and Unity | Current evidence | Status |
 | --- | --- | --- | --- |
 | Windows 11 Pro 64-bit | Intel Arc Graphics, Unity 6000.2.7f2, Vulkan | 2026-07-29: CodeFormer 17,958 ms; GFPGAN 6,053 ms; DeepFillV2 2,196 ms; Real-ESRGAN 1,057 ms; SD inpainting 630,213 ms | Passed for those runs |
-| macOS | **Pending command-run report: machine/GPU/Unity; Metal required** | Run the [macOS Metal Player procedure](Documentation~/apple-runtime-smoke.md#macos-metal-player) and return the build JSON, runner JSON, and Player log. | Ready for target-machine validation |
+| macOS Editor | Mac16,10, Apple M4, 16 GB, Unity 6000.2.7f2, Metal | 2026-07-30, 600 x 337 input: CLIP 11,755 ms; CodeFormer 15,332 ms; GFPGAN 4,696 ms; Real-ESRGAN 1,295 ms; Matting 2,182 ms; YOLO 986 ms (two people, 78.69% mask); YOLO + DeepFillV2 13,811 ms. Qwen3.5 Q4 and SD inpainting skipped because their model groups were absent. | Completed editor report; not a Player benchmark |
+| macOS Player | Mac16,10, Apple M4, 16 GB, Unity 6000.2.7f2, Metal | 2026-07-30, 600 x 337 input: CLIP 97 ms; CodeFormer 2,515 ms; GFPGAN 1,136 ms; Real-ESRGAN 707 ms; Matting 421 ms; YOLO 294 ms (two people, 78.69% mask); YOLO + DeepFillV2 3,528 ms. Qwen3.5 Q4 and SD inpainting skipped because their model groups were absent. | Completed Player report |
 | Android (MuMu emulator) | MuMu ADB `127.0.0.1:16384`; runtime reports vivo V2241A, Adreno (TM) 650, Unity 6000.2.7f2, Vulkan GameActivity | 2026-07-26 full Main2 pass: CodeFormer 6,946 ms; Real-ESRGAN 519 ms; GFPGAN 3,160 ms; YOLO 657 ms (four persons); DeepFillV2 3,442 ms; Matting 1,014 ms; CLIP 2,208 ms; Qwen Q4 326,821 ms (103 steps, 397 visible characters) | Passed; conservative Android fallback |
-| iPhone / iPad | **Pending command-run report: device/SoC/GPU/Unity; Metal required** | Run the [iOS Metal device procedure](Documentation~/apple-runtime-smoke.md#ios-metal-device) and return the build JSON plus `runner-report=` console log. | Ready for target-machine validation |
+| iPadOS Simulator (`iPad8,6` profile) | Apple M4 host GPU, 16 GB host memory, Unity 6000.2.7f2, Metal | 2026-07-30, 600 x 337 input: CLIP 111 ms; CodeFormer 2,974 ms; GFPGAN 1,336 ms; Real-ESRGAN 903 ms; Matting 486 ms; YOLO 475 ms (two people, 78.69% mask); YOLO + DeepFillV2 4,731 ms. Qwen3.5 Q4 and SD inpainting skipped because their model groups were absent. | Completed simulator report; not a physical-device benchmark |
+| iPhone / iPad physical device | **Pending command-run report: device/SoC/GPU/Unity; Metal required** | Run the [iOS Metal device procedure](Documentation~/apple-runtime-smoke.md#ios-metal-device) and return the build JSON plus `runner-report=` console log. | Ready for target-machine device validation |
 
 Validation must use a real graphics device. `-nographics` is not valid for Aexis shader, package, or runner validation.
 
-MuMu is a conservative Android fallback measurement, not a physical-device benchmark. A Snapdragon 888 handset has been reported as materially faster; its exact result remains TBD until device, build, thermal state, graphics API, runner configuration, and timing are recorded.
+MuMu is a conservative Android fallback measurement, not a physical-device benchmark. The iPadOS report is a simulator measurement, not a physical-device benchmark. A Snapdragon 888 handset has been reported as materially faster; its exact result remains TBD until device, build, thermal state, graphics API, runner configuration, and timing are recorded.
 
 ### Development runner report
 

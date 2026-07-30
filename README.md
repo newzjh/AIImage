@@ -116,18 +116,26 @@ The snapshot contains 56 `partial`, 29 `debug-only`, 5 `alias-only`, and 6 `unsu
 
 ## Tested Environment
 
-Compatible Unity targets and completed validation are different claims. The current completed runner evidence is the Windows row below. Fill the blank hardware and timing fields on the destination machine before marking the remaining rows as passed.
+Compatible Unity targets and completed validation are different claims. The table records Windows, macOS Editor, macOS Player, and iPadOS Simulator evidence separately from the still-pending physical-iOS check.
 
 | Platform | Device / GPU | Unity | Graphics API | Current runner evidence | Status |
 | --- | --- | --- | --- | --- | --- |
 | Windows 11 Pro 64-bit | Intel Arc Graphics | 6000.2.7f2 | Vulkan | 2026-07-29: CodeFormer 17,958 ms; GFPGAN 6,053 ms; DeepFillV2 2,196 ms; Real-ESRGAN 1,057 ms; SD inpainting 630,213 ms | Passed for the documented runs |
-| macOS | **TBD: machine and GPU** | **TBD: Unity version** | **TBD** | Existing build-failure log at `Tools/AIImage_MACOS.build-failure.txt`; no passing measurement recorded | Blocked / not validated |
+| macOS Editor | Mac16,10; Apple M4; 16 GB | 6000.2.7f2 | Metal | 2026-07-30, 600 x 337 input: CLIP 11,755 ms; CodeFormer 15,332 ms; GFPGAN 4,696 ms; Real-ESRGAN 1,295 ms; Matting 2,182 ms; YOLO 986 ms (two people, 78.69% mask); YOLO + DeepFillV2 13,811 ms | Completed: seven runners passed; Qwen3.5 Q4 and SD inpainting skipped because their model groups were absent. Editor evidence only. |
+| macOS Player | Mac16,10; Apple M4; 16 GB | 6000.2.7f2 | Metal | 2026-07-30, 600 x 337 input: CLIP 97 ms; CodeFormer 2,515 ms; GFPGAN 1,136 ms; Real-ESRGAN 707 ms; Matting 421 ms; YOLO 294 ms (two people, 78.69% mask); YOLO + DeepFillV2 3,528 ms | Completed: seven runners passed; Qwen3.5 Q4 and SD inpainting skipped because their model groups were absent. |
 | Android (MuMu emulator) | MuMu ADB `127.0.0.1:16384`; runtime report: vivo V2241A, Adreno (TM) 650, 8961 MiB | 6000.2.7f2 | Vulkan, GameActivity | 2026-07-26 full default Main2 pass: CodeFormer 6,946 ms; Real-ESRGAN 519 ms; GFPGAN 3,160 ms; YOLO 657 ms (four persons); DeepFillV2 3,442 ms; Matting 1,014 ms; CLIP 2,208 ms; Qwen Q4 326,821 ms (103 steps, 397 visible characters) | Passed; conservative Android fallback |
-| iPhone / iPad | **TBD: model, SoC, GPU** | **TBD: Unity version** | **TBD** | **TBD: build, thermal state, runner, timing** | Not yet validated |
+| iPadOS Simulator (`iPad8,6` profile) | Apple M4 host GPU; 16 GB host memory | 6000.2.7f2 | Metal | 2026-07-30, 600 x 337 input: CLIP 111 ms; CodeFormer 2,974 ms; GFPGAN 1,336 ms; Real-ESRGAN 903 ms; Matting 486 ms; YOLO 475 ms (two people, 78.69% mask); YOLO + DeepFillV2 4,731 ms | Completed: seven runners passed; Qwen3.5 Q4 and SD inpainting skipped because their model groups were absent. Simulator evidence only. |
+| iPhone / iPad physical device | **Pending command-run report: device, SoC, GPU** | **Pending command-run report: Unity version** | Metal required | Run the [iOS Metal device procedure](Packages/com.aexis/Documentation~/apple-runtime-smoke.md#ios-metal-device) on the target Mac and return its build JSON plus `runner-report=` console log. | Ready for target-machine device validation |
 
 Use a real graphics device for all Aexis validation. `-nographics` is not a valid package, shader, or runner test mode.
 
-The MuMu result is a conservative Android fallback measurement, not a physical-device benchmark. A Snapdragon 888 handset has been reported as materially faster; record the handset, build, thermal state, graphics API, runner configuration, and timing before adding an exact physical-device value.
+The MuMu result is a conservative Android fallback measurement, not a physical-device benchmark. The iPadOS report is a simulator measurement, not a physical-device benchmark. A Snapdragon 888 handset has been reported as materially faster; record the handset, build, thermal state, graphics API, runner configuration, and timing before adding an exact physical-device value.
+
+### Development runner report
+
+In the Editor and Development Players only, MainView2 adds a **Test** button immediately before its Chinese and English language buttons. It uses the current history image and runs CLIP, CodeFormer, GFPGAN, Real-ESRGAN, Matting, Qwen3.5, YOLO segmentation, YOLO + DeepFillV2, and YOLO + SD inpainting. Each runner gets a 600-second cancellation budget. Missing local or bundled model payloads are recorded as skipped; this workflow never opens the model-download dialog.
+
+The test updates one JSON file named `AexisDevelopmentRunnerTest_*.json` below `Application.persistentDataPath` after every runner. It records platform/device data, source dimensions, model-group status, elapsed time, output dimensions, person count, mask coverage, and failure or timeout detail. Windows uses the native Shell to open the report's folder and select the report, macOS reveals it in Finder, Android requests a compatible JSON viewer, and iOS opens the native document preview.
 
 ## How to Install
 
