@@ -32,6 +32,8 @@ Qwen, GFPGAN, Stable Diffusion inpainting, MONAI, and VISTA weights are external
 
 The Android evidence is a 2026-07-26 full Main2 pass through MuMu ADB `127.0.0.1:16384` (runtime report: ARM64, vivo V2241A, Adreno (TM) 650, Unity 6000.2.7f2, Vulkan GameActivity): CodeFormer 6,946 ms; Real-ESRGAN 519 ms; GFPGAN 3,160 ms; YOLO 657 ms for four people; DeepFillV2 3,442 ms; Matting 1,014 ms; CLIP 2,208 ms; and Qwen Q4 326,821 ms across 103 decoder steps. MuMu is a conservative fallback measurement, not a physical-device benchmark. A Snapdragon 888 handset has been reported as materially faster; its exact result remains TBD until device, build, thermal state, graphics API, runner configuration, and timing are recorded.
 
+macOS and iOS target-machine rows are intentionally pending command-run reports. Use the [Apple runtime smoke guide](apple-runtime-smoke.md) to build a Metal Player, run the same default runner set, and return its generated JSON and log instead of manually transcribing timings.
+
 ## Included reusable runners
 
 | Component | Function | Default model family |

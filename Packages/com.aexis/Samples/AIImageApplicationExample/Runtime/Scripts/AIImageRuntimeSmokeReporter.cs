@@ -9,29 +9,39 @@ using UnityEngine;
 using UnityEngine.SceneManagement;
 using Stopwatch = System.Diagnostics.Stopwatch;
 
-internal sealed class AIImageAndroidRuntimeSmokeReporter : MonoBehaviour
+internal sealed class AIImageRuntimeSmokeReporter : MonoBehaviour
 {
     private const string IntentExtraName = "aiimage_smoke";
     private const string RunnerIntentExtraName = "aiimage_runner_smoke";
     private const string QwenDeviceQualificationIntentExtraName = "aiimage_runner_qwen_device_qualification";
-    private const string ReportFileName = "aiimage_android_smoke.json";
-    private const string RunnerReportFileName = "aiimage_android_runner_smoke.json";
+    private const string AndroidReportFileName = "aiimage_android_smoke.json";
+    private const string AndroidRunnerReportFileName = "aiimage_android_runner_smoke.json";
+    private const string AppleReportFileName = "aiimage_apple_smoke.json";
+    private const string AppleRunnerReportFileName = "aiimage_apple_runner_smoke.json";
     private const string RunnerInputDirectoryName = "aiimage-smoke";
     private const string FaceInputFileName = "face.png";
     private const string SceneInputFileName = "scene.jpg";
+    private const string RunnerSmokeCommandLineArgument = "-aiimage_runner_smoke";
+    private const string QwenDeviceQualificationCommandLineArgument = "-aiimage_runner_qwen_device_qualification";
+    private const string RunnerReportCommandLineArgument = "-aiimage_runner_smoke_report";
+    private const string QuitWhenCompleteCommandLineArgument = "-aiimage_runner_smoke_quit_when_done";
     private const string QwenMultiPersonSmokePrompt =
         "Respond directly without explaining the task or your reasoning. First state the total number of distinct people in the image, then list every person from left to right. Do not count an isolated hand, arm, reflection, or other body fragment as an additional person. Do not stop after the first person.";
     private const int ExpectedQwenPeopleCount = 4;
     // Match Main2's product request. The validated mobile Q4 asset set applies
     // its runtime cap, so this also proves that the mobile tuning is active.
     private const int QwenProductRequestedMaxNewTokens = 256;
-    private const string LogPrefix = "[AIIMAGE_ANDROID_SMOKE]";
+    private static string LogPrefix => Application.platform == RuntimePlatform.Android
+        ? "[AIIMAGE_ANDROID_SMOKE]"
+        : "[AEXIS_RUNTIME_SMOKE]";
 
     [Serializable]
     private sealed class Report
     {
         public string status;
         public string unityVersion;
+        public string platform;
+        public string operatingSystem;
         public string scene;
         public string deviceModel;
         public string graphicsDeviceType;
@@ -61,9 +71,15 @@ internal sealed class AIImageAndroidRuntimeSmokeReporter : MonoBehaviour
     {
         public string status;
         public string unityVersion;
+        public string platform;
+        public string operatingSystem;
+        public string deviceModel;
         public string graphicsDeviceType;
         public string graphicsDeviceName;
         public int systemMemoryMb;
+        public string persistentDataPath;
+        public string faceInputPath;
+        public string sceneInputPath;
         public bool nonQwenValid;
         public bool valid;
         public string qwenStatus;
@@ -79,18 +95,54 @@ internal sealed class AIImageAndroidRuntimeSmokeReporter : MonoBehaviour
     [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
     private static void CreateIfRequested()
     {
-#if UNITY_ANDROID && !UNITY_EDITOR
-        var smokeRequested = IsIntentBooleanSet(IntentExtraName);
-        var runnerSmokeRequested = IsIntentBooleanSet(RunnerIntentExtraName);
+#if !UNITY_EDITOR
+        var smokeRequested = false;
+        var runnerSmokeRequested = false;
+        var qwenDeviceQualificationRequested = false;
+#if UNITY_ANDROID
+        smokeRequested = IsIntentBooleanSet(IntentExtraName);
+        runnerSmokeRequested = IsIntentBooleanSet(RunnerIntentExtraName);
+        qwenDeviceQualificationRequested = runnerSmokeRequested
+            && IsIntentBooleanSet(QwenDeviceQualificationIntentExtraName);
+#else
+        smokeRequested = HasCommandLineArgument(IntentExtraName);
+        runnerSmokeRequested = HasCommandLineArgument(RunnerSmokeCommandLineArgument)
+            || IsIosAutorunBuild();
+        qwenDeviceQualificationRequested = runnerSmokeRequested
+            && (HasCommandLineArgument(QwenDeviceQualificationCommandLineArgument) || IsIosAutorunBuild());
+#endif
         if (!smokeRequested && !runnerSmokeRequested)
             return;
 
-        var gameObject = new GameObject(nameof(AIImageAndroidRuntimeSmokeReporter));
+        var gameObject = new GameObject(nameof(AIImageRuntimeSmokeReporter));
         DontDestroyOnLoad(gameObject);
-        var reporter = gameObject.AddComponent<AIImageAndroidRuntimeSmokeReporter>();
+        var reporter = gameObject.AddComponent<AIImageRuntimeSmokeReporter>();
         reporter._runDefaultRunnerSmoke = runnerSmokeRequested;
-        reporter._runQwenDeviceQualification = runnerSmokeRequested
-            && IsIntentBooleanSet(QwenDeviceQualificationIntentExtraName);
+        reporter._runQwenDeviceQualification = qwenDeviceQualificationRequested;
+#endif
+    }
+
+    private static bool HasCommandLineArgument(string argument)
+    {
+        if (string.IsNullOrWhiteSpace(argument))
+            return false;
+
+        var values = Environment.GetCommandLineArgs();
+        for (var index = 0; index < values.Length; index++)
+        {
+            if (string.Equals(values[index], argument, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool IsIosAutorunBuild()
+    {
+#if UNITY_IOS && AEXIS_IOS_RUNTIME_SMOKE_AUTORUN
+        return true;
+#else
+        return false;
 #endif
     }
 
@@ -125,6 +177,8 @@ internal sealed class AIImageAndroidRuntimeSmokeReporter : MonoBehaviour
             {
                 status = "ready",
                 unityVersion = Application.unityVersion,
+                platform = Application.platform.ToString(),
+                operatingSystem = SystemInfo.operatingSystem,
                 scene = SceneManager.GetActiveScene().name,
                 deviceModel = SystemInfo.deviceModel,
                 graphicsDeviceType = SystemInfo.graphicsDeviceType.ToString(),
@@ -135,7 +189,7 @@ internal sealed class AIImageAndroidRuntimeSmokeReporter : MonoBehaviour
                 persistentDataPath = Application.persistentDataPath
             };
             var json = JsonUtility.ToJson(report, true);
-            File.WriteAllText(Path.Combine(Application.persistentDataPath, ReportFileName), json);
+            File.WriteAllText(SmokeReportPath, json);
             Debug.Log(LogPrefix + " ready " + json.Replace('\n', ' '));
         }
         catch (Exception exception)
@@ -156,8 +210,11 @@ internal sealed class AIImageAndroidRuntimeSmokeReporter : MonoBehaviour
         Texture2D sceneInput = null;
         try
         {
-            if (SystemInfo.graphicsDeviceType != UnityEngine.Rendering.GraphicsDeviceType.Vulkan)
-                throw new InvalidOperationException("Android runner smoke requires Vulkan. Active API is " + SystemInfo.graphicsDeviceType + ".");
+            var requiredGraphicsApi = RequiredGraphicsApi;
+            if (SystemInfo.graphicsDeviceType != requiredGraphicsApi)
+                throw new InvalidOperationException(
+                    Application.platform + " runner smoke requires " + requiredGraphicsApi
+                    + ". Active API is " + SystemInfo.graphicsDeviceType + ".");
 
             // Main2 registers this in its page host. The intent-driven harness
             // does not depend on that UI lifecycle, so register it explicitly.
@@ -201,6 +258,12 @@ internal sealed class AIImageAndroidRuntimeSmokeReporter : MonoBehaviour
             Debug.Log(LogPrefix + " default runner smoke " + _runnerReport.status
                 + " valid=" + _runnerReport.valid
                 + " path=" + RunnerReportPath);
+            Debug.Log(LogPrefix + " runner-report=" + JsonUtility.ToJson(_runnerReport));
+            if (Application.platform == RuntimePlatform.OSXPlayer
+                && HasCommandLineArgument(QuitWhenCompleteCommandLineArgument))
+            {
+                Application.Quit(0);
+            }
         }
     }
 
@@ -208,9 +271,15 @@ internal sealed class AIImageAndroidRuntimeSmokeReporter : MonoBehaviour
     {
         _runnerReport.status = "running";
         _runnerReport.unityVersion = Application.unityVersion;
+        _runnerReport.platform = Application.platform.ToString();
+        _runnerReport.operatingSystem = SystemInfo.operatingSystem;
+        _runnerReport.deviceModel = SystemInfo.deviceModel;
         _runnerReport.graphicsDeviceType = SystemInfo.graphicsDeviceType.ToString();
         _runnerReport.graphicsDeviceName = SystemInfo.graphicsDeviceName;
         _runnerReport.systemMemoryMb = SystemInfo.systemMemorySize;
+        _runnerReport.persistentDataPath = Application.persistentDataPath;
+        _runnerReport.faceInputPath = ResolveInputPath(FaceInputFileName);
+        _runnerReport.sceneInputPath = ResolveInputPath(SceneInputFileName);
         _runnerReport.nonQwenValid = false;
         _runnerReport.valid = false;
         _runnerReport.qwenStatus = "not_started";
@@ -653,9 +722,9 @@ internal sealed class AIImageAndroidRuntimeSmokeReporter : MonoBehaviour
 
     private Texture2D LoadInputTexture(string fileName)
     {
-        var path = Path.Combine(RunnerInputDirectoryPath, fileName);
+        var path = ResolveInputPath(fileName);
         if (!File.Exists(path))
-            throw new FileNotFoundException("Android runner smoke input is missing.", path);
+            throw new FileNotFoundException("Runtime runner smoke input is missing.", path);
         var texture = new Texture2D(2, 2, TextureFormat.RGBA32, false, true)
         {
             name = fileName,
@@ -665,7 +734,7 @@ internal sealed class AIImageAndroidRuntimeSmokeReporter : MonoBehaviour
         if (!texture.LoadImage(File.ReadAllBytes(path), false))
         {
             DestroyTexture(texture);
-            throw new InvalidDataException("Could not decode Android runner smoke input: " + path);
+            throw new InvalidDataException("Could not decode runtime runner smoke input: " + path);
         }
         return texture;
     }
@@ -715,13 +784,55 @@ internal sealed class AIImageAndroidRuntimeSmokeReporter : MonoBehaviour
             UnityEngine.Object.Destroy(value);
     }
 
+    private static UnityEngine.Rendering.GraphicsDeviceType RequiredGraphicsApi => Application.platform == RuntimePlatform.Android
+        ? UnityEngine.Rendering.GraphicsDeviceType.Vulkan
+        : UnityEngine.Rendering.GraphicsDeviceType.Metal;
+
     private string RunnerInputDirectoryPath => Path.Combine(Application.persistentDataPath, RunnerInputDirectoryName);
-    private string RunnerReportPath => Path.Combine(Application.persistentDataPath, RunnerReportFileName);
+    private string SmokeReportPath => Path.Combine(
+        Application.persistentDataPath,
+        Application.platform == RuntimePlatform.Android ? AndroidReportFileName : AppleReportFileName);
+    private string RunnerReportPath
+    {
+        get
+        {
+            var configured = GetCommandLineValue(RunnerReportCommandLineArgument);
+            if (Application.platform != RuntimePlatform.IPhonePlayer && !string.IsNullOrWhiteSpace(configured))
+                return Path.GetFullPath(configured);
+            return Path.Combine(
+                Application.persistentDataPath,
+                Application.platform == RuntimePlatform.Android ? AndroidRunnerReportFileName : AppleRunnerReportFileName);
+        }
+    }
+
+    private string ResolveInputPath(string fileName)
+    {
+        var persistentPath = Path.Combine(RunnerInputDirectoryPath, fileName);
+        if (File.Exists(persistentPath) || Application.platform == RuntimePlatform.Android)
+            return persistentPath;
+
+        return Path.Combine(Application.streamingAssetsPath, RunnerInputDirectoryName, fileName);
+    }
+
+    private static string GetCommandLineValue(string argument)
+    {
+        var values = Environment.GetCommandLineArgs();
+        for (var index = 0; index + 1 < values.Length; index++)
+        {
+            if (string.Equals(values[index], argument, StringComparison.OrdinalIgnoreCase))
+                return values[index + 1];
+        }
+
+        return string.Empty;
+    }
 
     private void WriteRunnerReport()
     {
         try
         {
+            var directory = Path.GetDirectoryName(RunnerReportPath);
+            if (!string.IsNullOrWhiteSpace(directory))
+                Directory.CreateDirectory(directory);
             File.WriteAllText(RunnerReportPath, JsonUtility.ToJson(_runnerReport, true));
         }
         catch (Exception exception)

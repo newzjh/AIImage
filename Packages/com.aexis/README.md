@@ -136,9 +136,9 @@ P1 visual operators (`GridSample`, deformable/ROI/detection families, `Fold`, `F
 | Platform | Hardware and Unity | Current evidence | Status |
 | --- | --- | --- | --- |
 | Windows 11 Pro 64-bit | Intel Arc Graphics, Unity 6000.2.7f2, Vulkan | 2026-07-29: CodeFormer 17,958 ms; GFPGAN 6,053 ms; DeepFillV2 2,196 ms; Real-ESRGAN 1,057 ms; SD inpainting 630,213 ms | Passed for those runs |
-| macOS | **TBD: machine/GPU/Unity** | `Tools/AIImage_MACOS.build-failure.txt` records a failure, not a pass | Blocked / not validated |
+| macOS | **Pending command-run report: machine/GPU/Unity; Metal required** | Run the [macOS Metal Player procedure](Documentation~/apple-runtime-smoke.md#macos-metal-player) and return the build JSON, runner JSON, and Player log. | Ready for target-machine validation |
 | Android (MuMu emulator) | MuMu ADB `127.0.0.1:16384`; runtime reports vivo V2241A, Adreno (TM) 650, Unity 6000.2.7f2, Vulkan GameActivity | 2026-07-26 full Main2 pass: CodeFormer 6,946 ms; Real-ESRGAN 519 ms; GFPGAN 3,160 ms; YOLO 657 ms (four persons); DeepFillV2 3,442 ms; Matting 1,014 ms; CLIP 2,208 ms; Qwen Q4 326,821 ms (103 steps, 397 visible characters) | Passed; conservative Android fallback |
-| iPhone / iPad | **TBD: device/SoC/GPU/Unity** | **TBD: runner and timing** | Not yet validated |
+| iPhone / iPad | **Pending command-run report: device/SoC/GPU/Unity; Metal required** | Run the [iOS Metal device procedure](Documentation~/apple-runtime-smoke.md#ios-metal-device) and return the build JSON plus `runner-report=` console log. | Ready for target-machine validation |
 
 Validation must use a real graphics device. `-nographics` is not valid for Aexis shader, package, or runner validation.
 
