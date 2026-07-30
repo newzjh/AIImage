@@ -87,7 +87,9 @@ public static class AIImageDevelopmentRunnerTest
         {
 #if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
             RevealWindowsReport(absoluteReportPath);
-#elif UNITY_STANDALONE_OSX || UNITY_EDITOR_OSX
+#elif UNITY_STANDALONE_OSX && !UNITY_EDITOR
+            RevealMacReport(absoluteReportPath);
+#elif UNITY_EDITOR_OSX
             Process.Start(new ProcessStartInfo
             {
                 FileName = "/usr/bin/open",
@@ -199,6 +201,43 @@ public static class AIImageDevelopmentRunnerTest
 
     [System.Runtime.InteropServices.DllImport("ole32.dll")]
     private static extern void CoTaskMemFree(IntPtr memory);
+#endif
+
+#if UNITY_STANDALONE_OSX && !UNITY_EDITOR
+    private static void RevealMacReport(string reportPath)
+    {
+        try
+        {
+            if (AIImageMacReportReveal(reportPath) != 0)
+                return;
+        }
+        catch (Exception exception)
+        {
+            UnityEngine.Debug.LogWarning(
+                "Aexis development runner report is available at " + reportPath
+                + ". macOS Finder reveal could not be opened: " + exception.Message);
+        }
+
+        try
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = "/usr/bin/open",
+                Arguments = "-R \"" + reportPath.Replace("\"", "\\\"") + "\"",
+                UseShellExecute = false,
+                CreateNoWindow = true
+            });
+        }
+        catch (Exception exception)
+        {
+            UnityEngine.Debug.LogWarning(
+                "Aexis development runner report is available at " + reportPath
+                + ". macOS Finder fallback could not be opened: " + exception.Message);
+        }
+    }
+
+    [System.Runtime.InteropServices.DllImport("AIImageReportReveal")]
+    private static extern int AIImageMacReportReveal(string path);
 #endif
 
 #if UNITY_ANDROID && !UNITY_EDITOR
