@@ -59,3 +59,9 @@ always delivered through the model release archives.
 The copied Editor directory contains the existing AIImage tests and batch-debug tooling. Checks needing an omitted model, external executable, medical input, private golden result, or platform-native plugin remain unavailable until that artifact is installed. MONAI/VISTA model execution is intentionally not a post-import smoke test.
 
 For target-machine macOS and iOS timing evidence, use the [Apple runtime smoke guide](../../Documentation~/apple-runtime-smoke.md). It builds a Metal test Player, runs the default runner set, and writes a JSON report without adding the test inputs to package or project source assets.
+
+## Development Player one-click report
+
+MainView2 adds a **Test** button immediately before the Chinese and English language controls only in the Editor and Development Players. It uses the current history image for CLIP, CodeFormer, GFPGAN, Real-ESRGAN, Matting, Qwen3.5, YOLO segmentation, YOLO + DeepFillV2, and YOLO + SD inpainting. No model download is requested: missing local or bundled payloads are skipped. Each runner has a 600-second cancellation budget.
+
+The command keeps one `AexisDevelopmentRunnerTest_*.json` report in `Application.persistentDataPath`, updating it after each runner. The report stores source/device metadata, status, elapsed time, output dimensions, person count, mask coverage, and diagnostic detail. Windows opens the containing folder in Explorer, macOS reveals it in Finder, Android requests a compatible JSON viewer, and iOS opens the native document preview.

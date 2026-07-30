@@ -144,6 +144,12 @@ Validation must use a real graphics device. `-nographics` is not valid for Aexis
 
 MuMu is a conservative Android fallback measurement, not a physical-device benchmark. A Snapdragon 888 handset has been reported as materially faster; its exact result remains TBD until device, build, thermal state, graphics API, runner configuration, and timing are recorded.
 
+### Development runner report
+
+MainView2 exposes a **Test** button only in the Unity Editor and Development Players. It sits immediately before the Chinese and English language buttons and uses the current history image to run CLIP, CodeFormer, GFPGAN, Real-ESRGAN, Matting, Qwen3.5, YOLO segmentation, YOLO + DeepFillV2, and YOLO + SD inpainting. Each runner receives a 600-second cancellation token. Missing local or bundled model groups are skipped and written to the report; the test never requests a model download.
+
+One JSON report is updated after each runner at `Application.persistentDataPath/AexisDevelopmentRunnerTest_*.json`. Windows opens its containing folder in Explorer, macOS reveals the file in Finder, Android launches a compatible JSON-view intent, and iOS opens the native document preview. The report includes source-image metadata, platform/device information, runner status, elapsed time, output dimensions, person count, mask coverage, and error or timeout detail.
+
 ## Quick start
 
 ```csharp

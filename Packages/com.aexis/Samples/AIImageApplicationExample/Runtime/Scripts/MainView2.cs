@@ -71,6 +71,10 @@ public sealed class MainView2 : BasePageView
     private Button _backgroundButton;
     private Button _panelToggleButton;
     private Button _qwenAnalysisButton;
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+    private Button _developmentRunnerTestButton;
+    private bool _developmentRunnerTestRunning;
+#endif
     private VisualElement _adjustPanel;
     private VisualElement _adjustBody;
     private VisualElement _adjustHost;
@@ -97,6 +101,9 @@ public sealed class MainView2 : BasePageView
     private System.Threading.CancellationTokenSource _maleFaceMaskCts;
     private System.Threading.CancellationTokenSource _femaleFaceMaskCts;
     private System.Threading.CancellationTokenSource _qwenAnalysisCts;
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+    private System.Threading.CancellationTokenSource _developmentRunnerTestCts;
+#endif
 
     protected override void OnInitialized()
     {
@@ -134,6 +141,9 @@ public sealed class MainView2 : BasePageView
     protected override void OnBeforeDetach()
     {
         UnbindAiEvents();
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+        CancelAndDisposeCts(ref _developmentRunnerTestCts);
+#endif
         CancelAndDisposeCts(ref _qwenAnalysisCts);
         CancelAndDisposeCts(ref _lifetimeCts);
         CancelAndDisposeCts(ref _faceMaskCts);
@@ -389,8 +399,133 @@ public sealed class MainView2 : BasePageView
         AddTool("CF", "🤦‍", OnCodeFormerRepro);
         AddTool("GFP", "🤦‍", OnGfpganRepro);
 
+        var languageRow = new VisualElement();
+        languageRow.style.flexDirection = FlexDirection.Row;
+        languageRow.style.alignItems = Align.Center;
+        languageRow.style.flexShrink = 0;
+        languageRow.style.marginLeft = 8;
+        shell.Add(languageRow);
+
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+        _developmentRunnerTestButton = new Button(OnDevelopmentRunnerTest)
+        {
+            text = "Test"
+        };
+        _developmentRunnerTestButton.tooltip = L(
+            "Run all local development runner tests with the current image",
+            "使用当前图片运行本地开发跑测");
+        _developmentRunnerTestButton.style.width = 58;
+        _developmentRunnerTestButton.style.height = 36;
+        _developmentRunnerTestButton.style.marginLeft = 6;
+        _developmentRunnerTestButton.style.paddingLeft = 0;
+        _developmentRunnerTestButton.style.paddingRight = 0;
+        _developmentRunnerTestButton.style.color = Color.white;
+        _developmentRunnerTestButton.style.backgroundColor = new StyleColor(new Color(0.20f, 0.55f, 0.32f, 1f));
+        _developmentRunnerTestButton.style.borderTopLeftRadius = 8;
+        _developmentRunnerTestButton.style.borderTopRightRadius = 8;
+        _developmentRunnerTestButton.style.borderBottomLeftRadius = 8;
+        _developmentRunnerTestButton.style.borderBottomRightRadius = 8;
+        languageRow.Add(_developmentRunnerTestButton);
+#endif
+
+        Button AddLanguageButton(string text, AppLanguage language)
+        {
+            var button = new Button(() => Host?.SetLanguage(language)) { text = text };
+            button.tooltip = language == AppLanguage.SimplifiedChinese
+                ? L("Switch to Simplified Chinese", "切换到简体中文")
+                : L("Switch to English", "切换到英语");
+            button.style.width = 38;
+            button.style.height = 36;
+            button.style.marginLeft = 6;
+            button.style.paddingLeft = 0;
+            button.style.paddingRight = 0;
+            button.style.color = Color.white;
+            button.style.backgroundColor = new StyleColor(
+                AppLocalization.CurrentLanguage == language
+                    ? new Color(0.18f, 0.48f, 0.93f, 1f)
+                    : new Color(0.13f, 0.14f, 0.18f, 1f));
+            button.style.borderTopLeftRadius = 8;
+            button.style.borderTopRightRadius = 8;
+            button.style.borderBottomLeftRadius = 8;
+            button.style.borderBottomRightRadius = 8;
+            languageRow.Add(button);
+            return button;
+        }
+
+        AddLanguageButton("中", AppLanguage.SimplifiedChinese);
+        AddLanguageButton("En", AppLanguage.English);
         return shell;
     }
+
+#if UNITY_EDITOR || DEVELOPMENT_BUILD
+    private void OnDevelopmentRunnerTest()
+    {
+        RunDevelopmentRunnerTestAsync().Forget();
+    }
+
+    private async UniTaskVoid RunDevelopmentRunnerTestAsync()
+    {
+        if (_developmentRunnerTestRunning || _aiRunning || _adjustRunning)
+        {
+            ShowToast(L("Another image operation is already running.", "已有图像任务正在运行。"), 2400);
+            return;
+        }
+        if (_lifetimeCts == null || _lifetimeCts.IsCancellationRequested)
+            return;
+
+        var source = GetCurrentHistoryTexture() ?? GetOriginalHistoryTexture();
+        if (source == null)
+        {
+            ShowToast(L("Open an image before running the development test.", "请先打开图片再运行开发跑测。"), 2800);
+            return;
+        }
+
+        CancelAndDisposeCts(ref _developmentRunnerTestCts);
+        _developmentRunnerTestCts = System.Threading.CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCts.Token);
+        var operationCts = _developmentRunnerTestCts;
+        _developmentRunnerTestRunning = true;
+        _adjustRunning = true;
+        _developmentRunnerTestButton?.SetEnabled(false);
+        ShowProgress(L("Development runner test", "开发跑测"));
+
+        try
+        {
+            var report = await AIImageDevelopmentRunnerTest.RunAsync(
+                Host,
+                source,
+                CurrentImagePath,
+                operationCts.Token,
+                (completed, total, detail) =>
+                {
+                    SetProgress(total <= 0 ? 0f : completed / (float)total, detail);
+                });
+            SetProgress(1f, L("Development runner test complete", "开发跑测完成"));
+            AIImageDevelopmentRunnerTest.RevealReport(report.reportPath);
+            ShowToast(
+                L("Runner report saved: ", "跑测报告已保存：") + report.reportPath,
+                5200);
+        }
+        catch (OperationCanceledException)
+        {
+            ShowToast(L("Development runner test cancelled.", "开发跑测已取消。"), 2600);
+        }
+        catch (Exception exception)
+        {
+            UnityEngine.Debug.LogException(exception);
+            ShowToast(L("Development runner test failed: ", "开发跑测失败：") + exception.Message, 4600);
+        }
+        finally
+        {
+            _developmentRunnerTestRunning = false;
+            _adjustRunning = false;
+            if (ReferenceEquals(_developmentRunnerTestCts, operationCts))
+                _developmentRunnerTestCts = null;
+            try { operationCts.Dispose(); } catch { }
+            _developmentRunnerTestButton?.SetEnabled(true);
+            HideProgress();
+        }
+    }
+#endif
 
     private void BuildQwenAnalysisOverlay()
     {
