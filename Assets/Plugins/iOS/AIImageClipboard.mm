@@ -2,9 +2,9 @@
 #import <UIKit/UIKit.h>
 #include <stdlib.h>
 
-static UIViewController* AIImageVisibleViewController()
+static UIWindow* AIImageActiveWindow()
 {
-    UIWindow* window = nil;
+    UIWindow* fallbackWindow = nil;
     if (@available(iOS 13.0, *))
     {
         for (UIScene* scene in UIApplication.sharedApplication.connectedScenes)
@@ -14,21 +14,45 @@ static UIViewController* AIImageVisibleViewController()
                 continue;
             for (UIWindow* candidate in ((UIWindowScene*)scene).windows)
             {
+                if (candidate.hidden || candidate.alpha <= 0.0 || candidate.rootViewController == nil)
+                    continue;
                 if (candidate.isKeyWindow)
-                {
-                    window = candidate;
-                    break;
-                }
+                    return candidate;
+                if (fallbackWindow == nil || candidate.windowLevel == UIWindowLevelNormal)
+                    fallbackWindow = candidate;
             }
-            if (window != nil) break;
         }
     }
-    if (window == nil)
-        window = UIApplication.sharedApplication.keyWindow;
+    if (fallbackWindow != nil)
+        return fallbackWindow;
 
+    UIWindow* keyWindow = UIApplication.sharedApplication.keyWindow;
+    return keyWindow != nil && keyWindow.rootViewController != nil ? keyWindow : nil;
+}
+
+static UIViewController* AIImageVisibleViewController()
+{
+    UIWindow* window = AIImageActiveWindow();
     UIViewController* controller = window.rootViewController;
-    while (controller.presentedViewController != nil)
-        controller = controller.presentedViewController;
+    while (controller != nil)
+    {
+        if (controller.presentedViewController != nil && !controller.presentedViewController.isBeingDismissed)
+        {
+            controller = controller.presentedViewController;
+            continue;
+        }
+        if ([controller isKindOfClass:[UINavigationController class]])
+        {
+            controller = ((UINavigationController*)controller).visibleViewController;
+            continue;
+        }
+        if ([controller isKindOfClass:[UITabBarController class]])
+        {
+            controller = ((UITabBarController*)controller).selectedViewController;
+            continue;
+        }
+        break;
+    }
     return controller;
 }
 
@@ -40,10 +64,34 @@ static UIViewController* AIImageVisibleViewController()
 {
     return AIImageVisibleViewController();
 }
+
+- (UIView*)documentInteractionControllerViewForPreview:(UIDocumentInteractionController*)controller
+{
+    return AIImageVisibleViewController().view;
+}
+
+- (CGRect)documentInteractionControllerRectForPreview:(UIDocumentInteractionController*)controller
+{
+    UIView* view = AIImageVisibleViewController().view;
+    return view == nil ? CGRectZero : view.bounds;
+}
 @end
 
 static AIImageReportPreviewDelegate* AIImageReportPreviewDelegateInstance = nil;
 static UIDocumentInteractionController* AIImageReportPreviewController = nil;
+
+static void AIImagePresentRunnerReportShareSheet(NSURL* url, UIViewController* controller)
+{
+    UIActivityViewController* activityController =
+        [[UIActivityViewController alloc] initWithActivityItems:@[url] applicationActivities:nil];
+    UIPopoverPresentationController* popover = activityController.popoverPresentationController;
+    if (popover != nil)
+    {
+        popover.sourceView = controller.view;
+        popover.sourceRect = controller.view.bounds;
+    }
+    [controller presentViewController:activityController animated:YES completion:nil];
+}
 
 extern "C"
 {
@@ -73,18 +121,25 @@ extern "C"
         dispatch_async(dispatch_get_main_queue(), ^{
             NSURL* url = [NSURL fileURLWithPath:value];
             UIViewController* controller = AIImageVisibleViewController();
-            if (controller == nil || ![[NSFileManager defaultManager] fileExistsAtPath:value])
+            if (controller == nil || controller.view == nil || ![[NSFileManager defaultManager] fileExistsAtPath:value])
+            {
+                NSLog(@"[Aexis] Cannot present runner report preview: %@", value);
                 return;
+            }
 
             if (AIImageReportPreviewDelegateInstance == nil)
                 AIImageReportPreviewDelegateInstance = [AIImageReportPreviewDelegate new];
             AIImageReportPreviewController = [UIDocumentInteractionController interactionControllerWithURL:url];
             AIImageReportPreviewController.delegate = AIImageReportPreviewDelegateInstance;
-            if (![AIImageReportPreviewController presentPreviewAnimated:YES])
+            AIImageReportPreviewController.UTI = @"public.json";
+            if ([AIImageReportPreviewController presentPreviewAnimated:YES])
             {
-                [AIImageReportPreviewController presentOptionsMenuFromRect:controller.view.bounds
-                                                                     inView:controller.view
-                                                                   animated:YES];
+                NSLog(@"[Aexis] Runner report preview opened: %@", value);
+            }
+            else
+            {
+                NSLog(@"[Aexis] Runner report preview is unavailable; opening share sheet: %@", value);
+                AIImagePresentRunnerReportShareSheet(url, controller);
             }
         });
     }
