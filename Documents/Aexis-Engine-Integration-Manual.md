@@ -178,7 +178,7 @@ The MuMu result is a conservative Android fallback measurement, not a physical-d
 
 The importable Main2 application exposes a **Test** button in MainView2 only for the Editor and Development Players. It is immediately left of the Chinese and English language controls. The command uses the current history image, does not download models, and sequentially runs CLIP, CodeFormer, GFPGAN, Real-ESRGAN, Matting, Qwen3.5, YOLO segmentation, YOLO + DeepFillV2, and YOLO + SD inpainting. Missing local or bundled model payloads are reported as skipped. Each runner receives a 600-second cancellation budget before the next runner begins.
 
-The command writes one incrementally updated `AexisDevelopmentRunnerTest_*.json` file under `Application.persistentDataPath`. It captures platform/device data, source dimensions, model group, runner status, elapsed time, output dimensions, person count, mask coverage, and timeout/error detail. Windows opens the containing folder in Explorer, macOS reveals the file in Finder, Android requests a JSON viewer, and iOS displays the native document preview.
+The command writes one incrementally updated `AexisDevelopmentRunnerTest_*.json` file under `Application.persistentDataPath`. It captures platform/device data, source dimensions, model group, runner status, elapsed time, output dimensions, person count, mask coverage, and timeout/error detail. Windows uses the native Shell to open the folder and select the report, macOS reveals the file in Finder, Android requests a JSON viewer, and iOS displays the native document preview.
 
 ## 9. Release validation
 
