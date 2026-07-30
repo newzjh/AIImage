@@ -166,9 +166,9 @@ Qwen Q4 passed a Windows strict-texture smoke without a visible response, then c
 | Platform | Device / Unity / graphics API | Current result |
 | --- | --- | --- |
 | Windows 11 Pro 64-bit | Intel Arc Graphics, Unity 6000.2.7f2, Vulkan | Passed for the documented 2026-07-29 runner results |
-| macOS | **TBD: machine, GPU, Unity, graphics API** | Existing `Tools/AIImage_MACOS.build-failure.txt`; no pass claimed |
+| macOS | **Pending command-run report: machine, GPU, Unity; Metal required** | Run the [macOS Metal Player procedure](../Packages/com.aexis/Documentation~/apple-runtime-smoke.md#macos-metal-player) and return the build JSON, runner JSON, and Player log. |
 | Android (MuMu emulator) | MuMu ADB `127.0.0.1:16384`; runtime report: vivo V2241A, ARM64, Adreno (TM) 650, 8961 MiB, Unity 6000.2.7f2, Vulkan GameActivity | Passed 2026-07-26 full default Main2: CodeFormer 6,946 ms; Real-ESRGAN 519 ms; GFPGAN 3,160 ms; YOLO 657 ms (four persons); DeepFillV2 3,442 ms; Matting 1,014 ms; CLIP 2,208 ms; Qwen Q4 326,821 ms (103 steps, 397 visible characters). |
-| iOS | **TBD: device, SoC/GPU, Unity, graphics API** | **TBD: record build, runner, timing, and thermal condition** |
+| iOS | **Pending command-run report: device, SoC/GPU, Unity; Metal required** | Run the [iOS Metal device procedure](../Packages/com.aexis/Documentation~/apple-runtime-smoke.md#ios-metal-device) and return the build JSON plus `runner-report=` console log. |
 
 Unity 2022.3 through 6000.3 is the package compatibility target, not a record that every editor/platform combination has passed this application workload. Always validate with a real graphics device; `-nographics` is forbidden for Aexis package, shader, or runner validation.
 
