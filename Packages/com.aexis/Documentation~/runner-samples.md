@@ -38,7 +38,7 @@ macOS and iOS target-machine rows are intentionally pending command-run reports.
 
 In the Editor and Development Players, MainView2 provides a **Test** button immediately left of the Chinese and English language controls. It runs the current history image through CLIP, CodeFormer, GFPGAN, Real-ESRGAN, Matting, Qwen3.5, YOLO segmentation, YOLO + DeepFillV2, and YOLO + SD inpainting. The command never opens the model-download UI: a missing local or bundled model group becomes a `skipped_missing_model` entry. Each runner is given a 600-second cancellation budget, and the report retains `passed`, `failed`, `timed_out`, dependency-skip, and unavailable-runner statuses.
 
-The single incrementally written report is `Application.persistentDataPath/AexisDevelopmentRunnerTest_*.json`. It includes source and device metadata plus output dimensions, person count, mask coverage, elapsed milliseconds, and diagnostic text for every runner. Windows opens its containing folder in Explorer, macOS reveals it in Finder, Android requests a compatible JSON viewer, and iOS presents the native document preview.
+The single incrementally written report is `Application.persistentDataPath/AexisDevelopmentRunnerTest_*.json`. It includes source and device metadata plus output dimensions, person count, mask coverage, elapsed milliseconds, and diagnostic text for every runner. Windows uses the native Shell to open the folder and select the report, macOS reveals it in Finder, Android requests a compatible JSON viewer, and iOS presents the native document preview.
 
 ## Included reusable runners
 

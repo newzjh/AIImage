@@ -81,18 +81,12 @@ public static class AIImageDevelopmentRunnerTest
             return;
 
         var absoluteReportPath = Path.GetFullPath(reportPath);
+        UnityEngine.Debug.Log("Aexis development runner report: " + absoluteReportPath);
 
         try
         {
 #if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
-            var reportDirectory = Path.GetDirectoryName(absoluteReportPath);
-            if (string.IsNullOrWhiteSpace(reportDirectory) || !Directory.Exists(reportDirectory))
-                return;
-            Process.Start(new ProcessStartInfo
-            {
-                FileName = reportDirectory,
-                UseShellExecute = true
-            });
+            RevealWindowsReport(absoluteReportPath);
 #elif UNITY_STANDALONE_OSX || UNITY_EDITOR_OSX
             Process.Start(new ProcessStartInfo
             {
@@ -120,6 +114,92 @@ public static class AIImageDevelopmentRunnerTest
             UnityEngine.Debug.LogWarning("Could not reveal development runner report: " + exception.Message);
         }
     }
+
+#if UNITY_STANDALONE_WIN || UNITY_EDITOR_WIN
+    private static void RevealWindowsReport(string reportPath)
+    {
+        if (TrySelectWindowsReport(reportPath))
+            return;
+
+        var reportDirectory = Path.GetDirectoryName(reportPath);
+        if (string.IsNullOrWhiteSpace(reportDirectory) || !Directory.Exists(reportDirectory))
+            return;
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = "explorer.exe",
+            Arguments = "\"" + reportDirectory.Replace("\"", "\\\"") + "\"",
+            UseShellExecute = false
+        });
+    }
+
+    private static bool TrySelectWindowsReport(string reportPath)
+    {
+        IntPtr itemPidl = IntPtr.Zero;
+        IntPtr folderPidl = IntPtr.Zero;
+        IntPtr childPidlArray = IntPtr.Zero;
+        try
+        {
+            uint attributes;
+            if (SHParseDisplayName(reportPath, IntPtr.Zero, out itemPidl, 0u, out attributes) < 0
+                || itemPidl == IntPtr.Zero)
+                return false;
+
+            folderPidl = ILClone(itemPidl);
+            if (folderPidl == IntPtr.Zero || !ILRemoveLastID(folderPidl))
+                return false;
+
+            var childPidl = ILFindLastID(itemPidl);
+            if (childPidl == IntPtr.Zero)
+                return false;
+
+            childPidlArray = System.Runtime.InteropServices.Marshal.AllocCoTaskMem(IntPtr.Size);
+            System.Runtime.InteropServices.Marshal.WriteIntPtr(childPidlArray, childPidl);
+            return SHOpenFolderAndSelectItems(folderPidl, 1u, childPidlArray, 0u) >= 0;
+        }
+        catch (Exception exception)
+        {
+            UnityEngine.Debug.LogWarning("Could not select development runner report in Explorer: " + exception.Message);
+            return false;
+        }
+        finally
+        {
+            if (childPidlArray != IntPtr.Zero)
+                System.Runtime.InteropServices.Marshal.FreeCoTaskMem(childPidlArray);
+            if (folderPidl != IntPtr.Zero)
+                CoTaskMemFree(folderPidl);
+            if (itemPidl != IntPtr.Zero)
+                CoTaskMemFree(itemPidl);
+        }
+    }
+
+    [System.Runtime.InteropServices.DllImport("shell32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    private static extern int SHParseDisplayName(
+        string name,
+        IntPtr bindContext,
+        out IntPtr itemIdentifierList,
+        uint attributesMask,
+        out uint attributes);
+
+    [System.Runtime.InteropServices.DllImport("shell32.dll")]
+    private static extern IntPtr ILClone(IntPtr itemIdentifierList);
+
+    [System.Runtime.InteropServices.DllImport("shell32.dll")]
+    [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+    private static extern bool ILRemoveLastID(IntPtr itemIdentifierList);
+
+    [System.Runtime.InteropServices.DllImport("shell32.dll")]
+    private static extern IntPtr ILFindLastID(IntPtr itemIdentifierList);
+
+    [System.Runtime.InteropServices.DllImport("shell32.dll")]
+    private static extern int SHOpenFolderAndSelectItems(
+        IntPtr folderItemIdentifierList,
+        uint childItemIdentifierListCount,
+        IntPtr childItemIdentifierLists,
+        uint flags);
+
+    [System.Runtime.InteropServices.DllImport("ole32.dll")]
+    private static extern void CoTaskMemFree(IntPtr memory);
+#endif
 
 #if UNITY_ANDROID && !UNITY_EDITOR
     private static void RevealAndroidReport(string reportPath)

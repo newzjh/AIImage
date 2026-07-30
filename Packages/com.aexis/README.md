@@ -148,7 +148,7 @@ MuMu is a conservative Android fallback measurement, not a physical-device bench
 
 MainView2 exposes a **Test** button only in the Unity Editor and Development Players. It sits immediately before the Chinese and English language buttons and uses the current history image to run CLIP, CodeFormer, GFPGAN, Real-ESRGAN, Matting, Qwen3.5, YOLO segmentation, YOLO + DeepFillV2, and YOLO + SD inpainting. Each runner receives a 600-second cancellation token. Missing local or bundled model groups are skipped and written to the report; the test never requests a model download.
 
-One JSON report is updated after each runner at `Application.persistentDataPath/AexisDevelopmentRunnerTest_*.json`. Windows opens its containing folder in Explorer, macOS reveals the file in Finder, Android launches a compatible JSON-view intent, and iOS opens the native document preview. The report includes source-image metadata, platform/device information, runner status, elapsed time, output dimensions, person count, mask coverage, and error or timeout detail.
+One JSON report is updated after each runner at `Application.persistentDataPath/AexisDevelopmentRunnerTest_*.json`. Windows uses the native Shell to open the folder and select the report, macOS reveals the file in Finder, Android launches a compatible JSON-view intent, and iOS opens the native document preview. The report includes source-image metadata, platform/device information, runner status, elapsed time, output dimensions, person count, mask coverage, and error or timeout detail.
 
 ## Quick start
 
