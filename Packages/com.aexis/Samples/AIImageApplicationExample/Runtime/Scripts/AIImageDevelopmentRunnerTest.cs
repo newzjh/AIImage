@@ -438,7 +438,9 @@ public static class AIImageDevelopmentRunnerTest
                 {
                     runner.enableDebugDump = originalDebugDump;
                     runner.enableFaceRegionDebugDump = originalFaceDebugDump;
-                });
+                    runner.ReleaseRuntimeResources();
+                },
+                releaseUnusedAssetsAfterRun: true);
         }
 
         private async UniTask RunGfpganAsync()
@@ -473,7 +475,9 @@ public static class AIImageDevelopmentRunnerTest
                     runner.disallowBufferAccess = originalDisallowAccess;
                     runner.disallowBufferOutputs = originalDisallowOutputs;
                     runner.disallowBufferToTextureMaterialization = originalDisallowMaterialization;
-                });
+                    runner.ReleaseRuntimeResources();
+                },
+                releaseUnusedAssetsAfterRun: true);
         }
 
         private async UniTask RunRealEsrganAsync()
@@ -509,7 +513,9 @@ public static class AIImageDevelopmentRunnerTest
                     runner.disallowBufferAccess = originalDisallowAccess;
                     runner.disallowBufferOutputs = originalDisallowOutputs;
                     runner.disallowBufferToTextureMaterialization = originalDisallowMaterialization;
-                });
+                    runner.ReleaseRuntimeResources();
+                },
+                releaseUnusedAssetsAfterRun: true);
         }
 
         private async UniTask RunMattingAsync()
@@ -551,7 +557,9 @@ public static class AIImageDevelopmentRunnerTest
                     runner.disallowBufferAccess = originalDisallowAccess;
                     runner.disallowBufferOutputs = originalDisallowOutputs;
                     runner.disallowBufferToTextureMaterialization = originalDisallowMaterialization;
-                });
+                    runner.ReleaseRuntimeResources();
+                },
+                releaseUnusedAssetsAfterRun: true);
         }
 
         private async UniTask RunQwenAsync()
@@ -736,7 +744,8 @@ public static class AIImageDevelopmentRunnerTest
             AIImageModelGroupId groupId,
             Func<CancellationToken, UniTask<RunnerOutcome>> execute,
             Action restore = null,
-            bool skipModelDeliveryPreflight = false)
+            bool skipModelDeliveryPreflight = false,
+            bool releaseUnusedAssetsAfterRun = false)
         {
             var entry = new AIImageDevelopmentRunnerTestEntry
             {
@@ -773,7 +782,9 @@ public static class AIImageDevelopmentRunnerTest
                     entry.detail = "Executing strict texture-path runner.";
                     NotifyProgress(displayName + ": running");
                     WriteReport();
+                    UnityEngine.Debug.Log("[DevRunnerTest] " + id + " execute-begin");
                     var outcome = await execute(timeout.Token);
+                    UnityEngine.Debug.Log("[DevRunnerTest] " + id + " execute-end");
                     timeout.Token.ThrowIfCancellationRequested();
                     if (outcome.skip)
                     {
@@ -811,10 +822,31 @@ public static class AIImageDevelopmentRunnerTest
                 finally
                 {
                     stopwatch.Stop();
+                    UnityEngine.Debug.Log("[DevRunnerTest] " + id + " restore-begin");
                     try { restore?.Invoke(); } catch (Exception exception) { UnityEngine.Debug.LogWarning(exception); }
+                    UnityEngine.Debug.Log("[DevRunnerTest] " + id + " restore-end");
+                    if (releaseUnusedAssetsAfterRun)
+                    {
+                        NotifyProgress(displayName + ": releasing runtime resources");
+                        await ReleaseUnusedAssetsAsync();
+                    }
+                    UnityEngine.Debug.Log("[DevRunnerTest] " + id + " complete-begin");
                     CompleteRunner(entry);
+                    UnityEngine.Debug.Log("[DevRunnerTest] " + id + " complete-end");
                 }
             }
+        }
+
+        private static async UniTask ReleaseUnusedAssetsAsync()
+        {
+            await UniTask.Yield(PlayerLoopTiming.Update);
+            var unloadOperation = Resources.UnloadUnusedAssets();
+            if (unloadOperation != null)
+                await unloadOperation.ToUniTask();
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+            await UniTask.Yield(PlayerLoopTiming.Update);
         }
 
         private void SkipUnavailableRunner(string id, string displayName, AIImageModelGroupId groupId, string detail)

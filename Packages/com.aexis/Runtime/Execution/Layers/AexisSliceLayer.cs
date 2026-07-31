@@ -231,7 +231,12 @@ namespace Aexis.Execution
                     if (canUseLinearMat)
                     {
                         var storageShape = AexisGraphSession.ResolveLinearMatStorageShape(spec.shape);
-                        var outMat = owner.RentTempMat(cmd, storageShape.w, storageShape.h, AexisGraphSession.ResolveLinearMatTextureFormat());
+                        var outMat = owner.RentTempMat(
+                            cmd,
+                            storageShape.w,
+                            storageShape.h,
+                            AexisGraphSession.ResolveLinearMatTextureFormat(),
+                            layer.topNames[i]);
                         owner.Ops.SliceLinearMat2D(cmd, src.texture, spec.axis, spec.begin, outMat);
                         blobs[layer.topNames[i]] = AexisGraphSession.CreateCmdTensorRef(outMat, spec.shape, storageShape, owned: true);
                         shapes[layer.topNames[i]] = spec.shape;
@@ -242,7 +247,13 @@ namespace Aexis.Execution
                     {
                         var srcStorageShape = AexisGraphSession.GetCmdStorageShape(src, srcShape);
                         var outStorageShape = AexisGraphSession.ResolvePack4LinearMatStorageShape(spec.shape);
-                        var pack4LinearOut = owner.RentTempArray(cmd, outStorageShape.w, outStorageShape.h, 1, src.texture.format);
+                        var pack4LinearOut = owner.RentTempArray(
+                            cmd,
+                            outStorageShape.w,
+                            outStorageShape.h,
+                            1,
+                            src.texture.format,
+                            layer.topNames[i]);
                         if (!TryCopyPack4LinearMatSlice(cmd, src.texture, srcStorageShape, spec, pack4LinearOut))
                         {
                             var sliceAxis = spec.axis == 0 ? 0 : 1;
@@ -257,7 +268,13 @@ namespace Aexis.Execution
                     var outPacks = Mathf.Max(1, Mathf.CeilToInt(spec.shape.c / 4f));
                     var outDepth = srcShape.dims == 4 ? Mathf.Max(1, spec.shape.d) * outPacks : outPacks;
                     var outFormat = srcShape.dims == 4 ? AexisGraphSession.ResolveTensorTextureFormat(spec.shape.dims) : RenderTextureFormat.ARGBHalf;
-                    var outArr = owner.RentTempArray(cmd, spec.shape.w, spec.shape.h, outDepth, outFormat);
+                    var outArr = owner.RentTempArray(
+                        cmd,
+                        spec.shape.w,
+                        spec.shape.h,
+                        outDepth,
+                        outFormat,
+                        layer.topNames[i]);
                     if (srcShape.dims == 4)
                     {
                         owner.Ops.SlicePack4Cdhw(

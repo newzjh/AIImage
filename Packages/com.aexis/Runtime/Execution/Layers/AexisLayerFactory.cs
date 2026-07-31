@@ -938,6 +938,32 @@ namespace Aexis.Execution
                 }
             }
 
+            bool MoveNextIncrementalLayer(
+                IEnumerator<bool> layerSteps,
+                int layerIndex,
+                AexisGraphModel.Layer layer)
+            {
+                if (layerSteps == null)
+                    throw new InvalidOperationException("Layer incremental execution returned no steps: " + (layer?.name ?? string.Empty));
+
+                try
+                {
+                    return layerSteps.MoveNext();
+                }
+                catch (Exception e)
+                {
+                    throw new InvalidOperationException(
+                        "Layer execution failed"
+                        + " | idx=" + layerIndex + "/" + Model.layers.Count
+                        + " | name=" + (layer?.name ?? string.Empty)
+                        + " | type=" + (layer?.typeName ?? string.Empty)
+                        + " | bottoms=" + DescribeBlobStates(layer?.bottomNames, textureBlobs, textureShapes, bufferBlobs, bufferViews, indexBlobs)
+                        + " | tops=" + JoinNames(layer?.topNames)
+                        + " | inner=" + e.Message,
+                        e);
+                }
+            }
+
             BeginInferenceTempResourceTracking();
             try
             {
@@ -982,19 +1008,11 @@ namespace Aexis.Execution
                         ResetInt8ActivationQuantization();
                         try
                         {
-                            layerRepro.ExecuteBuffer(this, layer, context);
-                        }
-                        catch (Exception e)
-                        {
-                            throw new InvalidOperationException(
-                                "Layer execution failed"
-                                + " | idx=" + li + "/" + Model.layers.Count
-                                + " | name=" + (layer?.name ?? string.Empty)
-                                + " | type=" + (layer?.typeName ?? string.Empty)
-                                + " | bottoms=" + DescribeBlobStates(layer?.bottomNames, textureBlobs, textureShapes, bufferBlobs, bufferViews, indexBlobs)
-                                + " | tops=" + JoinNames(layer?.topNames)
-                                + " | inner=" + e.Message,
-                                e);
+                            using (var layerSteps = layerRepro.ExecuteBufferIncremental(this, layer, context).GetEnumerator())
+                            {
+                                while (MoveNextIncrementalLayer(layerSteps, li, layer))
+                                    yield return true;
+                            }
                         }
                         finally
                         {
@@ -1026,19 +1044,11 @@ namespace Aexis.Execution
                     ResetInt8ActivationQuantization();
                     try
                     {
-                        layerRepro.ExecuteBuffer(this, layer, context);
-                    }
-                    catch (Exception e)
-                    {
-                        throw new InvalidOperationException(
-                            "Layer execution failed"
-                            + " | idx=" + li + "/" + Model.layers.Count
-                            + " | name=" + (layer?.name ?? string.Empty)
-                            + " | type=" + (layer?.typeName ?? string.Empty)
-                            + " | bottoms=" + DescribeBlobStates(layer?.bottomNames, textureBlobs, textureShapes, bufferBlobs, bufferViews, indexBlobs)
-                            + " | tops=" + JoinNames(layer?.topNames)
-                            + " | inner=" + e.Message,
-                            e);
+                        using (var layerSteps = layerRepro.ExecuteBufferIncremental(this, layer, context).GetEnumerator())
+                        {
+                            while (MoveNextIncrementalLayer(layerSteps, li, layer))
+                                yield return true;
+                        }
                     }
                     finally
                     {

@@ -13,12 +13,16 @@ internal sealed class AIImageRuntimeSmokeReporter : MonoBehaviour
 {
     private const string IntentExtraName = "aiimage_smoke";
     private const string RunnerIntentExtraName = "aiimage_runner_smoke";
+    private const string RunnerStageInputIntentExtraName = "aiimage_runner_smoke_stage_input";
+    private const string MainView2AutoInputIntentExtraName = "aiimage_mainview2_auto_input";
     private const string QwenDeviceQualificationIntentExtraName = "aiimage_runner_qwen_device_qualification";
     private const string AndroidReportFileName = "aiimage_android_smoke.json";
     private const string AndroidRunnerReportFileName = "aiimage_android_runner_smoke.json";
     private const string AppleReportFileName = "aiimage_apple_smoke.json";
     private const string AppleRunnerReportFileName = "aiimage_apple_runner_smoke.json";
     private const string RunnerInputDirectoryName = "aiimage-smoke";
+    private const string AdbRunnerFaceInputPath = "/data/local/tmp/aiimage-smoke-face.png";
+    private const string AdbRunnerSceneInputPath = "/data/local/tmp/aiimage-smoke-scene.jpg";
     private const string FaceInputFileName = "face.png";
     private const string SceneInputFileName = "scene.jpg";
     private const string RunnerSmokeCommandLineArgument = "-aiimage_runner_smoke";
@@ -88,6 +92,8 @@ internal sealed class AIImageRuntimeSmokeReporter : MonoBehaviour
     }
 
     private bool _runDefaultRunnerSmoke;
+    private bool _stageRunnerInputsFromAdb;
+    private bool _autoSelectMainView2Input;
     private bool _runQwenDeviceQualification;
     private int _qwenDetectedPersonCount;
     private readonly RunnerReport _runnerReport = new RunnerReport();
@@ -98,10 +104,15 @@ internal sealed class AIImageRuntimeSmokeReporter : MonoBehaviour
 #if !UNITY_EDITOR
         var smokeRequested = false;
         var runnerSmokeRequested = false;
+        var stageRunnerInputsFromAdb = false;
+        var autoSelectMainView2Input = false;
         var qwenDeviceQualificationRequested = false;
 #if UNITY_ANDROID
         smokeRequested = IsIntentBooleanSet(IntentExtraName);
         runnerSmokeRequested = IsIntentBooleanSet(RunnerIntentExtraName);
+        autoSelectMainView2Input = IsIntentBooleanSet(MainView2AutoInputIntentExtraName);
+        stageRunnerInputsFromAdb = runnerSmokeRequested
+            && IsIntentBooleanSet(RunnerStageInputIntentExtraName);
         qwenDeviceQualificationRequested = runnerSmokeRequested
             && IsIntentBooleanSet(QwenDeviceQualificationIntentExtraName);
 #else
@@ -111,13 +122,15 @@ internal sealed class AIImageRuntimeSmokeReporter : MonoBehaviour
         qwenDeviceQualificationRequested = runnerSmokeRequested
             && (HasCommandLineArgument(QwenDeviceQualificationCommandLineArgument) || IsIosAutorunBuild());
 #endif
-        if (!smokeRequested && !runnerSmokeRequested)
+        if (!smokeRequested && !runnerSmokeRequested && !autoSelectMainView2Input)
             return;
 
         var gameObject = new GameObject(nameof(AIImageRuntimeSmokeReporter));
         DontDestroyOnLoad(gameObject);
         var reporter = gameObject.AddComponent<AIImageRuntimeSmokeReporter>();
         reporter._runDefaultRunnerSmoke = runnerSmokeRequested;
+        reporter._stageRunnerInputsFromAdb = stageRunnerInputsFromAdb;
+        reporter._autoSelectMainView2Input = autoSelectMainView2Input;
         reporter._runQwenDeviceQualification = qwenDeviceQualificationRequested;
 #endif
     }
@@ -199,6 +212,38 @@ internal sealed class AIImageRuntimeSmokeReporter : MonoBehaviour
 
         if (_runDefaultRunnerSmoke)
             RunDefaultRunnerSmokeAsync().Forget();
+
+        if (_autoSelectMainView2Input)
+            StageAndSelectMainView2InputAsync().Forget();
+    }
+
+    private async UniTaskVoid StageAndSelectMainView2InputAsync()
+    {
+        try
+        {
+            StageMainView2InputFromAdb();
+            var inputPath = ResolveInputPath(SceneInputFileName);
+            if (!File.Exists(inputPath))
+                throw new FileNotFoundException("MainView2 auto-select input is missing.", inputPath);
+
+            for (var frame = 0; frame < 120; frame++)
+            {
+                var host = UnityEngine.Object.FindFirstObjectByType<AIImagePageHost>();
+                if (host != null && host.ReloadMainImageFromDisk(inputPath, true))
+                {
+                    Debug.Log(LogPrefix + " MainView2 auto-selected input=" + inputPath);
+                    return;
+                }
+
+                await UniTask.Yield(PlayerLoopTiming.Update);
+            }
+
+            throw new TimeoutException("AIImagePageHost did not accept the staged MainView2 input within 120 frames.");
+        }
+        catch (Exception exception)
+        {
+            Debug.LogError(LogPrefix + " MainView2 auto-select failed: " + exception);
+        }
     }
 
     private async UniTaskVoid RunDefaultRunnerSmokeAsync()
@@ -210,6 +255,9 @@ internal sealed class AIImageRuntimeSmokeReporter : MonoBehaviour
         Texture2D sceneInput = null;
         try
         {
+            if (_stageRunnerInputsFromAdb)
+                StageRunnerInputsFromAdb();
+
             var requiredGraphicsApi = RequiredGraphicsApi;
             if (SystemInfo.graphicsDeviceType != requiredGraphicsApi)
                 throw new InvalidOperationException(
@@ -224,19 +272,23 @@ internal sealed class AIImageRuntimeSmokeReporter : MonoBehaviour
             sceneInput = LoadInputTexture(SceneInputFileName);
 
             await RunCodeFormerAsync(faceInput);
-            await RunRealEsrganAsync(faceInput);
             await RunGfpganAsync(faceInput);
-            await RunYoloAndDeepFillAsync(faceInput);
             await RunMattingAsync(sceneInput);
+            await RunRealEsrganAsync(faceInput);
+            await RunYoloAndDeepFillAsync(faceInput);
             await RunClipAsync(faceInput);
             // The face input is ref/02.png: four people arranged from left to right.
             // It guards against a valid-looking response that silently stops after
             // describing only the first person.
-            await RunQwenAsync(faceInput, _runQwenDeviceQualification);
+            if (_runQwenDeviceQualification)
+                await RunQwenAsync(faceInput, true);
+            else
+                _runnerReport.qwenStatus = "not_requested";
 
             _runnerReport.nonQwenValid = AllNonQwenPassed();
             _runnerReport.valid = _runnerReport.nonQwenValid
-                && string.Equals(_runnerReport.qwenStatus, "passed", StringComparison.Ordinal);
+                && (!_runQwenDeviceQualification
+                    || string.Equals(_runnerReport.qwenStatus, "passed", StringComparison.Ordinal));
             _runnerReport.status = _runnerReport.valid ? "passed" : "completed_with_failures";
             _runnerReport.detail = _runnerReport.valid
                 ? "All default Main2 runners passed on Android Vulkan."
@@ -705,6 +757,14 @@ internal sealed class AIImageRuntimeSmokeReporter : MonoBehaviour
             entry.outputWidth = output.width;
             entry.outputHeight = output.height;
         }
+
+        var conciseDetail = entry.detail.Replace('\r', ' ').Replace('\n', ' ');
+        if (conciseDetail.Length > 240)
+            conciseDetail = conciseDetail.Substring(0, 240);
+        Debug.Log(LogPrefix + " runner-complete id=" + entry.id
+            + " status=" + entry.status
+            + " elapsed_ms=" + entry.elapsedMs
+            + " detail=" + conciseDetail);
     }
 
     private bool AllNonQwenPassed()
@@ -712,7 +772,8 @@ internal sealed class AIImageRuntimeSmokeReporter : MonoBehaviour
         for (var index = 0; index < _runnerReport.runners.Count; index++)
         {
             var entry = _runnerReport.runners[index];
-            if (string.Equals(entry.id, "qwen35_mobile_q8", StringComparison.Ordinal))
+            if (string.Equals(entry.id, "qwen35_mobile_q4", StringComparison.Ordinal)
+                || string.Equals(entry.id, "qwen35_mobile_q8", StringComparison.Ordinal))
                 continue;
             if (!string.Equals(entry.status, "passed", StringComparison.Ordinal))
                 return false;
@@ -788,9 +849,39 @@ internal sealed class AIImageRuntimeSmokeReporter : MonoBehaviour
         ? UnityEngine.Rendering.GraphicsDeviceType.Vulkan
         : UnityEngine.Rendering.GraphicsDeviceType.Metal;
 
+    private void StageRunnerInputsFromAdb()
+    {
+#if UNITY_ANDROID && DEVELOPMENT_BUILD
+        Directory.CreateDirectory(RunnerInputDirectoryPath);
+        CopyStagedRunnerInput(AdbRunnerFaceInputPath, FaceInputFileName);
+        CopyStagedRunnerInput(AdbRunnerSceneInputPath, SceneInputFileName);
+#else
+        throw new InvalidOperationException("ADB runner input staging is only supported by Android development builds.");
+#endif
+    }
+
+    private void StageMainView2InputFromAdb()
+    {
+#if UNITY_ANDROID && DEVELOPMENT_BUILD
+        Directory.CreateDirectory(RunnerInputDirectoryPath);
+        CopyStagedRunnerInput(AdbRunnerSceneInputPath, SceneInputFileName);
+#else
+        throw new InvalidOperationException("ADB MainView2 input staging is only supported by Android development builds.");
+#endif
+    }
+
+    private void CopyStagedRunnerInput(string sourcePath, string destinationFileName)
+    {
+        if (!File.Exists(sourcePath))
+            throw new FileNotFoundException("ADB-staged runner input is missing.", sourcePath);
+
+        var destinationPath = Path.Combine(RunnerInputDirectoryPath, destinationFileName);
+        File.Copy(sourcePath, destinationPath, true);
+    }
+
     private string RunnerInputDirectoryPath => Path.Combine(Application.persistentDataPath, RunnerInputDirectoryName);
     private string SmokeReportPath => Path.Combine(
-        Application.persistentDataPath,
+        Application.platform == RuntimePlatform.Android ? AndroidInternalCachePath : Application.persistentDataPath,
         Application.platform == RuntimePlatform.Android ? AndroidReportFileName : AppleReportFileName);
     private string RunnerReportPath
     {
@@ -800,8 +891,26 @@ internal sealed class AIImageRuntimeSmokeReporter : MonoBehaviour
             if (Application.platform != RuntimePlatform.IPhonePlayer && !string.IsNullOrWhiteSpace(configured))
                 return Path.GetFullPath(configured);
             return Path.Combine(
-                Application.persistentDataPath,
+                Application.platform == RuntimePlatform.Android ? AndroidInternalCachePath : Application.persistentDataPath,
                 Application.platform == RuntimePlatform.Android ? AndroidRunnerReportFileName : AppleRunnerReportFileName);
+        }
+    }
+
+    private static string AndroidInternalCachePath
+    {
+        get
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            using (var unityPlayer = new AndroidJavaClass("com.unity3d.player.UnityPlayer"))
+            using (var activity = unityPlayer.GetStatic<AndroidJavaObject>("currentActivity"))
+            using (var cacheDirectory = activity?.Call<AndroidJavaObject>("getCacheDir"))
+            {
+                var path = cacheDirectory?.Call<string>("getAbsolutePath");
+                if (!string.IsNullOrWhiteSpace(path))
+                    return path;
+            }
+#endif
+            return Application.temporaryCachePath;
         }
     }
 

@@ -309,7 +309,8 @@ public sealed class MainView2 : BasePageView
         ResetHistoryWithOriginal(texture, fileName, filePath);
         CompareView?.SetSources(texture, texture, fileName);
         CompareView?.FitToView();
-        PrepareFaceMaskForSelectedImageAsync(filePath, texture, _gpuSharpenDumpStages).Forget();
+        CancelAndDisposeCts(ref _faceMaskCts);
+        Host?.FaceMaskGenerator?.ClearCurrentMask();
         return true;
     }
 
@@ -329,6 +330,7 @@ public sealed class MainView2 : BasePageView
         _toolbarScroll.style.flexShrink = 1;
         _toolbarScroll.style.minWidth = 0;
         _toolbarScroll.style.marginRight = 8;
+        _toolbarScroll.style.overflow = Overflow.Hidden;
         _toolbarScroll.horizontalScrollerVisibility = ScrollerVisibility.Hidden;
         _toolbarScroll.verticalScrollerVisibility = ScrollerVisibility.Hidden;
         shell.Add(_toolbarScroll);
@@ -399,13 +401,6 @@ public sealed class MainView2 : BasePageView
         AddTool("CF", "🤦‍", OnCodeFormerRepro);
         AddTool("GFP", "🤦‍", OnGfpganRepro);
 
-        var languageRow = new VisualElement();
-        languageRow.style.flexDirection = FlexDirection.Row;
-        languageRow.style.alignItems = Align.Center;
-        languageRow.style.flexShrink = 0;
-        languageRow.style.marginLeft = 8;
-        shell.Add(languageRow);
-
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
         _developmentRunnerTestButton = new Button(OnDevelopmentRunnerTest)
         {
@@ -425,35 +420,9 @@ public sealed class MainView2 : BasePageView
         _developmentRunnerTestButton.style.borderTopRightRadius = 8;
         _developmentRunnerTestButton.style.borderBottomLeftRadius = 8;
         _developmentRunnerTestButton.style.borderBottomRightRadius = 8;
-        languageRow.Add(_developmentRunnerTestButton);
+        _developmentRunnerTestButton.style.marginLeft = 8;
+        shell.Add(_developmentRunnerTestButton);
 #endif
-
-        Button AddLanguageButton(string text, AppLanguage language)
-        {
-            var button = new Button(() => Host?.SetLanguage(language)) { text = text };
-            button.tooltip = language == AppLanguage.SimplifiedChinese
-                ? L("Switch to Simplified Chinese", "切换到简体中文")
-                : L("Switch to English", "切换到英语");
-            button.style.width = 38;
-            button.style.height = 36;
-            button.style.marginLeft = 6;
-            button.style.paddingLeft = 0;
-            button.style.paddingRight = 0;
-            button.style.color = Color.white;
-            button.style.backgroundColor = new StyleColor(
-                AppLocalization.CurrentLanguage == language
-                    ? new Color(0.18f, 0.48f, 0.93f, 1f)
-                    : new Color(0.13f, 0.14f, 0.18f, 1f));
-            button.style.borderTopLeftRadius = 8;
-            button.style.borderTopRightRadius = 8;
-            button.style.borderBottomLeftRadius = 8;
-            button.style.borderBottomRightRadius = 8;
-            languageRow.Add(button);
-            return button;
-        }
-
-        AddLanguageButton("中", AppLanguage.SimplifiedChinese);
-        AddLanguageButton("En", AppLanguage.English);
         return shell;
     }
 
@@ -1630,13 +1599,12 @@ public sealed class MainView2 : BasePageView
 
         _adjustRunning = true;
         ShowProgress("ESRGAN");
+        Action<float, string> onProgress = (p, t) => SetProgress(p, t);
         try
         {
-            void OnProgress(float p, string t) => SetProgress(p, t);
-            Host.RealEsrganReproRunner.ProgressChanged -= OnProgress;
-            Host.RealEsrganReproRunner.ProgressChanged += OnProgress;
+            Host.RealEsrganReproRunner.ProgressChanged -= onProgress;
+            Host.RealEsrganReproRunner.ProgressChanged += onProgress;
             var result = await Host.RealEsrganReproRunner.ProcessAsync(src, _lifetimeCts.Token);
-            Host.RealEsrganReproRunner.ProgressChanged -= OnProgress;
             if (!string.IsNullOrWhiteSpace(result.error))
             {
                 ShowToast(result.error, 3400);
@@ -1647,6 +1615,8 @@ public sealed class MainView2 : BasePageView
         }
         finally
         {
+            Host.RealEsrganReproRunner.ProgressChanged -= onProgress;
+            Host.RealEsrganReproRunner.ReleaseRuntimeResources();
             _adjustRunning = false;
             HideProgress();
         }
@@ -1691,6 +1661,9 @@ public sealed class MainView2 : BasePageView
             YoloInpaintResourceSnapshotLines.Clear();
             LogYoloInpaintResourceSnapshot("begin");
             var oldTargetPersonOnly = Host.YoloSegRunner.targetPersonOnly;
+            Host.YoloSegRunner.disallowBufferAccess = true;
+            Host.YoloSegRunner.disallowBufferOutputs = true;
+            Host.YoloSegRunner.disallowBufferToTextureMaterialization = true;
             Host.YoloSegRunner.targetPersonOnly = true;
             void OnYoloProgress(float p, string t) => SetProgress(p * 0.35f, string.IsNullOrWhiteSpace(t) ? "YOLO Seg" : t);
             void OnInpaintProgress(float p, string t) => SetProgress(0.35f + p * 0.65f, string.IsNullOrWhiteSpace(t) ? "SD Inpainting" : t);
@@ -1748,11 +1721,24 @@ public sealed class MainView2 : BasePageView
                 deepFillRunner.enableGeneralTextureConvolution = true;
                 deepFillRunner.enableDepthWiseTextureConvolution = true;
                 deepFillRunner.enableConv1x1TextureConvolution = true;
+#if DEVELOPMENT_BUILD
+                deepFillRunner.enableLayerPathDebugLog = true;
+#endif
                 SetProgress(0.40f, deepFillRunner.backend == DeepFillV2Backend.OnnxDirect ? "DeepFillV2 ONNX" : "DeepFillV2 NCNN");
                 await ReleaseGpuPressureBeforeInpaintAsync(_lifetimeCts.Token);
                 LogYoloInpaintResourceSnapshot("before_deepfillv2_process");
 
-                var deepFillResult = await deepFillRunner.ProcessAsync(src, result.mask, _lifetimeCts.Token);
+                deepFillRunner.ProgressChanged -= OnInpaintProgress;
+                deepFillRunner.ProgressChanged += OnInpaintProgress;
+                DeepFillV2Result deepFillResult;
+                try
+                {
+                    deepFillResult = await deepFillRunner.ProcessAsync(src, result.mask, _lifetimeCts.Token);
+                }
+                finally
+                {
+                    deepFillRunner.ProgressChanged -= OnInpaintProgress;
+                }
                 LogYoloInpaintResourceSnapshot("after_deepfillv2_process");
                 if (!string.IsNullOrWhiteSpace(deepFillResult.error))
                 {
@@ -1812,6 +1798,10 @@ public sealed class MainView2 : BasePageView
         }
         finally
         {
+            // DeepFillV2 returns a CPU Texture2D, so its Pack4 graph and pooled RTs
+            // are no longer needed after this one-shot people-removal operation.
+            // Keeping them alive lets a TBDR render frame overlap stale compute work.
+            Host?.DeepFillV2Runner?.Release();
             LogYoloInpaintResourceSnapshot("finally");
             TryWriteYoloInpaintResourceReport();
             AexisGpuResourceTracker.Enabled = false;
@@ -1960,13 +1950,12 @@ public sealed class MainView2 : BasePageView
 
         _adjustRunning = true;
         ShowProgress("Matting");
+        Action<float, string> onProgress = (p, t) => SetProgress(p, t);
         try
         {
-            void OnProgress(float p, string t) => SetProgress(p, t);
-            Host.MattingReproRunner.ProgressChanged -= OnProgress;
-            Host.MattingReproRunner.ProgressChanged += OnProgress;
+            Host.MattingReproRunner.ProgressChanged -= onProgress;
+            Host.MattingReproRunner.ProgressChanged += onProgress;
             var result = await Host.MattingReproRunner.ProcessAsync(src, _lifetimeCts.Token);
-            Host.MattingReproRunner.ProgressChanged -= OnProgress;
             if (!string.IsNullOrWhiteSpace(result.error))
             {
                 ShowToast(result.error, 3400);
@@ -1977,6 +1966,8 @@ public sealed class MainView2 : BasePageView
         }
         finally
         {
+            Host.MattingReproRunner.ProgressChanged -= onProgress;
+            Host.MattingReproRunner.ReleaseRuntimeResources();
             _adjustRunning = false;
             HideProgress();
         }
@@ -1998,13 +1989,12 @@ public sealed class MainView2 : BasePageView
 
         _adjustRunning = true;
         ShowProgress("GFPGAN");
+        Action<float, string> onProgress = (p, t) => SetProgress(p, t);
         try
         {
-            void OnProgress(float p, string t) => SetProgress(p, t);
-            Host.GfpganReproRunner.ProgressChanged -= OnProgress;
-            Host.GfpganReproRunner.ProgressChanged += OnProgress;
+            Host.GfpganReproRunner.ProgressChanged -= onProgress;
+            Host.GfpganReproRunner.ProgressChanged += onProgress;
             var result = await Host.GfpganReproRunner.ProcessAsync(src, _lifetimeCts.Token);
-            Host.GfpganReproRunner.ProgressChanged -= OnProgress;
             if (!string.IsNullOrWhiteSpace(result.error))
             {
                 ShowToast(result.error, 3400);
@@ -2015,6 +2005,8 @@ public sealed class MainView2 : BasePageView
         }
         finally
         {
+            Host.GfpganReproRunner.ProgressChanged -= onProgress;
+            Host.GfpganReproRunner.ReleaseRuntimeResources();
             _adjustRunning = false;
             HideProgress();
         }
@@ -2036,13 +2028,12 @@ public sealed class MainView2 : BasePageView
 
         _adjustRunning = true;
         ShowProgress("CodeFormer");
+        Action<float, string> onProgress = (p, t) => SetProgress(p, t);
         try
         {
-            void OnProgress(float p, string t) => SetProgress(p, t);
-            Host.CodeFormerReproRunner.ProgressChanged -= OnProgress;
-            Host.CodeFormerReproRunner.ProgressChanged += OnProgress;
+            Host.CodeFormerReproRunner.ProgressChanged -= onProgress;
+            Host.CodeFormerReproRunner.ProgressChanged += onProgress;
             var result = await Host.CodeFormerReproRunner.ProcessAsync(src, _lifetimeCts.Token);
-            Host.CodeFormerReproRunner.ProgressChanged -= OnProgress;
             if (!string.IsNullOrWhiteSpace(result.error))
             {
                 ShowToast(result.error, 3400);
@@ -2053,6 +2044,8 @@ public sealed class MainView2 : BasePageView
         }
         finally
         {
+            Host.CodeFormerReproRunner.ProgressChanged -= onProgress;
+            Host.CodeFormerReproRunner.ReleaseRuntimeResources();
             _adjustRunning = false;
             HideProgress();
         }

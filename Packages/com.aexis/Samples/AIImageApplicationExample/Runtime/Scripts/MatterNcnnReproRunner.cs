@@ -33,9 +33,9 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
     public bool useAsyncComputeCommandBuffer = false;
     public bool forceBufferConvolution = false;
     public bool useTextureMaxPoolingInd = true;
-    public bool disallowBufferAccess = false;
-    public bool disallowBufferOutputs = false;
-    public bool disallowBufferToTextureMaterialization = false;
+    public bool disallowBufferAccess = true;
+    public bool disallowBufferOutputs = true;
+    public bool disallowBufferToTextureMaterialization = true;
     public bool enableForegroundCleanup = true;
     [Range(0f, 1f)] public float foregroundCleanupThreshold = 0.05f;
     [Range(0, 4)] public int foregroundCleanupCloseRadius = 2;
@@ -120,11 +120,15 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
             resizedInput = ResizeTextureBilinear(src, inputW, inputH);
             if (resizedInput == null)
                 return Finish(new MattingResult { error = "Resize input failed" });
+            await WaitForMattingGpuStageAsync("input-resize", ct);
 
             if (!useCommandBuffer)
             {
                 inputPack4 = _repro.RentTempArray(inputW, inputH, 1, RenderTextureFormat.ARGBHalf);
-                _ops.PackRgbToPack4Gfpgan(resizedInput, 0, 0, 1f, 1f, inputPack4, false);
+                await ExecuteMattingGpuOperationAsync(
+                    "input-pack",
+                    () => _ops.PackRgbToPack4Gfpgan(resizedInput, 0, 0, 1f, 1f, inputPack4, false),
+                    ct);
             }
 
             ReportProgress(0.30f, "Run matting");
@@ -182,12 +186,35 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
             }
             else
             {
-                using var infer = _repro.Infer(inputPack4, 1, "input", pinned);
-                if (enableDebugDump && pinned != null && pinned.Count > 0)
+                var inputs = new Dictionary<string, RenderTexture>(StringComparer.Ordinal)
                 {
-                    DumpPinnedBlobStats(infer, _lastDumpDir, pinned);
+                    { "input", inputPack4 }
+                };
+                _repro.DebugLogAllLayerHeartbeats = UnityEngine.Debug.isDebugBuild;
+                if (UnityEngine.Debug.isDebugBuild)
+                {
+                    var configuredDebugLog = _repro.DebugLog;
+                    _repro.DebugLog = line =>
+                    {
+                        configuredDebugLog?.Invoke(line);
+                        if (line.StartsWith("[LayerHeartbeat]", StringComparison.Ordinal))
+                            UnityEngine.Debug.Log("[Matting] " + line);
+                    };
+                    UnityEngine.Debug.Log("[Matting] graph-begin | input=" + inputPack4.GetInstanceID() + " | layers=" + _repro.Model.layers.Count);
                 }
-                mattePack4 = infer.ExtractTexture(OutputBlobName);
+                using (var infer = await _repro.InferWithMultiInputsAsync(
+                           inputs,
+                           null,
+                           pinned,
+                           cancellationToken: ct,
+                           yieldEveryLayers: 1))
+                {
+                    if (enableDebugDump && pinned != null && pinned.Count > 0)
+                        DumpPinnedBlobStats(infer, _lastDumpDir, pinned);
+                    mattePack4 = infer.ExtractTexture(OutputBlobName);
+                }
+                if (UnityEngine.Debug.isDebugBuild)
+                    UnityEngine.Debug.Log("[Matting] graph-complete | output=" + (mattePack4 != null ? mattePack4.GetInstanceID().ToString() : "null"));
             }
 
             if (enableDebugDump && textureConvCompareLines != null && textureConvCompareLines.Count > 0 && !string.IsNullOrWhiteSpace(_lastDumpDir))
@@ -208,7 +235,10 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
                 var scaleX = (float)originalW / matteFullResPack4.width;
                 var scaleY = (float)originalH / matteFullResPack4.height;
                 var upsampled = _repro.RentTempArray(originalW, originalH, matteFullResPack4.volumeDepth > 0 ? matteFullResPack4.volumeDepth : 1, RenderTextureFormat.ARGBHalf);
-                _ops.InterpPack4(matteFullResPack4, upsampled.volumeDepth > 0 ? upsampled.volumeDepth : 1, scaleX, scaleY, upsampled);
+                await ExecuteMattingGpuOperationAsync(
+                    "alpha-resize",
+                    () => _ops.InterpPack4(matteFullResPack4, upsampled.volumeDepth > 0 ? upsampled.volumeDepth : 1, scaleX, scaleY, upsampled),
+                    ct);
                 _repro.ReturnTempArray(matteFullResPack4);
                 matteFullResPack4 = upsampled;
             }
@@ -216,7 +246,7 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
             ReportProgress(0.82f, "Read back alpha");
             await UniTask.Yield();
 
-            var alpha = ReadbackSingleChannel(matteFullResPack4, originalW, originalH);
+            var alpha = await ReadbackSingleChannelAsync(matteFullResPack4, originalW, originalH, ct);
             if (alpha == null || alpha.Length != originalW * originalH)
                 return Finish(new MattingResult { error = "Read alpha failed" });
 
@@ -258,6 +288,7 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
                 _repro.DebugCompareTextureConvLayers = null;
                 _repro.DebugCompareMaxPoolingLayers = null;
                 _repro.DebugLog = null;
+                _repro.DebugLogAllLayerHeartbeats = false;
             }
             ReportProgress(1f, string.Empty);
         }
@@ -330,9 +361,10 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
 
     private void EnsureRuntimeObjects()
     {
-        if (_repro != null && _hasAppliedPrecisionMode && _appliedPrecisionMode != precisionMode)
+        var effectivePrecisionMode = AexisModelManifestLoader.ResolveRunnerAppliedPrecision("matting.ncnn", precisionMode);
+        if (_repro != null && _hasAppliedPrecisionMode && _appliedPrecisionMode != effectivePrecisionMode)
         {
-            UnityEngine.Debug.Log("[NcnnPrecision] Matting recreating session | from=" + _appliedPrecisionMode + " | to=" + precisionMode);
+            UnityEngine.Debug.Log("[NcnnPrecision] Matting recreating session | from=" + _appliedPrecisionMode + " | to=" + effectivePrecisionMode);
             Release();
         }
         if (_ops == null)
@@ -340,7 +372,7 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
         if (_repro == null)
         {
             _repro = NcnnInferenceSessionFactory.Create(_ops, "matting.ncnn", precisionMode);
-            _appliedPrecisionMode = precisionMode;
+            _appliedPrecisionMode = _repro.AppliedPrecisionMode;
             _hasAppliedPrecisionMode = true;
         }
     }
@@ -394,6 +426,11 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
         _repro = null;
         _ops = null;
         _hasAppliedPrecisionMode = false;
+    }
+
+    public void ReleaseRuntimeResources()
+    {
+        Release();
     }
 
     private static (int width, int height) ComputeModelInputSize(int srcW, int srcH, int refSize, bool preserveAspectRatio)
@@ -461,15 +498,75 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
         }
     }
 
-    private float[] ReadbackSingleChannel(RenderTexture pack4, int width, int height)
+    private static async UniTask ExecuteMattingGpuOperationAsync(string stage, Action execute, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (UnityEngine.Debug.isDebugBuild)
+            UnityEngine.Debug.Log("[Matting] gpu-begin | stage=" + stage);
+        execute();
+        await UniTask.NextFrame();
+        ct.ThrowIfCancellationRequested();
+        if (UnityEngine.Debug.isDebugBuild)
+            UnityEngine.Debug.Log("[Matting] gpu-frame-complete | stage=" + stage);
+    }
+
+    private static async UniTask WaitForMattingGpuStageAsync(string stage, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (UnityEngine.Debug.isDebugBuild)
+            UnityEngine.Debug.Log("[Matting] gpu-begin | stage=" + stage);
+        await UniTask.NextFrame();
+        ct.ThrowIfCancellationRequested();
+        if (UnityEngine.Debug.isDebugBuild)
+            UnityEngine.Debug.Log("[Matting] gpu-frame-complete | stage=" + stage);
+    }
+
+    private static async UniTask<float[]> ReadbackSingleChannelAsync(
+        RenderTexture pack4,
+        int width,
+        int height,
+        CancellationToken ct)
     {
         if (pack4 == null)
             return null;
-        using var buffer = new ComputeBuffer(width * height, sizeof(float), ComputeBufferType.Structured);
-        var data = new float[width * height];
-        _ops.Pack4ToBufferCHW(pack4, width, height, 1, buffer);
-        buffer.GetData(data);
-        return data;
+
+        // A driver callback can create a queue dependency on tile-based devices. Keep this
+        // texture-only path deterministic: drain the producer frame, read one slice, then
+        // give the render thread a frame before releasing any graph activation.
+        await WaitForMattingGpuStageAsync("alpha-readback-ready", ct);
+        if (UnityEngine.Debug.isDebugBuild)
+            UnityEngine.Debug.Log("[Matting] alpha-readback-begin | texture=" + pack4.GetInstanceID());
+        var alpha = ReadbackSingleChannelSync(pack4, width, height);
+        await WaitForMattingGpuStageAsync("alpha-readback-complete", ct);
+        return alpha;
+    }
+
+    private static float[] ReadbackSingleChannelSync(RenderTexture pack4, int width, int height)
+    {
+        var previousActive = RenderTexture.active;
+        Texture2D readback = null;
+        try
+        {
+            readback = new Texture2D(width, height, TextureFormat.RGBAFloat, false, true);
+            if (pack4.dimension == TextureDimension.Tex2D)
+                RenderTexture.active = pack4;
+            else
+                Graphics.SetRenderTarget(pack4, 0, CubemapFace.Unknown, 0);
+            readback.ReadPixels(new Rect(0, 0, width, height), 0, 0, false);
+            readback.Apply(false, false);
+
+            var pixels = readback.GetRawTextureData<float>();
+            var alpha = new float[width * height];
+            for (var index = 0; index < alpha.Length; index++)
+                alpha[index] = pixels[index * 4];
+            return alpha;
+        }
+        finally
+        {
+            RenderTexture.active = previousActive;
+            if (readback != null)
+                Destroy(readback);
+        }
     }
 
     private static Texture2D BuildMatteTexture(float[] alpha, int width, int height)

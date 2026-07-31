@@ -66,6 +66,15 @@ namespace Aexis.Execution
             ExecuteRenderTexturePath(owner, layer, context);
         }
 
+        // Most layers are a single GPU submission. Layers with a verified internal
+        // dependency chain can override this to expose safe frame-yield boundaries
+        // without changing the texture-only execution contract.
+        public virtual IEnumerable<bool> ExecuteBufferIncremental(AexisGraphSession owner, AexisGraphModel.Layer layer, AexisLayerBufferContext context)
+        {
+            ExecuteBuffer(owner, layer, context);
+            yield return true;
+        }
+
         [Obsolete(ComputeBufferPathObsoleteMessage)]
         public virtual void ExecuteComputeBufferPath(AexisGraphSession owner, AexisGraphModel.Layer layer, AexisLayerBufferContext context)
         {

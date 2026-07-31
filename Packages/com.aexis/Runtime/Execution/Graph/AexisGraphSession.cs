@@ -3276,11 +3276,33 @@ namespace Aexis.Execution
                 outputChannels += shape.c;
             }
 
-            return AcceptStrictCommandBufferPack4Node(
+            var verification = AcceptStrictCommandBufferPack4Node(
                 layer,
                 new BufferShape(shapes[0].dims, shapes[0].w, shapes[0].h, shapes[0].d, outputChannels),
                 request,
                 "command-buffer-pack4:concat-channel");
+            if (!verification.accepted || shapes.Length <= 2)
+                return verification;
+
+            var scratchDtype = ResolveStrictOutputTextureDtype(
+                new BufferShape(shapes[0].dims, shapes[0].w, shapes[0].h, shapes[0].d, outputChannels),
+                new BufferShape(shapes[0].dims, shapes[0].w, shapes[0].h, shapes[0].d, outputChannels),
+                request,
+                layer);
+            var scratch = new List<AexisTexturePlanTensorDescriptor>();
+            var accumulatedChannels = shapes[0].c;
+            for (var index = 1; index < shapes.Length - 1; index++)
+            {
+                accumulatedChannels += shapes[index].c;
+                scratch.Add(CreateStrictPack4ScratchDescriptor(
+                    layer,
+                    "concat-channel-step-" + index,
+                    new BufferShape(shapes[0].dims, shapes[0].w, shapes[0].h, shapes[0].d, accumulatedChannels),
+                    request,
+                    scratchDtype));
+            }
+            verification.scratch = scratch.ToArray();
+            return verification;
         }
 
         private static AexisTextureExecutionPlanNodeVerification VerifyStrictCommandBufferLowDimConcat(
@@ -7354,7 +7376,8 @@ namespace Aexis.Execution
             {
                 CreateStrictPack4ScratchDescriptor(layer, "deepfill-patch-stats", new BufferShape(3, 50, 64, 1, 4), request, scratchDtype),
                 CreateStrictPack4ScratchDescriptor(layer, "deepfill-scores", new BufferShape(3, 50, 64, 1, 3200), request, scratchDtype),
-                CreateStrictPack4ScratchDescriptor(layer, "deepfill-weights", new BufferShape(3, 50, 64, 1, 3200), request, scratchDtype)
+                CreateStrictPack4ScratchDescriptor(layer, "deepfill-weights", new BufferShape(3, 50, 64, 1, 3200), request, scratchDtype),
+                CreateStrictPack4ScratchDescriptor(layer, "deepfill-reconstruct-accumulator", feature, request, scratchDtype)
             };
             return verification;
         }
@@ -7950,9 +7973,10 @@ namespace Aexis.Execution
                 RenderTextureFormat format,
                 RenderTextureDescriptor descriptor,
                 AexisTemporaryRtDescriptor temporaryDescriptor,
+                string plannedResourceName,
                 out ComputeTexture texture)
             {
-                return TryRent(layerIndex, false, width, height, 1, format, descriptor, temporaryDescriptor, null, out texture);
+                return TryRent(layerIndex, false, width, height, 1, format, descriptor, temporaryDescriptor, plannedResourceName, out texture);
             }
 
             private bool TryRent(
@@ -10181,6 +10205,68 @@ namespace Aexis.Execution
             RenderTexture.ReleaseTemporary(rt);
         }
 
+        // Some texture-only kernels issue several dependent dispatches. Keep their
+        // scratch RTs out of the pool until InferResult.Dispose observes completion.
+        internal IDisposable DeferTempArrayReturn(RenderTexture rt)
+        {
+            return rt == null ? null : new DeferredTempArrayReturn(this, rt);
+        }
+
+        // Some multi-dispatch texture kernels keep reading an input after graph
+        // liveness has reached zero. Retain the tensor reference, rather than
+        // only the raw RT, so normal shared-alias ownership is preserved.
+        internal IDisposable RetainTextureRefUntilResultDispose(TensorRef tensor)
+        {
+            var lifetimeOwner = ResolveTextureLifetimeOwner(tensor);
+            if (lifetimeOwner == null || lifetimeOwner.texture == null)
+                return null;
+
+            lifetimeOwner.refs++;
+            return new DeferredTextureRefRelease(this, lifetimeOwner);
+        }
+
+        private sealed class DeferredTempArrayReturn : IDisposable
+        {
+            private AexisGraphSession _owner;
+            private RenderTexture _texture;
+
+            public DeferredTempArrayReturn(AexisGraphSession owner, RenderTexture texture)
+            {
+                _owner = owner;
+                _texture = texture;
+            }
+
+            public void Dispose()
+            {
+                var owner = _owner;
+                var texture = _texture;
+                _owner = null;
+                _texture = null;
+                owner?.ReturnTempArray(texture);
+            }
+        }
+
+        private sealed class DeferredTextureRefRelease : IDisposable
+        {
+            private AexisGraphSession _owner;
+            private TensorRef _tensor;
+
+            public DeferredTextureRefRelease(AexisGraphSession owner, TensorRef tensor)
+            {
+                _owner = owner;
+                _tensor = tensor;
+            }
+
+            public void Dispose()
+            {
+                var owner = _owner;
+                var tensor = _tensor;
+                _owner = null;
+                _tensor = null;
+                owner?.ReleaseTextureRef(tensor);
+            }
+        }
+
         public ComputeTexture RentTempArray(CommandBuffer cmd, int w, int h, int depth, RenderTextureFormat format)
         {
             return RentTempArrayCore(cmd, w, h, depth, format, preserveRequestedFormat: false, plannedResourceName: null);
@@ -10298,7 +10384,19 @@ namespace Aexis.Execution
 
         public ComputeTexture RentTempMat(CommandBuffer cmd, int w, int h, RenderTextureFormat format)
         {
-            return RentTempMatCore(cmd, w, h, format, preserveRequestedFormat: false);
+            return RentTempMatCore(cmd, w, h, format, preserveRequestedFormat: false, plannedResourceName: null);
+        }
+
+        internal ComputeTexture RentTempMat(
+            CommandBuffer cmd,
+            int w,
+            int h,
+            RenderTextureFormat format,
+            string plannedResourceName)
+        {
+            if (string.IsNullOrWhiteSpace(plannedResourceName))
+                throw new ArgumentException("A planned CommandBuffer RT name is required.", nameof(plannedResourceName));
+            return RentTempMatCore(cmd, w, h, format, preserveRequestedFormat: false, plannedResourceName);
         }
 
         // LinearMat conversions have an explicit FP32 Texture2D storage contract
@@ -10306,7 +10404,7 @@ namespace Aexis.Execution
         // applying the model-wide FP16 activation preference.
         internal ComputeTexture RentTempMatExactFormat(CommandBuffer cmd, int w, int h, RenderTextureFormat format)
         {
-            return RentTempMatCore(cmd, w, h, format, preserveRequestedFormat: true);
+            return RentTempMatCore(cmd, w, h, format, preserveRequestedFormat: true, plannedResourceName: null);
         }
 
         private ComputeTexture RentTempMatCore(
@@ -10314,7 +10412,8 @@ namespace Aexis.Execution
             int w,
             int h,
             RenderTextureFormat format,
-            bool preserveRequestedFormat)
+            bool preserveRequestedFormat,
+            string plannedResourceName)
         {
             if (cmd == null)
                 throw new ArgumentNullException(nameof(cmd));
@@ -10348,7 +10447,7 @@ namespace Aexis.Execution
                 allocLabel);
             if (_activeCommandBufferRtArena != null
                 && _activeCommandBufferRtArena.TryRentMat(
-                    _currentExecutingLayerIndex, w, h, format, desc, temporaryDescriptor, out var planned))
+                    _currentExecutingLayerIndex, w, h, format, desc, temporaryDescriptor, plannedResourceName, out var planned))
             {
                 _ops?.FillScalarTexture(cmd, null, planned);
                 TrackTempRtRent();

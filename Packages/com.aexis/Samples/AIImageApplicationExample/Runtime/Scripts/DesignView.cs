@@ -1549,6 +1549,30 @@ public sealed class DesignView : BasePageView
         if (maskTexture == null)
             return 0;
 
+        if (Application.isBatchMode || !SystemInfo.supportsAsyncGPUReadback)
+        {
+            var syncTexture = ReadbackTextureSync(maskTexture, maskTexture.width, maskTexture.height);
+            if (syncTexture == null)
+                return 0;
+
+            try
+            {
+                var pixels = syncTexture.GetPixels32();
+                var syncCount = 0;
+                for (var i = 0; i < pixels.Length; i++)
+                {
+                    if (IsMaskedPixel(pixels[i]))
+                        syncCount++;
+                }
+
+                return syncCount;
+            }
+            finally
+            {
+                Destroy(syncTexture);
+            }
+        }
+
         var tcs = new UniTaskCompletionSource<AsyncGPUReadbackRequest>();
         AsyncGPUReadback.Request(maskTexture, 0, TextureFormat.RGBA32, req => tcs.TrySetResult(req));
         var request = await tcs.Task;

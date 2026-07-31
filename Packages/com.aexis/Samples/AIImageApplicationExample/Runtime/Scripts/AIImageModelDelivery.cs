@@ -610,8 +610,29 @@ public static class AIImageModelDelivery
             case AIImageModelGroupId.RealEsrganX4PlusAnime:
             case AIImageModelGroupId.RealEsrganOptionalModels:
                 return new[] { "esrgan-realesrgan-x4plus.fp16.model.json" };
+            case AIImageModelGroupId.CodeFormerDefault:
+                return new[]
+                {
+                    "codeformer.fp16.model.json",
+                    "codeformer.fp32.model.json"
+                };
+            case AIImageModelGroupId.GfpganDefault:
+                return new[]
+                {
+                    "gfpgan.fp16.model.json",
+                    "gfpgan.fp32.model.json"
+                };
+            case AIImageModelGroupId.YoloV8PersonSegmentation:
+            case AIImageModelGroupId.Yolo11PersonSegmentation:
+                return new[] { "yolo-seg.fp16.model.json" };
             case AIImageModelGroupId.Matting:
-                return new[] { "matting.fp32.model.json" };
+                return new[]
+                {
+                    "matting.fp16.model.json",
+                    "matting.fp32.model.json"
+                };
+            case AIImageModelGroupId.StableDiffusion:
+                return new[] { "sd-inpainting.fp16.model.json" };
             default:
                 return Array.Empty<string>();
         }

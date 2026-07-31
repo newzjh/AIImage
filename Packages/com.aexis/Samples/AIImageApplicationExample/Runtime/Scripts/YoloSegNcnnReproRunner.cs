@@ -169,9 +169,9 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
     public bool enableDepthWiseTextureConvolution = true;
     public bool enableConv1x1TextureConvolution = true;
     public bool enableGeneralTextureConvolution = true;
-    public bool disallowBufferAccess = false;
-    public bool disallowBufferOutputs = false;
-    public bool disallowBufferToTextureMaterialization = false;
+    public bool disallowBufferAccess = true;
+    public bool disallowBufferOutputs = true;
+    public bool disallowBufferToTextureMaterialization = true;
     public bool enableLayerPathDebugLog = false;
     public bool logAllLayerHeartbeats = false;
     public bool logAllLayerOutputs = false;
@@ -511,16 +511,17 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
 
     private void EnsureRuntimeObjects()
     {
-        if (_repro != null && _hasAppliedPrecisionMode && _appliedPrecisionMode != precisionMode)
+        var effectivePrecisionMode = AexisModelManifestLoader.ResolveRunnerAppliedPrecision("yolo-seg", precisionMode);
+        if (_repro != null && _hasAppliedPrecisionMode && _appliedPrecisionMode != effectivePrecisionMode)
         {
-            UnityEngine.Debug.Log("[NcnnPrecision] YOLO Seg recreating session | from=" + _appliedPrecisionMode + " | to=" + precisionMode);
+            UnityEngine.Debug.Log("[NcnnPrecision] YOLO Seg recreating session | from=" + _appliedPrecisionMode + " | to=" + effectivePrecisionMode);
             Release();
         }
         _ops ??= new AexisOps();
         if (_repro == null)
         {
             _repro = NcnnInferenceSessionFactory.Create(_ops, "yolo-seg", precisionMode);
-            _appliedPrecisionMode = precisionMode;
+            _appliedPrecisionMode = _repro.AppliedPrecisionMode;
             _hasAppliedPrecisionMode = true;
         }
         _imageProcessingCs ??= Resources.Load<ComputeShader>("ImageProcessing");
@@ -539,7 +540,9 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
             ? false
             : enableDepthWiseTextureConvolution;
         _repro.EnableConv1x1TextureConvolution = enableConv1x1TextureConvolution;
-        _repro.TensorTextureFormat = useArgbFloatTensor ? RenderTextureFormat.ARGBFloat : RenderTextureFormat.ARGBHalf;
+        _repro.TensorTextureFormat = _repro.AppliedPrecisionMode == AexisPrecisionMode.FP16
+            ? RenderTextureFormat.ARGBHalf
+            : useArgbFloatTensor ? RenderTextureFormat.ARGBFloat : RenderTextureFormat.ARGBHalf;
         _repro.DisallowBufferAccess = disallowBufferAccess;
         _repro.DisallowBufferOutputs = disallowBufferOutputs;
         _repro.DisallowBufferToTextureMaterialization = disallowBufferToTextureMaterialization;
@@ -978,6 +981,7 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
             if (binaryMaskBuffer == null)
                 return null;
             binaryMaskBuffer.SetData(maskData);
+            await WaitForYoloGpuStageAsync("output-mask-upload", ct);
 
             sourceRt = CreateWorkingRenderTexture(width, height, "YoloSeg.SourceRt");
             maskRt = CreateWorkingRenderTexture(width, height, "YoloSeg.MaskRt");
@@ -986,40 +990,46 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
             if (sourceRt == null || maskRt == null || transparentRt == null || overlayRt == null)
                 return null;
 
-            Graphics.Blit(source, sourceRt);
+            await ExecuteYoloGpuOperationAsync("output-source-copy", () => Graphics.Blit(source, sourceRt), ct);
 
             var gx = Mathf.Max(1, Mathf.CeilToInt(width / 8f));
             var gy = Mathf.Max(1, Mathf.CeilToInt(height / 8f));
 
-            _imageProcessingCs.SetInts("_BinaryMaskSize", width, height);
-            _imageProcessingCs.SetBuffer(maskKernel, "_BinaryMaskBuffer", binaryMaskBuffer);
-            _imageProcessingCs.SetTexture(maskKernel, "_Result", maskRt);
-            _imageProcessingCs.Dispatch(maskKernel, gx, gy, 1);
+            await ExecuteYoloGpuOperationAsync("output-mask-dispatch", () =>
+            {
+                _imageProcessingCs.SetInts("_BinaryMaskSize", width, height);
+                _imageProcessingCs.SetBuffer(maskKernel, "_BinaryMaskBuffer", binaryMaskBuffer);
+                _imageProcessingCs.SetTexture(maskKernel, "_Result", maskRt);
+                _imageProcessingCs.Dispatch(maskKernel, gx, gy, 1);
+            }, ct);
 
-            _imageProcessingCs.SetInts("_BinaryMaskSize", width, height);
-            _imageProcessingCs.SetBuffer(transparentKernel, "_BinaryMaskBuffer", binaryMaskBuffer);
-            _imageProcessingCs.SetTexture(transparentKernel, "_Source", sourceRt);
-            _imageProcessingCs.SetTexture(transparentKernel, "_Result", transparentRt);
-            _imageProcessingCs.Dispatch(transparentKernel, gx, gy, 1);
+            await ExecuteYoloGpuOperationAsync("output-transparent-dispatch", () =>
+            {
+                _imageProcessingCs.SetInts("_BinaryMaskSize", width, height);
+                _imageProcessingCs.SetBuffer(transparentKernel, "_BinaryMaskBuffer", binaryMaskBuffer);
+                _imageProcessingCs.SetTexture(transparentKernel, "_Source", sourceRt);
+                _imageProcessingCs.SetTexture(transparentKernel, "_Result", transparentRt);
+                _imageProcessingCs.Dispatch(transparentKernel, gx, gy, 1);
+            }, ct);
 
-            _imageProcessingCs.SetInts("_BinaryMaskSize", width, height);
-            _imageProcessingCs.SetBuffer(overlayKernel, "_BinaryMaskBuffer", binaryMaskBuffer);
-            _imageProcessingCs.SetTexture(overlayKernel, "_Source", sourceRt);
-            _imageProcessingCs.SetTexture(overlayKernel, "_Result", overlayRt);
-            _imageProcessingCs.SetVector("_OverlayTint", new Vector4(
-                tint.r / 255f,
-                tint.g / 255f,
-                tint.b / 255f,
-                tint.a / 255f));
-            _imageProcessingCs.SetFloat("_OverlayOpacity", Mathf.Clamp01(opacity));
-            _imageProcessingCs.Dispatch(overlayKernel, gx, gy, 1);
+            await ExecuteYoloGpuOperationAsync("output-overlay-dispatch", () =>
+            {
+                _imageProcessingCs.SetInts("_BinaryMaskSize", width, height);
+                _imageProcessingCs.SetBuffer(overlayKernel, "_BinaryMaskBuffer", binaryMaskBuffer);
+                _imageProcessingCs.SetTexture(overlayKernel, "_Source", sourceRt);
+                _imageProcessingCs.SetTexture(overlayKernel, "_Result", overlayRt);
+                _imageProcessingCs.SetVector("_OverlayTint", new Vector4(
+                    tint.r / 255f,
+                    tint.g / 255f,
+                    tint.b / 255f,
+                    tint.a / 255f));
+                _imageProcessingCs.SetFloat("_OverlayOpacity", Mathf.Clamp01(opacity));
+                _imageProcessingCs.Dispatch(overlayKernel, gx, gy, 1);
+            }, ct);
 
-            await UniTask.Yield();
-            ct.ThrowIfCancellationRequested();
-
-            var maskTexture = await ReadbackTextureAsync(maskRt, width, height, ct);
-            var transparentTexture = await ReadbackTextureAsync(transparentRt, width, height, ct);
-            var overlayTexture = await ReadbackTextureAsync(overlayRt, width, height, ct);
+            var maskTexture = await ReadbackTextureAsync(maskRt, width, height, "mask", ct);
+            var transparentTexture = await ReadbackTextureAsync(transparentRt, width, height, "transparent", ct);
+            var overlayTexture = await ReadbackTextureAsync(overlayRt, width, height, "overlay", ct);
             if (maskTexture == null || transparentTexture == null || overlayTexture == null)
             {
                 if (maskTexture != null) DestroyRuntimeObject(maskTexture);
@@ -1115,28 +1125,48 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
             UnityEngine.Object.Destroy(obj);
     }
 
-    private static async UniTask<Texture2D> ReadbackTextureAsync(RenderTexture rt, int width, int height, CancellationToken ct)
+    private static async UniTask ExecuteYoloGpuOperationAsync(string stage, Action execute, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (UnityEngine.Debug.isDebugBuild)
+            UnityEngine.Debug.Log("[YoloSegRunner] gpu-begin | stage=" + stage);
+        execute();
+        await UniTask.NextFrame();
+        ct.ThrowIfCancellationRequested();
+        if (UnityEngine.Debug.isDebugBuild)
+            UnityEngine.Debug.Log("[YoloSegRunner] gpu-frame-complete | stage=" + stage);
+    }
+
+    private static async UniTask WaitForYoloGpuStageAsync(string stage, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (UnityEngine.Debug.isDebugBuild)
+            UnityEngine.Debug.Log("[YoloSegRunner] gpu-begin | stage=" + stage);
+        await UniTask.NextFrame();
+        ct.ThrowIfCancellationRequested();
+        if (UnityEngine.Debug.isDebugBuild)
+            UnityEngine.Debug.Log("[YoloSegRunner] gpu-frame-complete | stage=" + stage);
+    }
+
+    private static async UniTask<Texture2D> ReadbackTextureAsync(
+        RenderTexture rt,
+        int width,
+        int height,
+        string outputName,
+        CancellationToken ct)
     {
         if (rt == null)
             return null;
 
-        if (Application.isBatchMode)
-            return ReadbackTextureSync(rt, width, height);
-
-        var tcs = new UniTaskCompletionSource<AsyncGPUReadbackRequest>();
-        AsyncGPUReadback.Request(rt, 0, TextureFormat.RGBA32, req => tcs.TrySetResult(req));
-        var request = await tcs.Task;
-        ct.ThrowIfCancellationRequested();
-        if (request.hasError)
-            return null;
-
-        var data = request.GetData<byte>();
-        var tex = new Texture2D(width, height, TextureFormat.RGBA32, false, true);
-        tex.LoadRawTextureData(data);
-        tex.Apply(false, false);
-        tex.wrapMode = TextureWrapMode.Clamp;
-        tex.filterMode = FilterMode.Bilinear;
-        return tex;
+        // Tile-based drivers can form a queue dependency when a callback races a compute
+        // dispatch. Drain the producer frame and use one synchronous texture readback.
+        var stage = "output-" + (string.IsNullOrWhiteSpace(outputName) ? "texture" : outputName) + "-readback";
+        await WaitForYoloGpuStageAsync(stage + "-ready", ct);
+        if (UnityEngine.Debug.isDebugBuild)
+            UnityEngine.Debug.Log("[YoloSegRunner] output-readback-begin | stage=" + stage + " | texture=" + rt.GetInstanceID());
+        var texture = ReadbackTextureSync(rt, width, height);
+        await WaitForYoloGpuStageAsync(stage + "-complete", ct);
+        return texture;
     }
 
     private static Texture2D ReadbackTextureSync(RenderTexture rt, int width, int height)

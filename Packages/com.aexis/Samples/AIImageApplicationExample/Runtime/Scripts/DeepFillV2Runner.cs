@@ -7,6 +7,7 @@ using System.Threading;
 using Aexis.Samples.Async;
 using Aexis.Ncnn;
 using UnityEngine;
+using UnityEngine.Rendering;
 using Aexis.Execution;
 
 public enum DeepFillV2Backend
@@ -48,8 +49,16 @@ public sealed class DeepFillV2Runner : MonoBehaviour
     public bool enableGeneralTextureConvolution = true;
     public bool enableDepthWiseTextureConvolution = true;
     public bool enableConv1x1TextureConvolution = true;
+    // The default executes the strict texture graph in small frame-paced pieces.
+    // This keeps transient Pack4 RT lifetime visible to tile-based drivers instead
+    // of submitting the whole 223-layer dependency chain as one opaque command.
+    // Keep the long command-buffer route as an explicit diagnostic only.
+    public bool useLongCommandBufferExecution;
+    public bool useAsyncComputeCommandBuffer;
     public bool enableLayerPathDebugLog = false;
     public string debugTensorBlobName = string.Empty;
+
+    public event Action<float, string> ProgressChanged;
 
     private AexisOps _ops;
     private AexisGraphSession _repro;
@@ -73,6 +82,7 @@ public sealed class DeepFillV2Runner : MonoBehaviour
         RenderTexture mask512 = null;
         RenderTexture sourcePack4 = null;
         RenderTexture maskPack4 = null;
+        RenderTexture commandOutputPack4 = null;
         RenderTexture rgb512 = null;
         Texture2D generated512 = null;
         Texture2D generatedFull = null;
@@ -98,40 +108,34 @@ public sealed class DeepFillV2Runner : MonoBehaviour
             _lastDumpDir = enableDebugDump ? CreateDumpDir() : null;
             EnsureRuntimeObjects();
             ApplyReproOptions();
+            ReportProgress(0.08f, "Load model");
 
             var loadSw = Stopwatch.StartNew();
             await EnsureLoadedAsync(ct);
             loadSw.Stop();
             loadMs = loadSw.ElapsedMilliseconds;
             ct.ThrowIfCancellationRequested();
+            ReportProgress(0.15f, "Read inputs");
 
             readableSource = EnsureReadable(sourceImage);
             readableMask = EnsureReadable(maskImage);
             if (readableSource == null || readableMask == null)
                 return Finish(new DeepFillV2Result { error = "DeepFillV2 failed to read source or mask texture." });
 
+            ReportProgress(0.22f, "Resize source");
             source512 = PrepareModelInput(readableSource);
+            await NextGpuFrameAsync(ct, "resize-source");
+            ReportProgress(0.30f, "Resize mask");
             mask512 = PrepareModelInput(readableMask);
+            await NextGpuFrameAsync(ct, "resize-mask");
             if (source512 == null || mask512 == null)
                 return Finish(new DeepFillV2Result { error = "DeepFillV2 failed to prepare the 400x512 source or mask." });
-
-            var inputFormat = useArgbFloatTensor ? RenderTextureFormat.ARGBFloat : RenderTextureFormat.ARGBHalf;
-            sourcePack4 = _repro.RentTempArray(InputWidth, InputHeight, 1, inputFormat);
-            maskPack4 = _repro.RentTempArray(InputWidth, InputHeight, 1, inputFormat);
-            _ops.PackRgbToPack4(source512, 0, 0, 1f, 1f, sourcePack4, flipYInput, 1f);
-            _ops.PackRgbToPack4(mask512, 0, 0, 1f, 1f, maskPack4, flipYInput, 1f);
 
             if (enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir))
             {
                 TryWriteTexturePng(source512, Path.Combine(_lastDumpDir, "00_source_400x512.png"));
                 TryWriteTexturePng(mask512, Path.Combine(_lastDumpDir, "01_mask_400x512.png"));
             }
-
-            var textureInputs = new Dictionary<string, RenderTexture>(StringComparer.Ordinal)
-            {
-                [MaskInputName] = maskPack4,
-                [ImageInputName] = sourcePack4
-            };
             var textureShapes = new Dictionary<string, AexisGraphSession.BufferShape>(StringComparer.Ordinal)
             {
                 [MaskInputName] = new AexisGraphSession.BufferShape(3, InputWidth, InputHeight, 1, 1),
@@ -143,18 +147,127 @@ public sealed class DeepFillV2Runner : MonoBehaviour
                 pinned.Add(debugTensorBlobs[i]);
 
             var inferSw = Stopwatch.StartNew();
-            using (var infer = _repro.InferWithMultiInputs(textureInputs, null, pinned, textureShapes))
+            ReportProgress(0.34f, "Prepare DeepFillV2");
+            await NextGpuFrameAsync(ct, "before-infer");
+            var inputFormat = useArgbFloatTensor ? RenderTextureFormat.ARGBFloat : RenderTextureFormat.ARGBHalf;
+            if (!useLongCommandBufferExecution)
             {
-                if (debugTensorBlobs.Count > 0 && enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir))
-                {
-                    for (var i = 0; i < debugTensorBlobs.Count; i++)
-                        TryWriteDebugTensorBlob(infer, debugTensorBlobs[i], _lastDumpDir);
-                }
+                // One texture-only layer per frame is deliberately conservative.
+                // It is the shared execution policy for desktop and mobile; no
+                // Android/iOS branch or buffer materialization is involved.
+                UnityEngine.Debug.Log("[DeepFillV2] execution=paced-immediate | layers-per-frame=1");
+                ReportProgress(0.38f, "Pack source");
+                sourcePack4 = _repro.RentTempArray(InputWidth, InputHeight, 1, inputFormat);
+                _ops.PackRgbToPack4(source512, 0, 0, 1f, 1f, sourcePack4, flipYInput, 1f);
+                await NextGpuFrameAsync(ct, "pack-source");
 
-                var outPack4 = infer.GetTexture(OutputName);
-                rgb512 = NewRenderTexture(InputWidth, InputHeight, RenderTextureFormat.ARGB32, true, "DeepFillV2.Rgb400x512");
-                _ops.Pack4ToRgbScaled(outPack4, rgb512, 0.5f, 0.5f, flipYOutput);
-                generated512 = ReadRenderTexture(rgb512, TextureFormat.RGBA32, false);
+                ReportProgress(0.46f, "Pack mask");
+                maskPack4 = _repro.RentTempArray(InputWidth, InputHeight, 1, inputFormat);
+                _ops.PackRgbToPack4(mask512, 0, 0, 1f, 1f, maskPack4, flipYInput, 1f);
+                await NextGpuFrameAsync(ct, "pack-mask");
+                ReportProgress(0.52f, "Run DeepFillV2");
+
+                var textureInputs = new Dictionary<string, RenderTexture>(StringComparer.Ordinal)
+                {
+                    [MaskInputName] = maskPack4,
+                    [ImageInputName] = sourcePack4
+                };
+                using (var infer = await _repro.InferWithMultiInputsAsync(
+                           textureInputs,
+                           null,
+                           pinned,
+                           textureShapes,
+                           cancellationToken: ct,
+                           yieldEveryLayers: 1))
+                {
+                    if (debugTensorBlobs.Count > 0 && enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir))
+                    {
+                        for (var i = 0; i < debugTensorBlobs.Count; i++)
+                            TryWriteDebugTensorBlob(infer, debugTensorBlobs[i], _lastDumpDir);
+                    }
+
+                    var outPack4 = infer.GetTexture(OutputName);
+                    rgb512 = NewRenderTexture(InputWidth, InputHeight, RenderTextureFormat.ARGB32, true, "DeepFillV2.Rgb400x512");
+                    ReportProgress(0.86f, "Unpack output");
+                    _ops.Pack4ToRgbScaled(outPack4, rgb512, 0.5f, 0.5f, flipYOutput);
+                    await NextGpuFrameAsync(ct, "unpack-output");
+                    ReportProgress(0.92f, "Read output");
+                    generated512 = await ReadRenderTexturePacedAsync(rgb512, TextureFormat.RGBA32, false, ct);
+                }
+            }
+            else
+            {
+                using (var commandBuffer = new CommandBuffer { name = "DeepFillV2.Pack4" })
+                {
+                    var useAsyncCompute = useAsyncComputeCommandBuffer && SystemInfo.supportsAsyncCompute;
+                    if (useAsyncCompute)
+                        commandBuffer.SetExecutionFlags(CommandBufferExecutionFlags.AsyncCompute);
+                    UnityEngine.Debug.Log("[DeepFillV2] execution=long-command-buffer | queue=" + (useAsyncCompute ? "async-compute" : "graphics"));
+
+                    ComputeTexture sourceInput = null;
+                    ComputeTexture maskInput = null;
+                    try
+                    {
+                        ReportProgress(0.38f, "Pack source");
+                        sourceInput = _repro.RentTempArray(commandBuffer, InputWidth, InputHeight, 1, inputFormat);
+                        _ops.PackRgbToPack4(commandBuffer, source512, 0, 0, 1f, 1f, sourceInput, flipYInput, 1f);
+                        ReportProgress(0.46f, "Pack mask");
+                        maskInput = _repro.RentTempArray(commandBuffer, InputWidth, InputHeight, 1, inputFormat);
+                        _ops.PackRgbToPack4(commandBuffer, mask512, 0, 0, 1f, 1f, maskInput, flipYInput, 1f);
+
+                        var commandInputs = new Dictionary<string, ComputeTexture>(StringComparer.Ordinal)
+                        {
+                            [MaskInputName] = maskInput,
+                            [ImageInputName] = sourceInput
+                        };
+                        using (var infer = _repro.ForwardPack4Outputs(
+                            commandBuffer,
+                            commandInputs,
+                            textureShapes,
+                            new[] { OutputName },
+                            pinned))
+                        {
+                            var output = infer.GetTexture(OutputName);
+                            commandOutputPack4 = CreateCommandBufferReadbackTexture(output);
+                            CopyTextureArrayAllSlices(commandBuffer, output, commandOutputPack4);
+                        }
+
+                        _repro.ReturnTempArray(commandBuffer, sourceInput);
+                        sourceInput = null;
+                        _repro.ReturnTempArray(commandBuffer, maskInput);
+                        maskInput = null;
+
+                        if (useAsyncCompute)
+                        {
+                            var completionFence = commandBuffer.CreateGraphicsFence(
+                                GraphicsFenceType.AsyncQueueSynchronisation,
+                                SynchronisationStageFlags.AllGPUOperations);
+                            Graphics.ExecuteCommandBufferAsync(commandBuffer, ComputeQueueType.Default);
+                            Graphics.WaitOnAsyncGraphicsFence(completionFence);
+                        }
+                        else
+                        {
+                            Graphics.ExecuteCommandBuffer(commandBuffer);
+                        }
+
+                        await NextGpuFrameAsync(ct, "command-buffer-submitted");
+                        var outPack4 = commandOutputPack4;
+                        rgb512 = NewRenderTexture(InputWidth, InputHeight, RenderTextureFormat.ARGB32, true, "DeepFillV2.Rgb400x512");
+                        ReportProgress(0.86f, "Unpack output");
+                        _ops.Pack4ToRgbScaled(outPack4, rgb512, 0.5f, 0.5f, flipYOutput);
+                        await NextGpuFrameAsync(ct, "unpack-output");
+                        ReportProgress(0.92f, "Read output");
+                        generated512 = await ReadRenderTexturePacedAsync(rgb512, TextureFormat.RGBA32, false, ct);
+                    }
+                    finally
+                    {
+                        if (sourceInput != null)
+                            _repro.ReturnTempArray(commandBuffer, sourceInput);
+                        if (maskInput != null)
+                            _repro.ReturnTempArray(commandBuffer, maskInput);
+                    }
+
+                }
             }
             inferSw.Stop();
             inferMs = inferSw.ElapsedMilliseconds;
@@ -162,12 +275,14 @@ public sealed class DeepFillV2Runner : MonoBehaviour
             if (generated512 == null)
                 return Finish(new DeepFillV2Result { error = "DeepFillV2 output readback failed." });
 
-            generatedFull = RestoreModelOutput(generated512, readableSource);
+            ReportProgress(0.96f, "Restore image size");
+            generatedFull = await RestoreModelOutputPacedAsync(generated512, readableSource, ct);
             if (generatedFull == null)
                 return Finish(new DeepFillV2Result { error = "DeepFillV2 failed to resize output to source size." });
 
+            ReportProgress(0.98f, "Composite output");
             var finalTexture = preserveUnmaskedPixels
-                ? CompositeMasked(readableSource, generatedFull, readableMask)
+                ? await CompositeMaskedPacedAsync(readableSource, generatedFull, readableMask, ct)
                 : generatedFull;
             if (preserveUnmaskedPixels)
                 DestroyRuntimeObject(generatedFull);
@@ -181,6 +296,7 @@ public sealed class DeepFillV2Runner : MonoBehaviour
                 WriteSummary(Path.Combine(_lastDumpDir, "summary.txt"), readableSource, readableMask, finalTexture, loadMs, inferMs);
             }
 
+            ReportProgress(1f, "Done");
             return Finish(new DeepFillV2Result { texture = finalTexture });
         }
         catch (OperationCanceledException)
@@ -196,6 +312,7 @@ public sealed class DeepFillV2Runner : MonoBehaviour
         {
             if (sourcePack4 != null) _repro?.ReturnTempArray(sourcePack4);
             if (maskPack4 != null) _repro?.ReturnTempArray(maskPack4);
+            if (commandOutputPack4 != null) RenderTexture.ReleaseTemporary(commandOutputPack4);
             ReleaseRenderTexture(source512);
             ReleaseRenderTexture(mask512);
             ReleaseRenderTexture(rgb512);
@@ -230,6 +347,7 @@ public sealed class DeepFillV2Runner : MonoBehaviour
         _repro.DisallowBufferOutputs = true;
         _repro.DisallowBufferToTextureMaterialization = true;
         _repro.DisallowInferenceTempComputeBuffers = true;
+        _repro.DebugLogAllLayerHeartbeats = enableLayerPathDebugLog;
         _repro.DebugLog = enableLayerPathDebugLog ? line => UnityEngine.Debug.Log("[DeepFillV2][Layer] " + line) : null;
     }
 
@@ -394,6 +512,47 @@ public sealed class DeepFillV2Runner : MonoBehaviour
             UnityEngine.Debug.Log("[DeepFillV2] LoadModel complete | backend=" + label + " | layers=" + progress.layerCount.ToString(CultureInfo.InvariantCulture));
     }
 
+    private void ReportProgress(float progress, string stage)
+    {
+        ProgressChanged?.Invoke(Mathf.Clamp01(progress), stage ?? string.Empty);
+    }
+
+    private static RenderTexture CreateCommandBufferReadbackTexture(ComputeTexture source)
+    {
+        if (source == null)
+            throw new ArgumentNullException(nameof(source));
+
+        var descriptor = new RenderTextureDescriptor(source.width, source.height, source.format, 0)
+        {
+            dimension = source.dimension,
+            volumeDepth = source.dimension == TextureDimension.Tex2D ? 1 : Mathf.Max(1, source.depth),
+            msaaSamples = 1,
+            enableRandomWrite = false
+        };
+        return RenderTexture.GetTemporary(descriptor);
+    }
+
+    private static void CopyTextureArrayAllSlices(CommandBuffer commandBuffer, ComputeTexture source, RenderTexture target)
+    {
+        if (commandBuffer == null)
+            throw new ArgumentNullException(nameof(commandBuffer));
+        if (source == null)
+            throw new ArgumentNullException(nameof(source));
+        if (target == null)
+            throw new ArgumentNullException(nameof(target));
+
+        var depth = source.dimension == TextureDimension.Tex2D ? 1 : Mathf.Max(1, source.depth);
+        for (var slice = 0; slice < depth; slice++)
+            commandBuffer.CopyTexture(source.nameID, slice, 0, target, slice, 0);
+    }
+
+    private static async UniTask NextGpuFrameAsync(CancellationToken ct, string stage)
+    {
+        await UniTask.NextFrame();
+        ct.ThrowIfCancellationRequested();
+        UnityEngine.Debug.Log("[DeepFillV2] frame retired | stage=" + stage);
+    }
+
     private string BuildModelReport()
     {
         if (_effectiveBackend != DeepFillV2Backend.OnnxDirect || _lastOnnxReport == null)
@@ -438,6 +597,25 @@ public sealed class DeepFillV2Runner : MonoBehaviour
         if (modelOutput == null || original == null)
             return null;
         return ResizeTextureToTexture2D(modelOutput, original.width, original.height);
+    }
+
+    private static async UniTask<Texture2D> RestoreModelOutputPacedAsync(Texture2D modelOutput, Texture2D original, CancellationToken ct)
+    {
+        if (modelOutput == null || original == null)
+            return null;
+
+        var rt = ResizeTexture(modelOutput, original.width, original.height, RenderTextureFormat.ARGB32);
+        if (rt == null)
+            return null;
+        try
+        {
+            await NextGpuFrameAsync(ct, "restore-output-size");
+            return await ReadRenderTexturePacedAsync(rt, TextureFormat.RGBA32, false, ct);
+        }
+        finally
+        {
+            ReleaseRenderTexture(rt);
+        }
     }
 
     private static RenderTexture ResizeTexture(Texture source, int width, int height, RenderTextureFormat format)
@@ -496,15 +674,56 @@ public sealed class DeepFillV2Runner : MonoBehaviour
         }
     }
 
-    private static Texture2D CompositeMasked(Texture2D original, Texture2D candidate, Texture2D mask)
+    private static async UniTask<Texture2D> ReadRenderTexturePacedAsync(RenderTexture rt, TextureFormat format, bool linear, CancellationToken ct)
+    {
+        if (rt == null)
+            return null;
+
+        await NextGpuFrameAsync(ct, "before-readpixels");
+        var result = ReadRenderTexture(rt, format, linear);
+        await NextGpuFrameAsync(ct, "after-readpixels");
+        return result;
+    }
+
+    private static async UniTask<Texture2D> CompositeMaskedPacedAsync(
+        Texture2D original,
+        Texture2D candidate,
+        Texture2D mask,
+        CancellationToken ct)
     {
         if (original == null || candidate == null || mask == null)
             return null;
-        var originalSizedMask = mask.width == original.width && mask.height == original.height
-            ? mask
-            : ResizeTextureToTexture2D(mask, original.width, original.height);
+        Texture2D originalSizedMask = mask;
+        if (mask.width != original.width || mask.height != original.height)
+        {
+            var resizedMask = ResizeTexture(mask, original.width, original.height, RenderTextureFormat.ARGB32);
+            if (resizedMask == null)
+                return null;
+            try
+            {
+                // The DeepFill graph has just completed a long sequence of Pack4
+                // dispatches. Do not synchronously read a fresh Blit on the same
+                // graphics queue; tile renderers can otherwise submit a circular
+                // wait. This is the same platform-neutral pacing used by the model
+                // input and output conversions.
+                await NextGpuFrameAsync(ct, "resize-mask-for-composite");
+                originalSizedMask = await ReadRenderTexturePacedAsync(
+                    resizedMask,
+                    TextureFormat.RGBA32,
+                    false,
+                    ct);
+            }
+            finally
+            {
+                ReleaseRenderTexture(resizedMask);
+            }
+            if (originalSizedMask == null)
+                return null;
+        }
         try
         {
+            await UniTask.NextFrame();
+            ct.ThrowIfCancellationRequested();
             var src = original.GetPixels32();
             var gen = candidate.GetPixels32();
             var maskPixels = originalSizedMask.GetPixels32();

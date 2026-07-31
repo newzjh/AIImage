@@ -267,6 +267,9 @@
 #pragma kernel AexisDeepFillV2PatchStats AIIMAGE_DEEPFILLV2
 #pragma kernel AexisDeepFillV2Scores AIIMAGE_DEEPFILLV2
 #pragma kernel AexisDeepFillV2Softmax AIIMAGE_DEEPFILLV2
+// Keep the contextual-attention reconstruction binding declaration in the
+// DeepFill include. The kernel now has one UAV only; it must be reimported
+// whenever that include changes so player shader metadata stays in sync.
 #pragma kernel AexisDeepFillV2Reconstruct AIIMAGE_DEEPFILLV2
 #pragma kernel AexisSdpaQkBuf
 #pragma kernel AexisSdpaSoftmaxBuf

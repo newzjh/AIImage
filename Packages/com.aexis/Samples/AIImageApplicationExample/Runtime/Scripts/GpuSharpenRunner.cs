@@ -640,6 +640,28 @@ public sealed class GpuSharpenRunner : MonoBehaviour
 
     private static async UniTask<Texture2D> ReadbackTextureAsync(RenderTexture rt, int w, int h, CancellationToken ct)
     {
+        if (Application.isBatchMode
+            || (Application.platform == RuntimePlatform.Android
+                && SystemInfo.graphicsDeviceType == GraphicsDeviceType.Vulkan))
+        {
+            ct.ThrowIfCancellationRequested();
+            var previous = RenderTexture.active;
+            try
+            {
+                RenderTexture.active = rt;
+                var syncTexture = new Texture2D(w, h, TextureFormat.RGBA32, false, true);
+                syncTexture.ReadPixels(new Rect(0, 0, w, h), 0, 0, false);
+                syncTexture.Apply(false, false);
+                syncTexture.wrapMode = TextureWrapMode.Clamp;
+                syncTexture.filterMode = FilterMode.Bilinear;
+                return syncTexture;
+            }
+            finally
+            {
+                RenderTexture.active = previous;
+            }
+        }
+
         var tcs = new UniTaskCompletionSource<AsyncGPUReadbackRequest>();
         AsyncGPUReadback.Request(rt, 0, TextureFormat.RGBA32, req => tcs.TrySetResult(req));
         var r = await tcs.Task.AttachExternalCancellation(ct);

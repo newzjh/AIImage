@@ -1159,7 +1159,7 @@ public abstract class BasePageView : MonoBehaviour
 
     protected async UniTask<Texture2D> ReadbackTextureAsync(RenderTexture rt, int width, int height)
     {
-        if (Application.isBatchMode)
+        if (Application.isBatchMode || !SystemInfo.supportsAsyncGPUReadback)
             return ReadbackTextureSync(rt, width, height);
 
         var tcs = new UniTaskCompletionSource<AsyncGPUReadbackRequest>();

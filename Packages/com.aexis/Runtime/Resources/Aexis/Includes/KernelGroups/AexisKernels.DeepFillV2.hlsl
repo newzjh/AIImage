@@ -21,6 +21,9 @@ int _DeepFillMaskH;
 int _DeepFillMaskDownsample;
 float _DeepFillPatchEpsilon;
 float _DeepFillSoftmaxScale;
+int _DeepFillSourcePackOffset;
+int _DeepFillSourcePackCount;
+int _DeepFillUseAccumulator;
 
 groupshared float _DeepFillReduce[128];
 
@@ -122,8 +125,10 @@ void AexisDeepFillV2Scores_Impl(uint3 id)
 {
     int targetX = (int)id.x;
     int targetY = (int)id.y;
-    int sourcePack = (int)id.z;
-    if (targetX >= _DeepFillMatchW || targetY >= _DeepFillMatchH || sourcePack >= _DeepFillSourcePacks)
+    int sourcePack = (int)id.z + _DeepFillSourcePackOffset;
+    if (targetX >= _DeepFillMatchW || targetY >= _DeepFillMatchH
+        || sourcePack >= _DeepFillSourcePacks
+        || sourcePack >= _DeepFillSourcePackOffset + _DeepFillSourcePackCount)
         return;
 
     int sourceBase = sourcePack * 4;
@@ -232,7 +237,10 @@ void AexisDeepFillV2Reconstruct_Impl(uint3 id)
             if (targetX < 0 || targetX >= _DeepFillMatchW)
                 continue;
 
-            for (int sourcePack = 0; sourcePack < _DeepFillSourcePacks; sourcePack++)
+            int sourcePackEnd = min(
+                _DeepFillSourcePacks,
+                _DeepFillSourcePackOffset + _DeepFillSourcePackCount);
+            for (int sourcePack = _DeepFillSourcePackOffset; sourcePack < sourcePackEnd; sourcePack++)
             {
                 float4 weights = _DeepFillWeightsArr[int3(targetX, targetY, sourcePack)];
                 int sourceBase = sourcePack * 4;
@@ -251,5 +259,13 @@ void AexisDeepFillV2Reconstruct_Impl(uint3 id)
             }
         }
     }
-    _DeepFillOutputArr[int3(outputX, outputY, outputPack)] = sum * 0.25;
+    int3 outputIndex = int3(outputX, outputY, outputPack);
+    // Each invocation owns one output texel, so one UAV can safely carry the
+    // previous chunk's value and receive this chunk's contribution. Binding a
+    // separate SRV plus UAV here causes a resource-cycle deadlock on some TBDR
+    // Vulkan drivers even when the textures are distinct.
+    float4 accumulated = _DeepFillUseAccumulator != 0
+        ? _DeepFillOutputArr[outputIndex]
+        : 0.0;
+    _DeepFillOutputArr[outputIndex] = accumulated + sum * 0.25;
 }

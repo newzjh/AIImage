@@ -212,9 +212,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
 
                 ReportProgress(0.06f, "Detect face area");
                 await UniTask.Yield();
-                faceRegion = GetComponent<NcnnFaceRegionGenerator>();
-                if (faceRegion == null)
-                    faceRegion = gameObject.AddComponent<NcnnFaceRegionGenerator>();
+                faceRegion = NcnnFaceRegionGenerator.GetSharedInstance();
                 var facePack4Only = ParseEnvBool(Pack4OnlyEnvVar) ?? true;
                 faceRegion.disallowBufferAccess = facePack4Only;
                 faceRegion.disallowBufferOutputs = facePack4Only;
@@ -271,7 +269,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
                             continue;
                         }
 
-                        restoredFaceTex = TextureToTexture2D(restoredFaceGpu, 512, 512);
+                        restoredFaceTex = await TextureToTexture2DAsync(restoredFaceGpu, 512, 512, ct);
                         if (restoredFaceTex == null)
                             continue;
 
@@ -346,11 +344,15 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
 
             stage = "prepare encoder input";
             ReportProgress(0.18f, "Run encoder");
-            await UniTask.Yield();
+            await UniTask.NextFrame();
+            ct.ThrowIfCancellationRequested();
 
             encoderInput = _encoderRepro.RentTempArray(512, 512, 1, RenderTextureFormat.ARGBHalf);
             AexisGpuResourceTracker.UpdateTextureLabel(encoderInput, "CodeFormer.encoderInput");
-            _ops.PackRgbToPack4Gfpgan(face512, 0, 0, 1, 1, encoderInput, true);
+            await ExecuteCodeFormerGpuOperationAsync(
+                "encoder-input-pack",
+                () => _ops.PackRgbToPack4Gfpgan(face512, 0, 0, 1, 1, encoderInput, true),
+                ct);
 
             var pinned = new HashSet<string>(StringComparer.Ordinal)
             {
@@ -412,8 +414,19 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
             }
 
             stage = "encoder inference";
-            using (var encoderResult = _encoderRepro.Infer(encoderInput, 1, "input", pinned))
+            await WaitForCodeFormerGpuStageAsync("encoder-before-infer", ct);
+            var encoderInputs = new Dictionary<string, RenderTexture>(StringComparer.Ordinal)
             {
+                { "input", encoderInput }
+            };
+            using (var encoderResult = await _encoderRepro.InferWithMultiInputsAsync(
+                encoderInputs,
+                null,
+                pinned,
+                cancellationToken: ct,
+                yieldEveryLayers: 1))
+            {
+                await WaitForCodeFormerGpuStageAsync("encoder-after-infer", ct);
                 stage = "extract encoder blob enc_feat_32";
                 encFeat32 = encoderResult.ExtractTexture("enc_feat_32");
                 stage = "extract encoder blob enc_feat_64";
@@ -427,7 +440,10 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
 
                 stage = "convert soft_one_hot to min encoding";
                 var softOneHotTex = encoderResult.ExtractTexture("soft_one_hot");
-                minEncodingTex = ConvertSoftOneHotTextureToMinEncodingTexture(softOneHotTex, 1024, 256);
+                await ExecuteCodeFormerGpuOperationAsync(
+                    "encoder-soft-one-hot-to-min-encoding",
+                    () => minEncodingTex = ConvertSoftOneHotTextureToMinEncodingTexture(softOneHotTex, 1024, 256),
+                    ct);
                 AexisGpuResourceTracker.UpdateTextureLabel(minEncodingTex, "CodeFormer.minEncoding");
 
                 if (enableDebugDump)
@@ -607,8 +623,16 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
             }
             else
             {
-                using (var generatorResult = _generatorRepro.InferWithMultiInputs(textureInputs, null, generatorPinned, textureInputShapes))
+                await WaitForCodeFormerGpuStageAsync("generator-before-infer", ct);
+                using (var generatorResult = await _generatorRepro.InferWithMultiInputsAsync(
+                    textureInputs,
+                    null,
+                    generatorPinned,
+                    textureInputShapes,
+                    cancellationToken: ct,
+                    yieldEveryLayers: 1))
                 {
+                    await WaitForCodeFormerGpuStageAsync("generator-after-infer", ct);
                     RenderTexture outputTex = null;
                     RenderTexture clipTex = null;
                     if (enableDebugDump)
@@ -668,10 +692,13 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
                     stage = "clip generator output";
                     clipTex = _generatorRepro.RentTempArray(outputTex.width, outputTex.height, 1, RenderTextureFormat.ARGBHalf);
                     AexisGpuResourceTracker.UpdateTextureLabel(clipTex, "CodeFormer.clipTex");
-                    _ops.ClipPack4(outputTex, -1f, 1f, 1, clipTex);
+                    await ExecuteCodeFormerGpuOperationAsync(
+                        "generator-clip-output",
+                        () => _ops.ClipPack4(outputTex, -1f, 1f, 1, clipTex),
+                        ct);
 
                     stage = "convert output to RGB";
-                    restored = ConvertClippedPack4ToTexture2D(clipTex, outputTex.width, outputTex.height, dumpDir);
+                    restored = await ConvertClippedPack4ToTexture2DAsync(clipTex, outputTex.width, outputTex.height, dumpDir, ct);
                     if (restored == null)
                         return new CodeFormer512RunResult { error = "CodeFormer(repro2) output conversion failed", dumpDir = dumpDir };
 
@@ -740,7 +767,12 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         return value ? "ok" : "missing";
     }
 
-    private Texture2D ConvertClippedPack4ToTexture2D(RenderTexture clipTex, int width, int height, string dumpDir)
+    private async UniTask<Texture2D> ConvertClippedPack4ToTexture2DAsync(
+        RenderTexture clipTex,
+        int width,
+        int height,
+        string dumpDir,
+        CancellationToken ct)
     {
         if (clipTex == null || width <= 0 || height <= 0 || _ops == null)
             return null;
@@ -748,7 +780,12 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         var rgbRt = GetTemporaryRt(width, height, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear, true);
         try
         {
-            _ops.Pack4ToRgb01(clipTex, rgbRt, true);
+            await ExecuteCodeFormerGpuOperationAsync(
+                "output-pack-rgb",
+                () => _ops.Pack4ToRgb01(clipTex, rgbRt, true),
+                ct);
+            await WaitForCodeFormerGpuStageAsync("output-before-readpixels", ct);
+            Texture2D result = null;
             var prev = RenderTexture.active;
             try
             {
@@ -758,17 +795,38 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
                 tex.Apply(false, false);
                 tex.wrapMode = TextureWrapMode.Clamp;
                 tex.filterMode = FilterMode.Bilinear;
-                return tex;
+                result = tex;
             }
             finally
             {
                 RenderTexture.active = prev;
             }
+            await WaitForCodeFormerGpuStageAsync("output-after-readpixels", ct);
+            return result;
         }
         finally
         {
             ReleaseTemporaryRt(rgbRt);
         }
+    }
+
+    private static async UniTask ExecuteCodeFormerGpuOperationAsync(string stage, Action execute, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        UnityEngine.Debug.Log("[CodeFormer] gpu-begin | stage=" + stage);
+        execute();
+        await UniTask.NextFrame();
+        ct.ThrowIfCancellationRequested();
+        UnityEngine.Debug.Log("[CodeFormer] gpu-frame-complete | stage=" + stage);
+    }
+
+    private static async UniTask WaitForCodeFormerGpuStageAsync(string stage, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        UnityEngine.Debug.Log("[CodeFormer] gpu-wait | stage=" + stage);
+        await UniTask.NextFrame();
+        ct.ThrowIfCancellationRequested();
+        UnityEngine.Debug.Log("[CodeFormer] gpu-frame-complete | stage=" + stage);
     }
 
     private float[] ReadSingleChannelPack4TextureData(RenderTexture pack4Tex, int width, int height)
@@ -902,8 +960,16 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
             var clipped = _generatorRepro.RentTempArray(outputReadbackRt.width, outputReadbackRt.height, 1, RenderTextureFormat.ARGBHalf);
             try
             {
-                _ops.ClipPack4(outputReadbackRt, -1f, 1f, 1, clipped);
-                var restored = ConvertClippedPack4ToTexture2D(clipped, outputReadbackRt.width, outputReadbackRt.height, dumpDir);
+                await ExecuteCodeFormerGpuOperationAsync(
+                    "command-buffer-generator-clip-output",
+                    () => _ops.ClipPack4(outputReadbackRt, -1f, 1f, 1, clipped),
+                    ct);
+                var restored = await ConvertClippedPack4ToTexture2DAsync(
+                    clipped,
+                    outputReadbackRt.width,
+                    outputReadbackRt.height,
+                    dumpDir,
+                    ct);
                 if (enableDebugDump && restored != null)
                 {
                     try { await DumpRgbTextureAsync(dumpDir, "16_out_rgb.png", restored, ct); } catch (Exception e) { UnityEngine.Debug.LogWarning("[CodeFormer(repro2)] dump skip 16_out_rgb | " + e.Message); }
@@ -1521,7 +1587,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
 
     private static async UniTask<Texture2D> ReadbackTextureAsync(RenderTexture rt, int w, int h, CancellationToken ct)
     {
-        if (Application.isBatchMode)
+        if (Application.isBatchMode || !SystemInfo.supportsAsyncGPUReadback)
         {
             ct.ThrowIfCancellationRequested();
             var prev = RenderTexture.active;
@@ -1543,7 +1609,10 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
 
         var tcs = new UniTaskCompletionSource<AsyncGPUReadbackRequest>();
         AsyncGPUReadback.Request(rt, 0, TextureFormat.RGBA32, req => tcs.TrySetResult(req));
-        var request = await tcs.Task.AttachExternalCancellation(ct);
+        // The caller releases temporary render targets after this method returns. Wait for
+        // the GPU request before checking cancellation so they remain valid until then.
+        var request = await tcs.Task;
+        ct.ThrowIfCancellationRequested();
         if (request.hasError)
             return null;
 
@@ -1617,7 +1686,8 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
 
         _encoderRepro.EnableGeneralTextureConvolution = true;
         _generatorRepro.EnableGeneralTextureConvolution = true;
-        var preserveLegacyFp32 = precisionMode == AexisPrecisionMode.Auto || precisionMode == AexisPrecisionMode.FP32;
+        var preserveLegacyFp32 = _encoderRepro.AppliedPrecisionMode == AexisPrecisionMode.FP32
+            && _generatorRepro.AppliedPrecisionMode == AexisPrecisionMode.FP32;
         _encoderRepro.PreserveLegacyFp32Execution = preserveLegacyFp32;
         _generatorRepro.PreserveLegacyFp32Execution = preserveLegacyFp32;
         // The Pack4-linear attention specialization has a different physical layout from
@@ -1847,29 +1917,28 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         _hasAppliedPrecisionMode = false;
     }
 
+    public void ReleaseRuntimeResources()
+    {
+        Release();
+    }
+
     private void EnsureRuntimeObjects()
     {
+        var effectivePrecisionMode = AexisModelManifestLoader.ResolveRunnerAppliedPrecision("codeformer", precisionMode);
         if ((_encoderRepro != null || _generatorRepro != null)
             && _hasAppliedPrecisionMode
-            && _appliedPrecisionMode != precisionMode)
+            && _appliedPrecisionMode != effectivePrecisionMode)
         {
-            UnityEngine.Debug.Log("[NcnnPrecision] CodeFormer recreating sessions | from=" + _appliedPrecisionMode + " | to=" + precisionMode);
+            UnityEngine.Debug.Log("[NcnnPrecision] CodeFormer recreating sessions | from=" + _appliedPrecisionMode + " | to=" + effectivePrecisionMode);
             Release();
         }
         if (_ops == null)
             _ops = new AexisOps();
-        // Preserve the original FP32 session contract exactly.  The manifest-backed
-        // session is an FP16 experiment and must not alter Auto/explicit FP32 results.
-        var useLegacyFp32Session = precisionMode == AexisPrecisionMode.Auto || precisionMode == AexisPrecisionMode.FP32;
         if (_encoderRepro == null)
-            _encoderRepro = useLegacyFp32Session
-                ? NcnnInferenceSessionFactory.Create(_ops)
-                : NcnnInferenceSessionFactory.Create(_ops, "codeformer", precisionMode);
+            _encoderRepro = NcnnInferenceSessionFactory.Create(_ops, "codeformer", precisionMode);
         if (_generatorRepro == null)
-            _generatorRepro = useLegacyFp32Session
-                ? NcnnInferenceSessionFactory.Create(_ops)
-                : NcnnInferenceSessionFactory.Create(_ops, "codeformer", precisionMode);
-        _appliedPrecisionMode = precisionMode;
+            _generatorRepro = NcnnInferenceSessionFactory.Create(_ops, "codeformer", precisionMode);
+        _appliedPrecisionMode = _encoderRepro.AppliedPrecisionMode;
         _hasAppliedPrecisionMode = true;
         ApplyReproOptions();
     }
@@ -2357,6 +2426,38 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         var result = RenderTextureToTexture2D(tmp, w, h);
         ReleaseTemporaryRt(tmp);
         return result;
+    }
+
+    private static async UniTask<Texture2D> TextureToTexture2DAsync(
+        Texture texture,
+        int w,
+        int h,
+        CancellationToken ct)
+    {
+        if (texture == null)
+            return null;
+        if (texture is Texture2D tex2D && tex2D.width == w && tex2D.height == h)
+            return CopyTexture(tex2D);
+
+        RenderTexture temporary = null;
+        var readbackSource = texture as RenderTexture;
+        try
+        {
+            if (readbackSource == null)
+            {
+                temporary = ResizeTextureBilinear(texture, w, h);
+                readbackSource = temporary;
+            }
+
+            return readbackSource == null
+                ? null
+                : await ReadbackTextureAsync(readbackSource, w, h, ct);
+        }
+        finally
+        {
+            if (temporary != null)
+                ReleaseTemporaryRt(temporary);
+        }
     }
 
     private static RenderTexture ComposeWithMask(Texture2D src, RenderTexture restored, Texture2D mask, RectInt rect)

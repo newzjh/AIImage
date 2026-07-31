@@ -199,10 +199,28 @@ namespace Aexis.Execution
 
         public static AexisPrecisionMode ResolveAutoPrecision(string modelId)
         {
-            return string.Equals(modelId, "mobileclip_s0_export", StringComparison.Ordinal)
+            return ShouldPreferVerifiedPortableFp16(modelId)
+                || string.Equals(modelId, "mobileclip_s0_export", StringComparison.Ordinal)
                 || IsRealEsrganX4Model(modelId)
                 ? AexisPrecisionMode.FP16
                 : AexisPrecisionMode.FP32;
+        }
+
+        public static AexisPrecisionMode ResolveRunnerAppliedPrecision(
+            string modelId,
+            AexisPrecisionMode requestedMode)
+        {
+            var manifest = ResolveRunnerManifest(modelId, requestedMode);
+            return ResolveAppliedPrecision(modelId, requestedMode, manifest);
+        }
+
+        private static bool ShouldPreferVerifiedPortableFp16(string modelId)
+        {
+            return string.Equals(modelId, "matting.ncnn", StringComparison.Ordinal)
+                || string.Equals(modelId, "codeformer", StringComparison.Ordinal)
+                || string.Equals(modelId, "gfpgan", StringComparison.Ordinal)
+                || string.Equals(modelId, "yolo-seg", StringComparison.Ordinal)
+                || string.Equals(modelId, "sd-inpainting", StringComparison.Ordinal);
         }
 
         public static ModelManifest ResolveRunnerManifest(string modelId, AexisPrecisionMode precisionMode)

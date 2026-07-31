@@ -32,6 +32,21 @@ public struct FaceRegionFace
 
 public sealed class NcnnFaceRegionGenerator : MonoBehaviour
 {
+    private const string SharedServiceObjectName = "__AIImageSharedFaceRegion";
+    private static NcnnFaceRegionGenerator _sharedInstance;
+
+    private readonly struct BlobReadback
+    {
+        public readonly float[] values;
+        public readonly string sourceKind;
+
+        public BlobReadback(float[] values, string sourceKind)
+        {
+            this.values = values ?? Array.Empty<float>();
+            this.sourceKind = sourceKind ?? string.Empty;
+        }
+    }
+
     private struct FaceProposal
     {
         public Rect rect;
@@ -120,6 +135,8 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
     };
 
     public bool enableNcnnFaceRegion = true;
+    [Tooltip("Uses the single-submit command-buffer detector path. The default direct Pack4 path yields after each layer so a tiled GPU can retire transient textures before reuse.")]
+    public bool useAsyncComputeCommandBuffer = false;
     public bool preferTexturePathForFaceDetector = true;
     public string paramRelativePath = "CodeFormer/models/yolov7-lite-e.param";
     public string binRelativePath = "CodeFormer/models/yolov7-lite-e.bin";
@@ -130,9 +147,9 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
     public float maskRectExpand = 0.18f;
     public float maskSoftness = 0.10f;
     public float faceRectThreshold = 0.18f;
-    public bool disallowBufferAccess = false;
-    public bool disallowBufferOutputs = false;
-    public bool disallowBufferToTextureMaterialization = false;
+    public bool disallowBufferAccess = true;
+    public bool disallowBufferOutputs = true;
+    public bool disallowBufferToTextureMaterialization = true;
     public bool autoOpenDumpDir = false;
     public bool enableDetailedProposalDump = true;
     public bool useArgbFloatForDetector = true;
@@ -145,14 +162,37 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
     private bool _loaded;
     private bool _hasAppliedPrecisionMode;
     private AexisPrecisionMode _appliedPrecisionMode;
+    private readonly SemaphoreSlim _executionGate = new SemaphoreSlim(1, 1);
+
+    public static NcnnFaceRegionGenerator GetSharedInstance()
+    {
+        if (_sharedInstance != null)
+            return _sharedInstance;
+
+        var host = GameObject.Find(SharedServiceObjectName);
+        if (host == null)
+        {
+            host = new GameObject(SharedServiceObjectName);
+            DontDestroyOnLoad(host);
+        }
+
+        _sharedInstance = host.GetComponent<NcnnFaceRegionGenerator>();
+        if (_sharedInstance == null)
+            _sharedInstance = host.AddComponent<NcnnFaceRegionGenerator>();
+        return _sharedInstance;
+    }
 
     private void Awake()
     {
+        if (gameObject.name == SharedServiceObjectName)
+            _sharedInstance = this;
         EnsureRuntimeObjects();
     }
 
     private void OnDestroy()
     {
+        if (_sharedInstance == this)
+            _sharedInstance = null;
         Release();
     }
 
@@ -172,20 +212,21 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
             return new FaceRegionResult { error = "NcnnFaceRegion disabled" };
         if (src == null)
             return default;
+        await _executionGate.WaitAsync(ct);
+        try
+        {
         EnsureRuntimeObjects();
 
         List<string> debugLines = null;
         void LogPhase(string phase)
         {
-            if (!dumpDebug)
-                return;
-
             var line = "[FaceDebugPhase] " + phase;
             if (debugLines != null && debugLines.Count < 1024)
                 debugLines.Add(line);
-            Debug.Log(line);
+            Debug.Log("[NcnnFaceRegion] " + line);
         }
 
+        LogPhase("execution-gate-acquired");
         LogPhase("ensure-loaded-start");
         await EnsureLoaded(ct);
         LogPhase("ensure-loaded-done");
@@ -228,6 +269,9 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
                 + " | padTop=" + prep.padTop);
             if (letterbox == null)
                 return new FaceRegionResult { error = "Face detector letterbox build failed" };
+            await UniTask.NextFrame();
+            ct.ThrowIfCancellationRequested();
+            LogPhase("letterbox-frame-retired");
 
             // Layer-by-layer comparison reads activation data back to the CPU. Keep
             // that diagnostic solely in the explicit DebugOracle mode; a production
@@ -302,73 +346,106 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
             else
             {
                 _repro.DebugCompareTextureLayers = null;
-                _repro.DebugLog = null;
+                _repro.DebugLogAllLayerHeartbeats = Debug.isDebugBuild;
+                _repro.DebugLog = Debug.isDebugBuild
+                    ? line =>
+                    {
+                        if (line.StartsWith("[LayerHeartbeat]", StringComparison.Ordinal))
+                            Debug.Log("[NcnnFaceRegion] " + line);
+                    }
+                    : null;
             }
 
-            inputPack4 = _repro.RentTempArray(letterbox.width, letterbox.height, 1, useArgbFloatForDetector ? RenderTextureFormat.ARGBFloat : RenderTextureFormat.ARGBHalf);
-            LogPhase("pack4-input-rent-done | size=" + inputPack4.width + "x" + inputPack4.height + " | format=" + inputPack4.format);
-            // Texture2D<float4> sampling from RGBA32 already yields normalized 0..1 values.
-            // _ScaleX/_ScaleY here are spatial sampling scale, not color normalization.
-            _ops.PackRgbToPack4(letterbox, 0, 0, 1f, 1f, inputPack4);
-            LogPhase("pack4-input-fill-done");
+            // A graphics-queue CommandBuffer is not the same as asynchronous compute.
+            // On tiled drivers it can leave the first detector submission alive while a
+            // later detector submission reuses the same transient texture contracts.
+            // Use the command path only when Unity can actually submit it to the async
+            // compute queue; the graphics queue retains the strict Pack4 texture path
+            // below and coalesces each output into one texture-array readback.
+            var useCommandBuffer = !dumpDebug && useAsyncComputeCommandBuffer && SystemInfo.supportsAsyncCompute;
+            if (!useCommandBuffer)
+            {
+                Debug.Log("[NcnnFaceRegion] detector | path=direct-pack4 | async_compute=false");
+                inputPack4 = _repro.RentTempArray(
+                    letterbox.width,
+                    letterbox.height,
+                    1,
+                    _repro.AppliedPrecisionMode == AexisPrecisionMode.FP16
+                        ? RenderTextureFormat.ARGBHalf
+                        : useArgbFloatForDetector ? RenderTextureFormat.ARGBFloat : RenderTextureFormat.ARGBHalf);
+                LogPhase("pack4-input-rent-done | size=" + inputPack4.width + "x" + inputPack4.height + " | format=" + inputPack4.format);
+                // Texture2D<float4> sampling from RGBA32 already yields normalized 0..1 values.
+                // _ScaleX/_ScaleY here are spatial sampling scale, not color normalization.
+                _ops.PackRgbToPack4(letterbox, 0, 0, 1f, 1f, inputPack4);
+                LogPhase("pack4-input-fill-done");
+                await UniTask.NextFrame();
+                ct.ThrowIfCancellationRequested();
+                LogPhase("pack4-input-frame-retired");
+            }
 
             var pinned = new HashSet<string>(StringComparer.Ordinal)
             {
                 "stride_8",
                 "stride_16",
-                "stride_32",
-                "842",
-                "870",
-                "898",
-                "817",
-                "818",
-                "819",
-                "821",
-                "822",
-                "823",
-                "824",
-                "393",
-                "394",
-                "464",
-                "452",
-                "463",
-                "930",
-                "469",
-                "492",
-                "497",
-                "771",
-                "774",
-                "775",
-                "777",
-                "782",
-                "783",
-                "786",
-                "789",
-                "799",
-                "802",
-                "812",
-                "815",
-                "845",
-                "846",
-                "847",
-                "849",
-                "850",
-                "851",
-                "852",
-                "873",
-                "874",
-                "875",
-                "877",
-                "878",
-                "879",
-                "880"
+                "stride_32"
             };
+            if (dumpDebug && enableDetailedProposalDump)
+            {
+                pinned.UnionWith(new[]
+                {
+                    "842", "870", "898", "817", "818", "819", "821", "822", "823", "824",
+                    "393", "394", "464", "452", "463", "930", "469", "492", "497", "771",
+                    "774", "775", "777", "782", "783", "786", "789", "799", "802", "812",
+                    "815", "845", "846", "847", "849", "850", "851", "852", "873", "874",
+                    "875", "877", "878", "879", "880"
+                });
+            }
 
             var proposals = new List<FaceProposal>();
             LogPhase("infer-start | pinned=" + pinned.Count);
-            using (var infer = _repro.Infer(inputPack4, 1, "images", pinned))
+            await UniTask.NextFrame();
+            ct.ThrowIfCancellationRequested();
+            LogPhase("infer-frame-ready");
+            if (useCommandBuffer)
             {
+                proposals.AddRange(await InferCommandBufferAsync(
+                    letterbox,
+                    prep.scale,
+                    prep.padLeft,
+                    prep.padTop,
+                    src.width,
+                    src.height,
+                    ct,
+                    LogPhase));
+            }
+            else
+            {
+                // Do not enqueue an entire detector graph during one player frame. On
+                // tiled GPUs the immediate RenderTexture path can otherwise recycle
+                // pooled Pack4 targets before the graphics queue has retired their
+                // prior users. The asynchronous graph enumerator keeps exactly the
+                // same texture-backed plan, but gives Unity a submission boundary
+                // between small dependency-safe layer groups.
+                var textureInputs = new Dictionary<string, RenderTexture>(StringComparer.Ordinal)
+                {
+                    ["images"] = inputPack4
+                };
+                var inputShapes = new Dictionary<string, AexisGraphSession.BufferShape>(StringComparer.Ordinal)
+                {
+                    ["images"] = new AexisGraphSession.BufferShape(3, letterbox.width, letterbox.height, 1, 3)
+                };
+                using (var infer = await _repro.InferWithMultiInputsAsync(
+                    textureInputs,
+                    null,
+                    pinned,
+                    inputShapes,
+                    cancellationToken: ct,
+                    yieldEveryLayers: 1))
+                {
                 LogPhase("infer-returned");
+                await UniTask.NextFrame();
+                ct.ThrowIfCancellationRequested();
+                LogPhase("infer-output-frame-retired");
                 for (var i = 0; i < YoloV7StrideValues.Length; i++)
                 {
                     var blobName = "stride_" + YoloV7StrideValues[i].ToString(CultureInfo.InvariantCulture);
@@ -386,7 +463,9 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
                     LogPhase(blobName
                         + " decode-start"
                         + " | logical=" + outW + "x" + outH + "x" + outC);
-                    var data = ReadInferBlobData(infer, blobName, out var dataSource);
+                    var blobReadback = await ReadInferBlobDataAsync(infer, blobName, ct);
+                    var data = blobReadback.values;
+                    var dataSource = blobReadback.sourceKind;
                     LogPhase(blobName + " data-ready | source=" + dataSource + " | count=" + data.Length);
                     var strideProposalStart = proposals.Count;
                     DecodeYoloV7LiteE(
@@ -470,6 +549,7 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
                     AppendBlobPreview(infer, debugLines, "stride_16", 16);
                     AppendBlobPreview(infer, debugLines, "stride_32", 16);
                 }
+                }
             }
 
             LogPhase("decode-finished | total_proposals=" + proposals.Count);
@@ -547,6 +627,155 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
             if (inputPack4 != null)
                 _repro?.ReturnTempArray(inputPack4);
         }
+        }
+        finally
+        {
+            _executionGate.Release();
+        }
+    }
+
+    private async UniTask<List<FaceProposal>> InferCommandBufferAsync(
+        Texture2D letterbox,
+        float scale,
+        int padLeft,
+        int padTop,
+        int sourceWidth,
+        int sourceHeight,
+        CancellationToken ct,
+        Action<string> logPhase)
+    {
+        if (_repro == null || _ops == null || letterbox == null)
+            throw new InvalidOperationException("Face detector CommandBuffer session is unavailable.");
+
+        var outputNames = new[] { "stride_8", "stride_16", "stride_32" };
+        var outputs = new Dictionary<string, RenderTexture>(StringComparer.Ordinal);
+        var logicalShapes = new Dictionary<string, AexisGraphSession.BufferShape>(StringComparer.Ordinal);
+        var proposals = new List<FaceProposal>();
+        using (var cmd = new CommandBuffer { name = "NcnnFaceRegion.Pack4" })
+        {
+            ComputeTexture commandInput = null;
+            try
+            {
+                var useAsyncCompute = SystemInfo.supportsAsyncCompute;
+                if (useAsyncCompute)
+                    cmd.SetExecutionFlags(CommandBufferExecutionFlags.AsyncCompute);
+
+                commandInput = _repro.RentTempArray(
+                    cmd,
+                    letterbox.width,
+                    letterbox.height,
+                    1,
+                    _repro.AppliedPrecisionMode == AexisPrecisionMode.FP16
+                        ? RenderTextureFormat.ARGBHalf
+                        : useArgbFloatForDetector ? RenderTextureFormat.ARGBFloat : RenderTextureFormat.ARGBHalf);
+                _ops.PackRgbToPack4(cmd, letterbox, 0, 0, 1f, 1f, commandInput);
+
+                var commandInputs = new Dictionary<string, ComputeTexture>(StringComparer.Ordinal)
+                {
+                    ["images"] = commandInput
+                };
+                var inputShapes = new Dictionary<string, AexisGraphSession.BufferShape>(StringComparer.Ordinal)
+                {
+                    ["images"] = new AexisGraphSession.BufferShape(3, letterbox.width, letterbox.height, 1, 3)
+                };
+                using (var infer = _repro.ForwardPack4Outputs(cmd, commandInputs, inputShapes, outputNames, outputNames))
+                {
+                    for (var index = 0; index < outputNames.Length; index++)
+                    {
+                        var name = outputNames[index];
+                        var output = infer.GetTexture(name);
+                        var readback = CreateCommandBufferReadbackTexture(output);
+                        outputs.Add(name, readback);
+                        logicalShapes.Add(name, infer.GetLogicalShape(name));
+
+                        var depth = output.dimension == TextureDimension.Tex2D ? 1 : Mathf.Max(1, output.depth);
+                        for (var slice = 0; slice < depth; slice++)
+                            cmd.CopyTexture(output.nameID, slice, 0, readback, slice, 0);
+                    }
+                }
+
+                _repro.ReturnTempArray(cmd, commandInput);
+                commandInput = null;
+
+                Debug.Log("[NcnnFaceRegion] command-buffer detector | queue=" + (useAsyncCompute ? "async-compute" : "graphics"));
+                if (useAsyncCompute)
+                {
+                    var completionFence = cmd.CreateGraphicsFence(
+                        GraphicsFenceType.AsyncQueueSynchronisation,
+                        SynchronisationStageFlags.AllGPUOperations);
+                    Graphics.ExecuteCommandBufferAsync(cmd, ComputeQueueType.Default);
+                    Graphics.WaitOnAsyncGraphicsFence(completionFence);
+                }
+                else
+                {
+                    Graphics.ExecuteCommandBuffer(cmd);
+                }
+
+                logPhase?.Invoke("command-buffer-submitted");
+                for (var index = 0; index < outputNames.Length; index++)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    var name = outputNames[index];
+                    var logicalShape = logicalShapes[name];
+                    if (logicalShape.dims != 3)
+                        throw new InvalidOperationException("Face detector output has unexpected dims | blob=" + name + " | dims=" + logicalShape.dims);
+
+                    var texture = outputs[name];
+                    var storageShape = new AexisGraphSession.BufferShape(
+                        3,
+                        texture.width,
+                        texture.height,
+                        1,
+                        (texture.dimension == TextureDimension.Tex2D ? 1 : Mathf.Max(1, texture.volumeDepth)) * 4);
+                    var data = await ReadPack4TextureDataPacedAsync(texture, logicalShape, storageShape, ct, name);
+                    var strideProposalStart = proposals.Count;
+                    DecodeYoloV7LiteE(
+                        proposals,
+                        data,
+                        logicalShape.w,
+                        logicalShape.h,
+                        logicalShape.c,
+                        YoloV7StrideValues[index],
+                        YoloV7Anchors[index],
+                        letterbox.width,
+                        letterbox.height,
+                        scale,
+                        padLeft,
+                        padTop,
+                        sourceWidth,
+                        sourceHeight,
+                        Mathf.Max(0.01f, probThreshold));
+                    logPhase?.Invoke(name + " command-buffer-decoded | proposals_added=" + (proposals.Count - strideProposalStart));
+                }
+
+                return proposals;
+            }
+            finally
+            {
+                if (commandInput != null)
+                    _repro.ReturnTempArray(cmd, commandInput);
+                foreach (var output in outputs.Values)
+                {
+                    if (output != null)
+                        RenderTexture.ReleaseTemporary(output);
+                }
+            }
+        }
+    }
+
+    private static RenderTexture CreateCommandBufferReadbackTexture(ComputeTexture source)
+    {
+        if (source == null)
+            throw new ArgumentNullException(nameof(source));
+
+        var descriptor = new RenderTextureDescriptor(source.width, source.height, source.format, 0)
+        {
+            dimension = source.dimension,
+            volumeDepth = source.dimension == TextureDimension.Tex2D ? 1 : Mathf.Max(1, source.depth),
+            msaaSamples = 1,
+            enableRandomWrite = false
+        };
+        return RenderTexture.GetTemporary(descriptor);
     }
 
     private async UniTask EnsureLoaded(CancellationToken ct)
@@ -910,9 +1139,10 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
 
     private void EnsureRuntimeObjects()
     {
-        if (_repro != null && _hasAppliedPrecisionMode && _appliedPrecisionMode != precisionMode)
+        var effectivePrecisionMode = ResolveEffectivePrecisionMode();
+        if (_repro != null && _hasAppliedPrecisionMode && _appliedPrecisionMode != effectivePrecisionMode)
         {
-            UnityEngine.Debug.Log("[NcnnPrecision] FaceRegion recreating session | from=" + _appliedPrecisionMode + " | to=" + precisionMode);
+            UnityEngine.Debug.Log("[NcnnPrecision] FaceRegion recreating session | from=" + _appliedPrecisionMode + " | to=" + effectivePrecisionMode);
             Release();
         }
         if (_ops == null)
@@ -920,20 +1150,38 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
         if (_repro == null)
         {
             _repro = NcnnInferenceSessionFactory.Create(_ops, "face-region", precisionMode);
-            _appliedPrecisionMode = precisionMode;
+            if (_repro.AppliedPrecisionMode != effectivePrecisionMode)
+                _repro.SetAppliedPrecisionMode(effectivePrecisionMode);
+            _appliedPrecisionMode = _repro.AppliedPrecisionMode;
             _hasAppliedPrecisionMode = true;
+            UnityEngine.Debug.Log("[NcnnPrecision] face-region activations | requested=" + precisionMode
+                + " | applied=" + _appliedPrecisionMode
+                + " | portable_fp16_activations=" + (effectivePrecisionMode == AexisPrecisionMode.FP16));
         }
         _repro.PreferTexturePathForFaceDetector = preferTexturePathForFaceDetector;
         _repro.EnableGeneralTextureConvolution = preferTexturePathForFaceDetector || disallowBufferAccess;
         _repro.EnableConv1x1TextureConvolution = true;
         _repro.EnableDepthWiseTextureConvolution = true;
-        _repro.TensorTextureFormat = useArgbFloatForDetector ? RenderTextureFormat.ARGBFloat : RenderTextureFormat.ARGBHalf;
+        _repro.TensorTextureFormat = _repro.AppliedPrecisionMode == AexisPrecisionMode.FP16
+            ? RenderTextureFormat.ARGBHalf
+            : useArgbFloatForDetector ? RenderTextureFormat.ARGBFloat : RenderTextureFormat.ARGBHalf;
         _repro.DisallowBufferAccess = disallowBufferAccess;
         _repro.DisallowBufferOutputs = disallowBufferOutputs;
         _repro.DisallowBufferToTextureMaterialization = disallowBufferToTextureMaterialization;
         _repro.DisallowInferenceTempComputeBuffers = disallowBufferAccess
             || disallowBufferOutputs
             || disallowBufferToTextureMaterialization;
+    }
+
+    private AexisPrecisionMode ResolveEffectivePrecisionMode()
+    {
+        if (precisionMode != AexisPrecisionMode.Auto)
+            return precisionMode;
+
+        // This detector has FP32 weights but its Pack4 activation contract is FP16.
+        // Keep that contract identical on every target so it remains valid for
+        // tiled GPUs and desktop drivers that exercise the same command path.
+        return AexisPrecisionMode.FP16;
     }
 
     private static void AppendProposalSummary(List<string> lines, List<FaceProposal> proposals, List<int> picked, FaceProposal best, int imgW, int imgH)
@@ -1042,6 +1290,112 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
         {
             lines.Add(blobName + " | preview_error=" + e.Message);
         }
+    }
+
+    private async UniTask<BlobReadback> ReadInferBlobDataAsync(
+        AexisGraphSession.InferResult infer,
+        string blobName,
+        CancellationToken ct)
+    {
+        if (infer == null || string.IsNullOrWhiteSpace(blobName))
+            return new BlobReadback(Array.Empty<float>(), "none");
+
+        if (!infer.TryGetExistingTexture(blobName, out var texture)
+            || texture == null
+            || !infer.TryGetExistingTextureDescriptor(blobName, out var logicalShape, out var storageShape))
+        {
+            throw new InvalidOperationException("pack4 output unavailable | blob=" + blobName);
+        }
+
+        // The completed graph and each texture slice receive a frame boundary before
+        // synchronous output materialization. This keeps a tiled renderer from having
+        // to submit a completed Pack4 graph and a readback in the same frame.
+        await UniTask.NextFrame();
+        ct.ThrowIfCancellationRequested();
+        var values = await ReadPack4TextureDataPacedAsync(texture, logicalShape, storageShape, ct, blobName);
+        return new BlobReadback(values, "texture-sync-paced");
+    }
+
+    private static async UniTask<float[]> ReadPack4TextureDataPacedAsync(
+        RenderTexture texture,
+        AexisGraphSession.BufferShape logicalShape,
+        AexisGraphSession.BufferShape storageShape,
+        CancellationToken ct,
+        string blobName)
+    {
+        if (texture == null)
+            return Array.Empty<float>();
+        if (logicalShape.dims != 3)
+            throw new InvalidOperationException("expected 3D Pack4 output | dims=" + logicalShape.dims);
+
+        var logicalW = Mathf.Max(1, logicalShape.w);
+        var logicalH = Mathf.Max(1, logicalShape.h);
+        var logicalC = Mathf.Max(1, logicalShape.c);
+        var physicalW = Mathf.Max(1, storageShape.w > 0 ? storageShape.w : texture.width);
+        var physicalH = Mathf.Max(1, storageShape.h > 0 ? storageShape.h : texture.height);
+        var physicalC = Mathf.Max(logicalC, storageShape.c > 0 ? storageShape.c : logicalC);
+        var packCount = Mathf.CeilToInt(physicalC / 4f);
+        var availableSlices = texture.dimension == TextureDimension.Tex2D
+            ? 1
+            : Mathf.Max(1, texture.volumeDepth);
+        if (logicalW > physicalW || logicalH > physicalH || packCount > availableSlices)
+        {
+            throw new InvalidOperationException(
+                "Pack4 output storage mismatch | logical=" + logicalW + "x" + logicalH + "x" + logicalC
+                + " | storage=" + physicalW + "x" + physicalH + "x" + physicalC
+                + " | slices=" + availableSlices);
+        }
+
+        var values = new float[logicalW * logicalH * logicalC];
+        var previous = RenderTexture.active;
+        Texture2D readback = null;
+        var logReadback = Debug.isDebugBuild;
+        try
+        {
+            readback = new Texture2D(physicalW, physicalH, TextureFormat.RGBAFloat, false, true);
+            for (var pack = 0; pack < packCount; pack++)
+            {
+                await UniTask.NextFrame();
+                ct.ThrowIfCancellationRequested();
+                if (logReadback)
+                {
+                    Debug.Log("[NcnnFaceRegion] [OutputReadback] begin | blob=" + blobName
+                        + " | texture=" + texture.GetInstanceID()
+                        + " | slice=" + pack + "/" + packCount
+                        + " | logical=" + logicalW + "x" + logicalH + "x" + logicalC
+                        + " | storage=" + physicalW + "x" + physicalH + "x" + physicalC);
+                }
+                Graphics.SetRenderTarget(texture, 0, CubemapFace.Unknown, pack);
+                readback.ReadPixels(new Rect(0, 0, physicalW, physicalH), 0, 0, false);
+                readback.Apply(false, false);
+                var pixels = readback.GetRawTextureData<float>();
+                for (var y = 0; y < logicalH; y++)
+                {
+                    for (var x = 0; x < logicalW; x++)
+                    {
+                        var pixelOffset = (y * physicalW + x) * 4;
+                        for (var lane = 0; lane < 4; lane++)
+                        {
+                            var channel = pack * 4 + lane;
+                            if (channel >= logicalC)
+                                break;
+                            values[(channel * logicalH + y) * logicalW + x] = pixels[pixelOffset + lane];
+                        }
+                    }
+                }
+                if (logReadback)
+                    Debug.Log("[NcnnFaceRegion] [OutputReadback] complete | blob=" + blobName + " | slice=" + pack);
+                await UniTask.NextFrame();
+            }
+        }
+        finally
+        {
+            RenderTexture.active = previous;
+            if (readback != null)
+                UnityEngine.Object.Destroy(readback);
+        }
+
+        return values;
     }
 
     private float[] ReadInferBlobData(AexisGraphSession.InferResult infer, string blobName, out string sourceKind)

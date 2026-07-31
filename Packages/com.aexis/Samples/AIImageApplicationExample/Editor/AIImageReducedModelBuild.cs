@@ -111,6 +111,20 @@ public sealed class AIImageReducedModelBuild : IPostprocessBuildWithReport, IPos
         }
     }
 
+    public static void BuildMain2AndroidDevelopmentBatch()
+    {
+        try
+        {
+            BuildMain2(BuildTarget.Android, DefaultOutput(BuildTarget.Android), BuildOptions.Development);
+            EditorApplication.Exit(0);
+        }
+        catch (Exception exception)
+        {
+            Debug.LogException(exception);
+            EditorApplication.Exit(1);
+        }
+    }
+
     public static void BuildMain2Windows64AtConfiguredPathBatch()
     {
         try

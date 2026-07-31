@@ -1,4 +1,5 @@
 using System.Threading.Tasks;
+using UnityEngine;
 
 namespace Aexis.Async
 {
@@ -8,7 +9,14 @@ namespace Aexis.Async
         /// <summary>Completes after Unity advances to the next frame.</summary>
         public static async Task YieldFrame()
         {
+#if UNITY_6000_0_OR_NEWER
+            // Task.Yield only schedules another synchronization-context work item.
+            // Under load it can resume within the current player-loop iteration,
+            // allowing texture compute layers to be submitted as one GPU burst.
+            await Awaitable.NextFrameAsync();
+#else
             await Task.Yield();
+#endif
         }
     }
 }

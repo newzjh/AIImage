@@ -8965,6 +8965,18 @@ namespace Aexis.Execution
             cmd.SetComputeFloatParam(_cs, "_DeepFillSoftmaxScale", softmaxScale);
         }
 
+        private static void ValidateDeepFillV2SourcePackRange(int sourcePackOffset, int sourcePackCount, int totalSourcePacks)
+        {
+            if (totalSourcePacks <= 0)
+                throw new ArgumentOutOfRangeException(nameof(totalSourcePacks));
+            if (sourcePackOffset < 0 || sourcePackCount <= 0 || sourcePackOffset > totalSourcePacks - sourcePackCount)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(sourcePackOffset),
+                    "DeepFillV2 source-pack chunk is outside the score/weight texture.");
+            }
+        }
+
         public void DeepFillV2PatchStats(
             RenderTexture feature,
             RenderTexture mask,
@@ -9034,16 +9046,43 @@ namespace Aexis.Execution
             float softmaxScale,
             RenderTexture output)
         {
+            var sourcePacks = Mathf.CeilToInt(matchW * matchH / 4f);
+            DeepFillV2ScoresChunk(
+                feature, patchStats, featureW, featureH, featureChannels,
+                matchW, matchH, maskW, maskH, maskDownsample,
+                patchEpsilon, softmaxScale, 0, sourcePacks, output);
+        }
+
+        public void DeepFillV2ScoresChunk(
+            RenderTexture feature,
+            RenderTexture patchStats,
+            int featureW,
+            int featureH,
+            int featureChannels,
+            int matchW,
+            int matchH,
+            int maskW,
+            int maskH,
+            int maskDownsample,
+            float patchEpsilon,
+            float softmaxScale,
+            int sourcePackOffset,
+            int sourcePackCount,
+            RenderTexture output)
+        {
             if (feature == null) throw new ArgumentNullException(nameof(feature));
             if (patchStats == null) throw new ArgumentNullException(nameof(patchStats));
             if (output == null) throw new ArgumentNullException(nameof(output));
             var featurePacks = Mathf.CeilToInt(featureChannels / 4f);
             var sourcePacks = Mathf.CeilToInt(matchW * matchH / 4f);
+            ValidateDeepFillV2SourcePackRange(sourcePackOffset, sourcePackCount, sourcePacks);
             ConfigureDeepFillV2(featureW, featureH, featureChannels, featurePacks, matchW, matchH, maskW, maskH, maskDownsample, patchEpsilon, softmaxScale);
+            _cs.SetInt("_DeepFillSourcePackOffset", sourcePackOffset);
+            _cs.SetInt("_DeepFillSourcePackCount", sourcePackCount);
             _cs.SetTexture(_kDeepFillV2Scores, "_DeepFillFeatureArr", feature);
             _cs.SetTexture(_kDeepFillV2Scores, "_DeepFillPatchStatsArr", patchStats);
             _cs.SetTexture(_kDeepFillV2Scores, "_DeepFillScoresOutArr", output);
-            Dispatch3D(_kDeepFillV2Scores, matchW, matchH, sourcePacks, 4, 4);
+            Dispatch3D(_kDeepFillV2Scores, matchW, matchH, sourcePackCount, 4, 4);
         }
 
         public void DeepFillV2Scores(
@@ -9062,17 +9101,45 @@ namespace Aexis.Execution
             float softmaxScale,
             ComputeTexture output)
         {
+            var sourcePacks = Mathf.CeilToInt(matchW * matchH / 4f);
+            DeepFillV2ScoresChunk(
+                cmd, feature, patchStats, featureW, featureH, featureChannels,
+                matchW, matchH, maskW, maskH, maskDownsample,
+                patchEpsilon, softmaxScale, 0, sourcePacks, output);
+        }
+
+        public void DeepFillV2ScoresChunk(
+            CommandBuffer cmd,
+            ComputeTexture feature,
+            ComputeTexture patchStats,
+            int featureW,
+            int featureH,
+            int featureChannels,
+            int matchW,
+            int matchH,
+            int maskW,
+            int maskH,
+            int maskDownsample,
+            float patchEpsilon,
+            float softmaxScale,
+            int sourcePackOffset,
+            int sourcePackCount,
+            ComputeTexture output)
+        {
             if (cmd == null) throw new ArgumentNullException(nameof(cmd));
             if (feature == null) throw new ArgumentNullException(nameof(feature));
             if (patchStats == null) throw new ArgumentNullException(nameof(patchStats));
             if (output == null) throw new ArgumentNullException(nameof(output));
             var featurePacks = Mathf.CeilToInt(featureChannels / 4f);
             var sourcePacks = Mathf.CeilToInt(matchW * matchH / 4f);
+            ValidateDeepFillV2SourcePackRange(sourcePackOffset, sourcePackCount, sourcePacks);
             ConfigureDeepFillV2(cmd, featureW, featureH, featureChannels, featurePacks, matchW, matchH, maskW, maskH, maskDownsample, patchEpsilon, softmaxScale);
+            cmd.SetComputeIntParam(_cs, "_DeepFillSourcePackOffset", sourcePackOffset);
+            cmd.SetComputeIntParam(_cs, "_DeepFillSourcePackCount", sourcePackCount);
             cmd.SetComputeTextureParam(_cs, _kDeepFillV2Scores, "_DeepFillFeatureArr", feature.nameID);
             cmd.SetComputeTextureParam(_cs, _kDeepFillV2Scores, "_DeepFillPatchStatsArr", patchStats.nameID);
             cmd.SetComputeTextureParam(_cs, _kDeepFillV2Scores, "_DeepFillScoresOutArr", output.nameID);
-            Dispatch3D(cmd, _kDeepFillV2Scores, matchW, matchH, sourcePacks, 4, 4);
+            Dispatch3D(cmd, _kDeepFillV2Scores, matchW, matchH, sourcePackCount, 4, 4);
         }
 
         public void DeepFillV2Softmax(
@@ -9144,13 +9211,47 @@ namespace Aexis.Execution
             float softmaxScale,
             RenderTexture output)
         {
+            var sourcePacks = Mathf.CeilToInt(matchW * matchH / 4f);
+            DeepFillV2ReconstructChunk(
+                feature, weights, featureW, featureH, featureChannels,
+                matchW, matchH, maskW, maskH, maskDownsample,
+                patchEpsilon, softmaxScale, 0, sourcePacks, null, output);
+        }
+
+        public void DeepFillV2ReconstructChunk(
+            RenderTexture feature,
+            RenderTexture weights,
+            int featureW,
+            int featureH,
+            int featureChannels,
+            int matchW,
+            int matchH,
+            int maskW,
+            int maskH,
+            int maskDownsample,
+            float patchEpsilon,
+            float softmaxScale,
+            int sourcePackOffset,
+            int sourcePackCount,
+            RenderTexture accumulator,
+            RenderTexture output)
+        {
             if (feature == null) throw new ArgumentNullException(nameof(feature));
             if (weights == null) throw new ArgumentNullException(nameof(weights));
             if (output == null) throw new ArgumentNullException(nameof(output));
             var featurePacks = Mathf.CeilToInt(featureChannels / 4f);
+            var sourcePacks = Mathf.CeilToInt(matchW * matchH / 4f);
+            ValidateDeepFillV2SourcePackRange(sourcePackOffset, sourcePackCount, sourcePacks);
             ConfigureDeepFillV2(featureW, featureH, featureChannels, featurePacks, matchW, matchH, maskW, maskH, maskDownsample, patchEpsilon, softmaxScale);
+            _cs.SetInt("_DeepFillSourcePackOffset", sourcePackOffset);
+            _cs.SetInt("_DeepFillSourcePackCount", sourcePackCount);
+            _cs.SetInt("_DeepFillUseAccumulator", accumulator != null ? 1 : 0);
             _cs.SetTexture(_kDeepFillV2Reconstruct, "_DeepFillFeatureArr", feature);
             _cs.SetTexture(_kDeepFillV2Reconstruct, "_DeepFillWeightsArr", weights);
+            // Reconstruction accumulates every source-pack chunk into the
+            // same UAV. Do not bind an accumulator SRV: tile-based Vulkan
+            // drivers can deadlock when reconstruction has both SRV and UAV
+            // texture dependencies.
             _cs.SetTexture(_kDeepFillV2Reconstruct, "_DeepFillOutputArr", output);
             Dispatch3D(_kDeepFillV2Reconstruct, featureW, featureH, featurePacks, 4, 4);
         }
@@ -9171,12 +9272,43 @@ namespace Aexis.Execution
             float softmaxScale,
             ComputeTexture output)
         {
+            var sourcePacks = Mathf.CeilToInt(matchW * matchH / 4f);
+            DeepFillV2ReconstructChunk(
+                cmd, feature, weights, featureW, featureH, featureChannels,
+                matchW, matchH, maskW, maskH, maskDownsample,
+                patchEpsilon, softmaxScale, 0, sourcePacks, null, output);
+        }
+
+        public void DeepFillV2ReconstructChunk(
+            CommandBuffer cmd,
+            ComputeTexture feature,
+            ComputeTexture weights,
+            int featureW,
+            int featureH,
+            int featureChannels,
+            int matchW,
+            int matchH,
+            int maskW,
+            int maskH,
+            int maskDownsample,
+            float patchEpsilon,
+            float softmaxScale,
+            int sourcePackOffset,
+            int sourcePackCount,
+            ComputeTexture accumulator,
+            ComputeTexture output)
+        {
             if (cmd == null) throw new ArgumentNullException(nameof(cmd));
             if (feature == null) throw new ArgumentNullException(nameof(feature));
             if (weights == null) throw new ArgumentNullException(nameof(weights));
             if (output == null) throw new ArgumentNullException(nameof(output));
             var featurePacks = Mathf.CeilToInt(featureChannels / 4f);
+            var sourcePacks = Mathf.CeilToInt(matchW * matchH / 4f);
+            ValidateDeepFillV2SourcePackRange(sourcePackOffset, sourcePackCount, sourcePacks);
             ConfigureDeepFillV2(cmd, featureW, featureH, featureChannels, featurePacks, matchW, matchH, maskW, maskH, maskDownsample, patchEpsilon, softmaxScale);
+            cmd.SetComputeIntParam(_cs, "_DeepFillSourcePackOffset", sourcePackOffset);
+            cmd.SetComputeIntParam(_cs, "_DeepFillSourcePackCount", sourcePackCount);
+            cmd.SetComputeIntParam(_cs, "_DeepFillUseAccumulator", accumulator != null ? 1 : 0);
             cmd.SetComputeTextureParam(_cs, _kDeepFillV2Reconstruct, "_DeepFillFeatureArr", feature.nameID);
             cmd.SetComputeTextureParam(_cs, _kDeepFillV2Reconstruct, "_DeepFillWeightsArr", weights.nameID);
             cmd.SetComputeTextureParam(_cs, _kDeepFillV2Reconstruct, "_DeepFillOutputArr", output.nameID);

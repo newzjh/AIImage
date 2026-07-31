@@ -43,7 +43,7 @@ namespace Aexis.Execution
                                             c = Mathf.Max(1, c),
                                             cpuData = a
                                         };
-                                        if (TryCreateChannelVectorTexture(memoryPack))
+                                        if (TryCreateChannelVectorTexture(owner, layer, memoryPack))
                                         {
                                             owner._memoryData[layer.name] = memoryPack;
                                             return new AexisGraphSession.LayerLoadMetrics(Math.Max(0, br.Position - bytesStart), readMs, uploadMs, packMs);
@@ -54,7 +54,7 @@ namespace Aexis.Execution
                                             return new AexisGraphSession.LayerLoadMetrics(Math.Max(0, br.Position - bytesStart), readMs, uploadMs, packMs);
                                         }
                                         phaseSw.Restart();
-                                        var createdPack4Texture = TryCreatePack4Texture(memoryPack);
+                                        var createdPack4Texture = TryCreatePack4Texture(owner, layer, memoryPack);
                                         phaseSw.Stop();
                                         uploadMs += phaseSw.ElapsedMilliseconds;
                                         if (createdPack4Texture)
@@ -236,7 +236,10 @@ namespace Aexis.Execution
             }
         }
 
-        private static bool TryCreatePack4Texture(AexisGraphSession.MemoryDataPack memoryPack)
+        private static bool TryCreatePack4Texture(
+            AexisGraphSession owner,
+            AexisGraphModel.Layer layer,
+            AexisGraphSession.MemoryDataPack memoryPack)
         {
             if (memoryPack == null
                 || (memoryPack.dims != 3 && memoryPack.dims != 4)
@@ -250,13 +253,17 @@ namespace Aexis.Execution
                 return false;
             }
 
+            if (owner == null)
+                return false;
+
             var packs = Mathf.Max(1, Mathf.CeilToInt(memoryPack.c / 4f));
             var slices = Mathf.Max(1, memoryPack.d) * packs;
+            var format = owner.ResolveActivationTextureFormat(layer, memoryPack.dims);
             RenderTexture texture = null;
             Texture2DArray upload = null;
             try
             {
-                var descriptor = new RenderTextureDescriptor(memoryPack.w, memoryPack.h, RenderTextureFormat.ARGBFloat, 0)
+                var descriptor = new RenderTextureDescriptor(memoryPack.w, memoryPack.h, format, 0)
                 {
                     dimension = TextureDimension.Tex2DArray,
                     volumeDepth = slices,
@@ -267,17 +274,17 @@ namespace Aexis.Execution
                 {
                     filterMode = FilterMode.Point,
                     wrapMode = TextureWrapMode.Clamp,
-                    name = "NcnnMemoryDataPack4"
+                    name = "NcnnMemoryDataPack4_" + format
                 };
                 texture.Create();
                 AexisGpuResourceTracker.RegisterTexture(texture, "NcnnMemoryDataPack4");
 
-                upload = new Texture2DArray(memoryPack.w, memoryPack.h, slices, TextureFormat.RGBAFloat, false, true)
+                upload = new Texture2DArray(memoryPack.w, memoryPack.h, slices, ResolvePack4UploadTextureFormat(format), false, true)
                 {
                     filterMode = FilterMode.Point,
                     wrapMode = TextureWrapMode.Clamp,
                     anisoLevel = 0,
-                    name = "NcnnMemoryDataPack4Upload"
+                    name = "NcnnMemoryDataPack4Upload_" + format
                 };
                 var spatialCount = memoryPack.w * memoryPack.h;
                 for (var z = 0; z < memoryPack.d; z++)
@@ -365,12 +372,26 @@ namespace Aexis.Execution
                 return false;
             }
 
+            var outputFormat = owner.ResolveActivationTextureFormat(layer, memoryPack.dims);
+            if (memoryPack.pack4Rt.format != outputFormat)
+            {
+                throw new Aexis.InferenceContractException(
+                    "MemoryData Pack4 texture format does not match its CommandBuffer activation contract"
+                    + " | layer=" + layer.name
+                    + " | source_format=" + memoryPack.pack4Rt.format
+                    + " | output_format=" + outputFormat
+                    + " | action=reload the session so immutable Pack4 constants use the selected graph precision.");
+            }
+
+            // MemoryData produces a real graph tensor. Bind the slot assigned to
+            // its top blob rather than asking the arena to infer an unnamed RT.
             var texture = owner.RentTempArray(
                 commandBuffer,
                 memoryPack.w,
                 memoryPack.h,
                 memoryPack.pack4RtDepth,
-                memoryPack.pack4Rt.format);
+                outputFormat,
+                layer.topNames[0]);
             for (var slice = 0; slice < memoryPack.pack4RtDepth; slice++)
                 commandBuffer.CopyTexture(memoryPack.pack4Rt, slice, 0, texture.nameID, slice, 0);
             var shape = new AexisGraphSession.BufferShape(memoryPack.dims, memoryPack.w, memoryPack.h, memoryPack.d, memoryPack.c);
@@ -403,7 +424,8 @@ namespace Aexis.Execution
                 cmd,
                 memoryPack.w,
                 memoryPack.h,
-                AexisGraphSession.ResolveLinearMatTextureFormat());
+                AexisGraphSession.ResolveLinearMatTextureFormat(),
+                layer.topNames[0]);
             cmd.CopyTexture(memoryPack.linearMatRt, 0, 0, output.nameID, 0, 0);
             var logicalShape = new AexisGraphSession.BufferShape(memoryPack.dims, memoryPack.w, memoryPack.h, 1, 1);
             var storageShape = AexisGraphSession.ResolveLinearMatStorageShape(logicalShape);
@@ -418,7 +440,10 @@ namespace Aexis.Execution
             return true;
         }
 
-        private static bool TryCreateChannelVectorTexture(AexisGraphSession.MemoryDataPack memoryPack)
+        private static bool TryCreateChannelVectorTexture(
+            AexisGraphSession owner,
+            AexisGraphModel.Layer layer,
+            AexisGraphSession.MemoryDataPack memoryPack)
         {
             if (memoryPack == null
                 || memoryPack.dims != 3
@@ -432,13 +457,21 @@ namespace Aexis.Execution
                 return false;
             }
 
+            if (owner == null)
+                return false;
+
             try
             {
                 var pixels = new Color[memoryPack.c];
                 for (var index = 0; index < pixels.Length; index++)
                     pixels[index] = new Color(memoryPack.cpuData[index], 0f, 0f, 0f);
 
-                var texture = new Texture2D(memoryPack.c, 1, TextureFormat.RGBAHalf, false, true)
+                var texture = new Texture2D(
+                    memoryPack.c,
+                    1,
+                    ResolvePack4UploadTextureFormat(owner.ResolveActivationTextureFormat(layer, memoryPack.dims)),
+                    false,
+                    true)
                 {
                     filterMode = FilterMode.Point,
                     wrapMode = TextureWrapMode.Clamp,
@@ -478,12 +511,18 @@ namespace Aexis.Execution
             }
 
             var packs = Mathf.Max(1, Mathf.CeilToInt(memoryPack.c / 4f));
-            if (!TryGetOrCreateChannelVectorPack4Rt(memoryPack, out var packedVector) || packedVector == null)
+            if (!TryGetOrCreateChannelVectorPack4Rt(owner, layer, memoryPack, out var packedVector) || packedVector == null)
                 return false;
 
             // Match the Pack4 RT representation exactly: a channel vector occupies
             // one texel across ceil(C/4) array slices, rather than C scalar texels.
-            var vector = owner.RentTempArray(cmd, 1, 1, packs, RenderTextureFormat.ARGBHalf);
+            var vector = owner.RentTempArray(
+                cmd,
+                1,
+                1,
+                packs,
+                owner.ResolveActivationTextureFormat(layer, memoryPack.dims),
+                layer.topNames[0]);
             owner.Ops.CopyPack4(cmd, packedVector, 0, vector, 0, packs);
             var logicalShape = new AexisGraphSession.BufferShape(3, 1, 1, 1, memoryPack.c);
             var storageShape = logicalShape;
@@ -499,7 +538,11 @@ namespace Aexis.Execution
             return true;
         }
 
-        private static bool TryGetOrCreateChannelVectorPack4Rt(AexisGraphSession.MemoryDataPack memoryPack, out RenderTexture packedVector)
+        private static bool TryGetOrCreateChannelVectorPack4Rt(
+            AexisGraphSession owner,
+            AexisGraphModel.Layer layer,
+            AexisGraphSession.MemoryDataPack memoryPack,
+            out RenderTexture packedVector)
         {
             packedVector = null;
             if (memoryPack == null
@@ -514,11 +557,16 @@ namespace Aexis.Execution
                 return false;
             }
 
+            if (owner == null)
+                return false;
+
             var channels = memoryPack.c;
             var packs = Mathf.Max(1, Mathf.CeilToInt(channels / 4f));
+            var format = owner.ResolveActivationTextureFormat(layer, memoryPack.dims);
             if (memoryPack.pack4Rt != null
                 && memoryPack.pack4RtChannels == channels
                 && memoryPack.pack4RtDepth == packs
+                && memoryPack.pack4Rt.format == format
                 && memoryPack.pack4Rt.IsCreated())
             {
                 packedVector = memoryPack.pack4Rt;
@@ -535,7 +583,7 @@ namespace Aexis.Execution
                     memoryPack.pack4Rt = null;
                 }
 
-                var descriptor = new RenderTextureDescriptor(1, 1, RenderTextureFormat.ARGBFloat, 0)
+                var descriptor = new RenderTextureDescriptor(1, 1, format, 0)
                 {
                     dimension = TextureDimension.Tex2DArray,
                     volumeDepth = packs,
@@ -546,17 +594,17 @@ namespace Aexis.Execution
                 {
                     filterMode = FilterMode.Point,
                     wrapMode = TextureWrapMode.Clamp,
-                    name = "NcnnMemoryDataChannelVectorPack4"
+                    name = "NcnnMemoryDataChannelVectorPack4_" + format
                 };
                 texture.Create();
                 AexisGpuResourceTracker.RegisterTexture(texture, "NcnnMemoryDataChannelVectorPack4");
 
-                var upload = new Texture2DArray(1, 1, packs, TextureFormat.RGBAFloat, false, true)
+                var upload = new Texture2DArray(1, 1, packs, ResolvePack4UploadTextureFormat(format), false, true)
                 {
                     filterMode = FilterMode.Point,
                     wrapMode = TextureWrapMode.Clamp,
                     anisoLevel = 0,
-                    name = "NcnnMemoryDataChannelVectorPack4Upload"
+                    name = "NcnnMemoryDataChannelVectorPack4Upload_" + format
                 };
                 try
                 {
@@ -694,6 +742,13 @@ namespace Aexis.Execution
             {
                 return false;
             }
+        }
+
+        private static TextureFormat ResolvePack4UploadTextureFormat(RenderTextureFormat format)
+        {
+            return format == RenderTextureFormat.ARGBHalf
+                ? TextureFormat.RGBAHalf
+                : TextureFormat.RGBAFloat;
         }
 
         internal static bool TryGetOrCreateVistaPromptPack4Rt(AexisGraphSession.MemoryDataPack promptMemoryPack, int featureChannels, out RenderTexture promptRt)

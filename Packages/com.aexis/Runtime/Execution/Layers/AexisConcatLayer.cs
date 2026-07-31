@@ -728,7 +728,8 @@ namespace Aexis.Execution
                         outShape.w,
                         outShape.h,
                         parts[0].packs,
-                        AexisGraphSession.ResolveTensorTextureFormat(outShape.dims));
+                        AexisGraphSession.ResolveTensorTextureFormat(outShape.dims),
+                        layer.topNames[0]);
                     var dstOffsetX = 0;
                     for (var i = 0; i < parts.Length; i++)
                     {
@@ -764,7 +765,12 @@ namespace Aexis.Execution
                     if (canUseLowDimStrictLinearConcat)
                     {
                         var storageShape = AexisGraphSession.ResolveLinearMatStorageShape(outShape);
-                        var outMat = owner.RentTempMat(cmd, storageShape.w, storageShape.h, AexisGraphSession.ResolveLinearMatTextureFormat());
+                        var outMat = owner.RentTempMat(
+                            cmd,
+                            storageShape.w,
+                            storageShape.h,
+                            AexisGraphSession.ResolveLinearMatTextureFormat(),
+                            layer.topNames[0]);
                         var dstOffsetX = 0;
                         var dstOffsetY = 0;
                         for (var i = 0; i < parts.Length; i++)
@@ -785,7 +791,8 @@ namespace Aexis.Execution
                             LowDimTextureStorageWidth(outShape),
                             LowDimTextureStorageHeight(outShape),
                             parts[0].packs,
-                            AexisGraphSession.ResolveTensorTextureFormat(outShape.dims));
+                            AexisGraphSession.ResolveTensorTextureFormat(outShape.dims),
+                            layer.topNames[0]);
                         var dstOffsetX = 0;
                         var dstOffsetY = 0;
                         for (var i = 0; i < parts.Length; i++)
@@ -823,7 +830,13 @@ namespace Aexis.Execution
 
                     if (canCopyWholePacks)
                     {
-                        var outArr = owner.RentTempArray(cmd, outShape.w, outShape.h, outPacks, RenderTextureFormat.ARGBHalf);
+                        var outArr = owner.RentTempArray(
+                            cmd,
+                            outShape.w,
+                            outShape.h,
+                            outPacks,
+                            RenderTextureFormat.ARGBHalf,
+                            layer.topNames[0]);
                         var packOffset = 0;
                         for (var i = 0; i < parts.Length; i++)
                         {
@@ -856,7 +869,13 @@ namespace Aexis.Execution
                             var nextShape = partShapes[i];
                             var combinedChannels = currentShape.c + nextShape.c;
                             var combinedPacks = Mathf.Max(1, Mathf.CeilToInt(combinedChannels / 4f));
-                            var outArr = owner.RentTempArray(cmd, outShape.w, outShape.h, combinedPacks, RenderTextureFormat.ARGBHalf);
+                            var outArr = owner.RentTempArray(
+                                cmd,
+                                outShape.w,
+                                outShape.h,
+                                combinedPacks,
+                                RenderTextureFormat.ARGBHalf,
+                                ConcatChannelResourceName(layer, i, parts.Length));
                             owner.Ops.ConcatPack4Cdhw(
                                 cmd,
                                 current.texture,
@@ -902,7 +921,13 @@ namespace Aexis.Execution
                         var next = parts[i];
                         var nextShape = partShapes[i];
                         var combinedChannels = currentShape.c + nextShape.c;
-                        var outArr = owner.RentTempArray(cmd, outShape.w, outShape.h, outShape.d * Mathf.Max(1, Mathf.CeilToInt(combinedChannels / 4f)), RenderTextureFormat.ARGBHalf);
+                        var outArr = owner.RentTempArray(
+                            cmd,
+                            outShape.w,
+                            outShape.h,
+                            outShape.d * Mathf.Max(1, Mathf.CeilToInt(combinedChannels / 4f)),
+                            RenderTextureFormat.ARGBHalf,
+                            ConcatChannelResourceName(layer, i, parts.Length));
                         owner.Ops.ConcatPack4Cdhw(
                             cmd,
                             current.texture,
@@ -952,6 +977,13 @@ namespace Aexis.Execution
             }
 
             owner.ConsumeCmd(cmd, blobs, remaining, layer.bottomNames, pinnedNames, shapes);
+        }
+
+        private static string ConcatChannelResourceName(AexisGraphModel.Layer layer, int partIndex, int partCount)
+        {
+            return partIndex == partCount - 1
+                ? layer.topNames[0]
+                : AexisGraphSession.GetStrictPack4ScratchIdentity(layer, "concat-channel-step-" + partIndex);
         }
 
         private static int LowDimTextureStorageWidth(AexisGraphSession.BufferShape logicalShape)

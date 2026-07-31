@@ -19,9 +19,9 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
     public float faceMaskThreshold = 0.2f;
     public float faceBoxExpand = 0.35f;
     public bool enableFaceRegionDebugDump = false;
-    public bool disallowBufferAccess = false;
-    public bool disallowBufferOutputs = false;
-    public bool disallowBufferToTextureMaterialization = false;
+    public bool disallowBufferAccess = true;
+    public bool disallowBufferOutputs = true;
+    public bool disallowBufferToTextureMaterialization = true;
 
     public event Action<float, string> ProgressChanged;
 
@@ -62,6 +62,12 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
             try { modulationB?.Dispose(); } catch { }
             try { bias4?.Dispose(); } catch { }
         }
+    }
+
+    private sealed class EncoderOutputs
+    {
+        public RenderTexture styles;
+        public RenderTexture[] conditions;
     }
 
     private AexisGraphSession _repro;
@@ -114,6 +120,11 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         try { _ops?.Dispose(); } catch { }
         _ops = null;
         _hasAppliedPrecisionMode = false;
+    }
+
+    public void ReleaseRuntimeResources()
+    {
+        Release();
     }
 
     public async UniTask<GfpganResult> ProcessAsync(Texture2D src, CancellationToken ct)
@@ -179,9 +190,7 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
 
             ReportProgress(0.06f, "生成脸部区域");
             await UniTask.Yield();
-            faceRegion = GetComponent<NcnnFaceRegionGenerator>();
-            if (faceRegion == null)
-                faceRegion = gameObject.AddComponent<NcnnFaceRegionGenerator>();
+            faceRegion = NcnnFaceRegionGenerator.GetSharedInstance();
             faceRegion.disallowBufferAccess = disallowBufferAccess;
             faceRegion.disallowBufferOutputs = disallowBufferOutputs;
             faceRegion.disallowBufferToTextureMaterialization = disallowBufferToTextureMaterialization;
@@ -231,7 +240,7 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
             if (restoredCrop == null)
                 return Finish(new GfpganResult { error = "回贴缩放失败" });
 
-            restoredCropTex = RenderTextureToTexture2D(restoredCrop, rect.width, rect.height);
+            restoredCropTex = await RenderTextureToTexture2DAsync(restoredCrop, rect.width, rect.height, ct);
             if (restoredCropTex == null)
                 return Finish(new GfpganResult { error = "回贴回读失败" });
 
@@ -295,37 +304,49 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
 
         try
         {
+            await UniTask.NextFrame();
+            ct.ThrowIfCancellationRequested();
             inArr = _repro.RentTempArray(512, 512, 1, RenderTextureFormat.ARGBHalf);
-            _repro.Ops.PackRgbToPack4Gfpgan(face512, 0, 0, 1, 1, inArr);
-
-            styles = RunEncoderForGfpgan(inArr, out cond);
+            await ExecuteGfpganGpuOperationAsync(
+                "input-pack-rgb",
+                () => _repro.Ops.PackRgbToPack4Gfpgan(face512, 0, 0, 1, 1, inArr),
+                ct);
+            var encoderOutputs = await RunEncoderForGfpganAsync(inArr, ct);
+            styles = encoderOutputs?.styles;
+            cond = encoderOutputs?.conditions;
             if (styles == null || styles.dimension != TextureDimension.Tex2D || styles.width < 512 || styles.height < 16)
                 return null;
             if (cond == null || cond.Length != 14)
                 return null;
 
             constIn = _repro.RentTempArray(4, 4, 128, RenderTextureFormat.ARGBHalf);
-            _repro.Ops.FillPack4FromBufferCHW(_constInputBuf, 4, 4, 512, constIn);
+            await ExecuteGfpganGpuOperationAsync(
+                "const-input-upload",
+                () => _repro.Ops.FillPack4FromBufferCHW(_constInputBuf, 4, 4, 512, constIn),
+                ct);
 
-            outFeat = RunStyleConv(constIn, styles, 0, _styleConv[14], 0, true);
+            outFeat = await RunStyleConvAsync(constIn, styles, 0, _styleConv[14], 0, true, ct);
 
-            skip = RunToRgb(outFeat, styles, 1, _toRgb[7], null);
+            skip = await RunToRgbAsync(outFeat, styles, 1, _toRgb[7], null, ct);
 
             await UniTask.Yield();
 
             var j = 0;
             for (var i = 1; i < 14; i += 2)
             {
-                outFeat = RunStyleConv(outFeat, styles, i, _styleConv[i - 1], 1, true);
+                outFeat = await RunStyleConvAsync(outFeat, styles, i, _styleConv[i - 1], 1, true, ct);
                 tmp = _repro.RentTempArray(outFeat.width, outFeat.height, outFeat.volumeDepth, RenderTextureFormat.ARGBHalf);
-                _repro.Ops.SftPack4(outFeat, cond[i - 1], cond[i], outFeat.volumeDepth, outFeat.volumeDepth / 2, tmp);
+                await ExecuteGfpganGpuOperationAsync(
+                    "sft-" + i,
+                    () => _repro.Ops.SftPack4(outFeat, cond[i - 1], cond[i], outFeat.volumeDepth, outFeat.volumeDepth / 2, tmp),
+                    ct);
                 _repro.ReturnTempArray(outFeat);
                 outFeat = tmp;
                 tmp = null;
 
-                outFeat = RunStyleConv(outFeat, styles, i + 1, _styleConv[i], 0, true);
+                outFeat = await RunStyleConvAsync(outFeat, styles, i + 1, _styleConv[i], 0, true, ct);
 
-                skip = RunToRgb(outFeat, styles, i + 2, _toRgb[j], skip);
+                skip = await RunToRgbAsync(outFeat, styles, i + 2, _toRgb[j], skip, ct);
                 j++;
 
                 ReportProgress(0.15f + (float)i / 14.0f * 0.8f, "推理分块 " + i + "/" + 14);
@@ -333,14 +354,20 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
             }
 
             skipClip = _repro.RentTempArray(512, 512, 1, RenderTextureFormat.ARGBHalf);
-            _repro.Ops.ClipPack4(skip, -1f, 1f, 1, skipClip);
+            await ExecuteGfpganGpuOperationAsync(
+                "final-clip",
+                () => _repro.Ops.ClipPack4(skip, -1f, 1f, 1, skipClip),
+                ct);
 
             outTex = new RenderTexture(512, 512, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
             outTex.enableRandomWrite = true;
             outTex.wrapMode = TextureWrapMode.Clamp;
             outTex.filterMode = FilterMode.Bilinear;
             outTex.Create();
-            _repro.Ops.Pack4ToRgb01(skipClip, outTex);
+            await ExecuteGfpganGpuOperationAsync(
+                "final-pack-rgb",
+                () => _repro.Ops.Pack4ToRgb01(skipClip, outTex),
+                ct);
 
 
             //outTex = RenderTextureToTexture2D(rgb, 512, 512);
@@ -373,7 +400,7 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         }
     }
 
-    private RenderTexture RunEncoderForGfpgan(RenderTexture inputPack4, out RenderTexture[] conditions)
+    private async UniTask<EncoderOutputs> RunEncoderForGfpganAsync(RenderTexture inputPack4, CancellationToken ct)
     {
         var condNames = new[]
         {
@@ -385,35 +412,55 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
             ? _repro.Model.layers[0].topNames[0]
             : "input.1";
 
-        conditions = null;
-        RenderTexture styles = null;
+        var outputs = new EncoderOutputs();
 
         try
         {
-            using (var result = _repro.Infer(inputPack4, 1, inputName, pinned))
+            _repro.DebugLogAllLayerHeartbeats = UnityEngine.Debug.isDebugBuild;
+            _repro.DebugLog = UnityEngine.Debug.isDebugBuild
+                ? line =>
+                {
+                    if (line.StartsWith("[LayerHeartbeat]", StringComparison.Ordinal))
+                        UnityEngine.Debug.Log("[GFPGAN Encoder] " + line);
+                }
+                : null;
+            if (UnityEngine.Debug.isDebugBuild)
+                UnityEngine.Debug.Log("[GFPGAN Encoder] begin | input=" + inputPack4.GetInstanceID() + " | layers=" + _repro.Model.layers.Count);
+            var inputs = new Dictionary<string, RenderTexture>(StringComparer.Ordinal)
             {
-                styles = ExtractExistingGpuTexture(result, "420");
+                { inputName, inputPack4 }
+            };
+            using (var result = await _repro.InferWithMultiInputsAsync(
+                       inputs,
+                       null,
+                       pinned,
+                       cancellationToken: ct,
+                       yieldEveryLayers: 1))
+            {
+                outputs.styles = ExtractExistingGpuTexture(result, "420");
 
-                conditions = new RenderTexture[condNames.Length];
+                outputs.conditions = new RenderTexture[condNames.Length];
                 for (var i = 0; i < condNames.Length; i++)
                 {
-                    conditions[i] = ExtractExistingGpuTexture(result, condNames[i]);
+                    outputs.conditions[i] = ExtractExistingGpuTexture(result, condNames[i]);
                 }
             }
 
-            return styles;
+            if (UnityEngine.Debug.isDebugBuild)
+                UnityEngine.Debug.Log("[GFPGAN Encoder] complete | styles=" + outputs.styles.GetInstanceID() + " | conditions=" + outputs.conditions.Length);
+            return outputs;
         }
         catch (Exception e)
         {
             UnityEngine.Debug.LogWarning("[GFPGAN Repro] encoder failed: " + e.Message);
-            if (conditions != null)
+            if (outputs.conditions != null)
             {
-                for (var i = 0; i < conditions.Length; i++)
-                    if (conditions[i] != null) _repro.ReturnTempArray(conditions[i]);
-                conditions = null;
+                for (var i = 0; i < outputs.conditions.Length; i++)
+                    if (outputs.conditions[i] != null) _repro.ReturnTempArray(outputs.conditions[i]);
+                outputs.conditions = null;
             }
-            if (styles != null)
-                _repro.ReturnTempArray(styles);
+            if (outputs.styles != null)
+                _repro.ReturnTempArray(outputs.styles);
             return null;
         }
     }
@@ -430,13 +477,35 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         return result.ExtractTexture(blobName);
     }
 
-    private RenderTexture RunStyleConv(RenderTexture x, RenderTexture styles, int styleRow, StyleConvWeights w, int sampleMode, bool demodulate)
+    private static async UniTask ExecuteGfpganGpuOperationAsync(string stage, Action execute, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (UnityEngine.Debug.isDebugBuild)
+            UnityEngine.Debug.Log("[GFPGAN Generator] gpu-begin | stage=" + stage);
+        execute();
+        await UniTask.NextFrame();
+        ct.ThrowIfCancellationRequested();
+        if (UnityEngine.Debug.isDebugBuild)
+            UnityEngine.Debug.Log("[GFPGAN Generator] gpu-frame-complete | stage=" + stage);
+    }
+
+    private async UniTask<RenderTexture> RunStyleConvAsync(
+        RenderTexture x,
+        RenderTexture styles,
+        int styleRow,
+        StyleConvWeights w,
+        int sampleMode,
+        bool demodulate,
+        CancellationToken ct)
     {
         var inArr = x;
         if (sampleMode == 1)
         {
             var up = _repro.RentTempArray(inArr.width * 2, inArr.height * 2, inArr.volumeDepth, RenderTextureFormat.ARGBHalf);
-            _repro.Ops.Interp2xPack4(inArr, inArr.volumeDepth, up);
+            await ExecuteGfpganGpuOperationAsync(
+                "style-" + styleRow + "-upsample",
+                () => _repro.Ops.Interp2xPack4(inArr, inArr.volumeDepth, up),
+                ct);
             if (inArr != x)
                 _repro.ReturnTempArray(inArr);
             inArr = up;
@@ -453,15 +522,27 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         try
         {
             styleVector = _repro.RentTempMat(w.hidDim, 1, RenderTextureFormat.RFloat);
-            _repro.Ops.GfpganStyleModulation(styles, styleRow, 512, w.modulationW, w.modulationB, w.hidDim, styleVector);
+            await ExecuteGfpganGpuOperationAsync(
+                "style-" + styleRow + "-modulation",
+                () => _repro.Ops.GfpganStyleModulation(styles, styleRow, 512, w.modulationW, w.modulationB, w.hidDim, styleVector),
+                ct);
             if (demodulate)
             {
                 demod = _repro.RentTempMat(w.numOutput, 1, RenderTextureFormat.RFloat);
-                _repro.Ops.GfpganStyleDemod(styleVector, w.selfWeight, w.hidDim, w.numOutput, 9, demod);
+                await ExecuteGfpganGpuOperationAsync(
+                    "style-" + styleRow + "-demodulation",
+                    () => _repro.Ops.GfpganStyleDemod(styleVector, w.selfWeight, w.hidDim, w.numOutput, 9, demod),
+                    ct);
             }
             dynamicW4 = _repro.RentTempArray(dynamicWeightWidth, dynamicWeightHeight, 1, RenderTextureFormat.ARGBFloat);
-            _repro.Ops.GfpganBuildDynamicWeight(styleVector, demod, w.selfWeight, w.hidDim, w.numOutput, 9, demodulate, dynamicW4);
-            _repro.Ops.Conv3x3Pack4DynamicWeight(inArr, w.hidDim / 4, dynamicW4, GetZeroBias4(outPacks), outPacks, 1, 0, 0f, outArr);
+            await ExecuteGfpganGpuOperationAsync(
+                "style-" + styleRow + "-dynamic-weight",
+                () => _repro.Ops.GfpganBuildDynamicWeight(styleVector, demod, w.selfWeight, w.hidDim, w.numOutput, 9, demodulate, dynamicW4),
+                ct);
+            await ExecuteGfpganGpuOperationAsync(
+                "style-" + styleRow + "-conv3x3",
+                () => _repro.Ops.Conv3x3Pack4DynamicWeight(inArr, w.hidDim / 4, dynamicW4, GetZeroBias4(outPacks), outPacks, 1, 0, 0f, outArr),
+                ct);
         }
         finally
         {
@@ -471,19 +552,31 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         }
 
         var scaled = _repro.RentTempArray(outArr.width, outArr.height, outArr.volumeDepth, RenderTextureFormat.ARGBHalf);
-        _repro.Ops.ScalePack4(outArr, 1.4142135381698608f, outArr.volumeDepth, scaled);
+        await ExecuteGfpganGpuOperationAsync(
+            "style-" + styleRow + "-scale",
+            () => _repro.Ops.ScalePack4(outArr, 1.4142135381698608f, outArr.volumeDepth, scaled),
+            ct);
         _repro.ReturnTempArray(outArr);
         outArr = scaled;
 
-        _repro.Ops.GfpganAddNoisePack4(outArr, w.noiseWeight, NextNoiseSeed(), outArr.volumeDepth);
+        await ExecuteGfpganGpuOperationAsync(
+            "style-" + styleRow + "-noise",
+            () => _repro.Ops.GfpganAddNoisePack4(outArr, w.noiseWeight, NextNoiseSeed(), outArr.volumeDepth),
+            ct);
 
         var biased = _repro.RentTempArray(outArr.width, outArr.height, outArr.volumeDepth, RenderTextureFormat.ARGBHalf);
-        _repro.Ops.AddBiasPack4(outArr, w.bias4, outArr.volumeDepth, biased);
+        await ExecuteGfpganGpuOperationAsync(
+            "style-" + styleRow + "-bias",
+            () => _repro.Ops.AddBiasPack4(outArr, w.bias4, outArr.volumeDepth, biased),
+            ct);
         _repro.ReturnTempArray(outArr);
         outArr = biased;
 
         var act = _repro.RentTempArray(outArr.width, outArr.height, outArr.volumeDepth, RenderTextureFormat.ARGBHalf);
-        _repro.Ops.LeakyReluPack4(outArr, 0.2f, outArr.volumeDepth, act);
+        await ExecuteGfpganGpuOperationAsync(
+            "style-" + styleRow + "-leaky-relu",
+            () => _repro.Ops.LeakyReluPack4(outArr, 0.2f, outArr.volumeDepth, act),
+            ct);
         _repro.ReturnTempArray(outArr);
         outArr = act;
 
@@ -492,7 +585,13 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         return outArr;
     }
 
-    private RenderTexture RunToRgb(RenderTexture feat, RenderTexture styles, int styleRow, ToRgbWeights w, RenderTexture skip)
+    private async UniTask<RenderTexture> RunToRgbAsync(
+        RenderTexture feat,
+        RenderTexture styles,
+        int styleRow,
+        ToRgbWeights w,
+        RenderTexture skip,
+        CancellationToken ct)
     {
         var outArr = _repro.RentTempArray(feat.width, feat.height, 1, RenderTextureFormat.ARGBHalf);
         var w4Count = 1 * (w.hidDim / 4) * 4;
@@ -503,10 +602,19 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         try
         {
             styleVector = _repro.RentTempMat(w.hidDim, 1, RenderTextureFormat.RFloat);
-            _repro.Ops.GfpganStyleModulation(styles, styleRow, 512, w.modulationW, w.modulationB, w.hidDim, styleVector);
+            await ExecuteGfpganGpuOperationAsync(
+                "rgb-" + styleRow + "-modulation",
+                () => _repro.Ops.GfpganStyleModulation(styles, styleRow, 512, w.modulationW, w.modulationB, w.hidDim, styleVector),
+                ct);
             dynamicW4 = _repro.RentTempArray(dynamicWeightWidth, dynamicWeightHeight, 1, RenderTextureFormat.ARGBFloat);
-            _repro.Ops.GfpganBuildDynamicWeight(styleVector, null, w.selfWeight, w.hidDim, w.numOutput, 1, false, dynamicW4);
-            _repro.Ops.Conv1x1Pack4DynamicWeight(feat, w.hidDim / 4, dynamicW4, GetZeroBias4(1), 1, 0, 0f, outArr);
+            await ExecuteGfpganGpuOperationAsync(
+                "rgb-" + styleRow + "-dynamic-weight",
+                () => _repro.Ops.GfpganBuildDynamicWeight(styleVector, null, w.selfWeight, w.hidDim, w.numOutput, 1, false, dynamicW4),
+                ct);
+            await ExecuteGfpganGpuOperationAsync(
+                "rgb-" + styleRow + "-conv1x1",
+                () => _repro.Ops.Conv1x1Pack4DynamicWeight(feat, w.hidDim / 4, dynamicW4, GetZeroBias4(1), 1, 0, 0f, outArr),
+                ct);
         }
         finally
         {
@@ -515,7 +623,10 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         }
 
         var biased = _repro.RentTempArray(outArr.width, outArr.height, 1, RenderTextureFormat.ARGBHalf);
-        _repro.Ops.AddBiasPack4(outArr, w.bias4, 1, biased);
+        await ExecuteGfpganGpuOperationAsync(
+            "rgb-" + styleRow + "-bias",
+            () => _repro.Ops.AddBiasPack4(outArr, w.bias4, 1, biased),
+            ct);
         _repro.ReturnTempArray(outArr);
         outArr = biased;
 
@@ -523,11 +634,17 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
             return outArr;
 
         var up = _repro.RentTempArray(skip.width * 2, skip.height * 2, 1, RenderTextureFormat.ARGBHalf);
-        _repro.Ops.Interp2xPack4(skip, 1, up);
+        await ExecuteGfpganGpuOperationAsync(
+            "rgb-" + styleRow + "-skip-upsample",
+            () => _repro.Ops.Interp2xPack4(skip, 1, up),
+            ct);
         _repro.ReturnTempArray(skip);
 
         var sum = _repro.RentTempArray(up.width, up.height, 1, RenderTextureFormat.ARGBHalf);
-        _repro.Ops.AddPack4(outArr, up, 1f, 1f, 1, sum);
+        await ExecuteGfpganGpuOperationAsync(
+            "rgb-" + styleRow + "-skip-add",
+            () => _repro.Ops.AddPack4(outArr, up, 1f, 1f, 1, sum),
+            ct);
         _repro.ReturnTempArray(outArr);
         _repro.ReturnTempArray(up);
         return sum;
@@ -685,10 +802,19 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
     }
 
 
-    private static Texture2D RenderTextureToTexture2D(RenderTexture rt, int w, int h)
+    private static async UniTask<Texture2D> RenderTextureToTexture2DAsync(
+        RenderTexture rt,
+        int w,
+        int h,
+        CancellationToken ct)
     {
         if (rt == null || w <= 0 || h <= 0)
             return null;
+
+        await UniTask.NextFrame();
+        ct.ThrowIfCancellationRequested();
+        if (UnityEngine.Debug.isDebugBuild)
+            UnityEngine.Debug.Log("[GFPGAN OutputReadback] begin | texture=" + rt.GetInstanceID() + " | size=" + w + "x" + h);
         var prev = RenderTexture.active;
         try
         {
@@ -698,17 +824,15 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
             tex.Apply(false, false);
             tex.wrapMode = TextureWrapMode.Clamp;
             tex.filterMode = FilterMode.Bilinear;
+            if (UnityEngine.Debug.isDebugBuild)
+                UnityEngine.Debug.Log("[GFPGAN OutputReadback] complete | texture=" + rt.GetInstanceID());
             return tex;
-        }
-        catch
-        {
-            return null;
         }
         finally
         {
             RenderTexture.active = prev;
         }
-    }
+    }
 
     private async UniTask EnsureLoaded()
     {
@@ -770,20 +894,17 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
 
     private void EnsureRuntimeObjects()
     {
-        if (_repro != null && _hasAppliedPrecisionMode && _appliedPrecisionMode != precisionMode)
+        var effectivePrecisionMode = AexisModelManifestLoader.ResolveRunnerAppliedPrecision("gfpgan", precisionMode);
+        if (_repro != null && _hasAppliedPrecisionMode && _appliedPrecisionMode != effectivePrecisionMode)
         {
-            UnityEngine.Debug.Log("[NcnnPrecision] GFPGAN recreating session | from=" + _appliedPrecisionMode + " | to=" + precisionMode);
+            UnityEngine.Debug.Log("[NcnnPrecision] GFPGAN recreating session | from=" + _appliedPrecisionMode + " | to=" + effectivePrecisionMode);
             Release();
         }
         _ops ??= new AexisOps();
         if (_repro == null)
         {
-            // Preserve the verified pre-manifest FP32 contract. GFPGAN's FP16 path is
-            // explicitly selected and remains manifest-backed.
-            _repro = precisionMode != AexisPrecisionMode.Auto && precisionMode != AexisPrecisionMode.FP32
-                ? NcnnInferenceSessionFactory.Create(_ops, "gfpgan", precisionMode)
-                : NcnnInferenceSessionFactory.Create(_ops);
-            _appliedPrecisionMode = precisionMode;
+            _repro = NcnnInferenceSessionFactory.Create(_ops, "gfpgan", precisionMode);
+            _appliedPrecisionMode = _repro.AppliedPrecisionMode;
             _hasAppliedPrecisionMode = true;
         }
         // The encoder contains standard 3x3/1x1 convolutions. Enable the existing

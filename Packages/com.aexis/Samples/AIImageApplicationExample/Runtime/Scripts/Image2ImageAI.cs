@@ -951,19 +951,7 @@ public sealed class Image2ImageAI : MonoBehaviour
                 Graphics.Blit(src, rt0);
             }
 
-            var r = await RequestReadback(rt0);
-            if (r.hasError)
-                return null;
-            if (ct.IsCancellationRequested)
-                return null;
-
-            var data = r.GetData<byte>();
-            var tex = new Texture2D(dstW, dstH, TextureFormat.RGBA32, false);
-            tex.LoadRawTextureData(data);
-            tex.Apply(false, false);
-            tex.wrapMode = TextureWrapMode.Clamp;
-            tex.filterMode = FilterMode.Bilinear;
-            return tex;
+            return await ReadbackTextureAsync(rt0, dstW, dstH, ct);
         }
         finally
         {
@@ -1130,19 +1118,7 @@ public sealed class Image2ImageAI : MonoBehaviour
                 finalRt = rt1;
             }
 
-            var r = await RequestReadback(finalRt);
-            if (r.hasError)
-                return null;
-            if (ct.IsCancellationRequested)
-                return null;
-
-            var data = r.GetData<byte>();
-            var tex = new Texture2D(dstW, dstH, TextureFormat.RGBA32, false);
-            tex.LoadRawTextureData(data);
-            tex.Apply(false, false);
-            tex.wrapMode = TextureWrapMode.Clamp;
-            tex.filterMode = FilterMode.Bilinear;
-            return tex;
+            return await ReadbackTextureAsync(finalRt, dstW, dstH, ct);
         }
         finally
         {
@@ -1156,11 +1132,49 @@ public sealed class Image2ImageAI : MonoBehaviour
         }
     }
 
-    private static UniTask<AsyncGPUReadbackRequest> RequestReadback(RenderTexture rt)
+    private static async UniTask<Texture2D> ReadbackTextureAsync(
+        RenderTexture rt,
+        int width,
+        int height,
+        CancellationToken ct)
     {
+        if (rt == null || width <= 0 || height <= 0)
+            return null;
+
+        ct.ThrowIfCancellationRequested();
+        if (Application.isBatchMode || !SystemInfo.supportsAsyncGPUReadback)
+        {
+            var previous = RenderTexture.active;
+            try
+            {
+                RenderTexture.active = rt;
+                var syncTexture = new Texture2D(width, height, TextureFormat.RGBA32, false);
+                syncTexture.ReadPixels(new Rect(0, 0, width, height), 0, 0, false);
+                syncTexture.Apply(false, false);
+                syncTexture.wrapMode = TextureWrapMode.Clamp;
+                syncTexture.filterMode = FilterMode.Bilinear;
+                return syncTexture;
+            }
+            finally
+            {
+                RenderTexture.active = previous;
+            }
+        }
+
         var tcs = new UniTaskCompletionSource<AsyncGPUReadbackRequest>();
         AsyncGPUReadback.Request(rt, 0, TextureFormat.RGBA32, r => tcs.TrySetResult(r));
-        return tcs.Task;
+        var request = await tcs.Task;
+        ct.ThrowIfCancellationRequested();
+        if (request.hasError)
+            return null;
+
+        var data = request.GetData<byte>();
+        var texture = new Texture2D(width, height, TextureFormat.RGBA32, false);
+        texture.LoadRawTextureData(data);
+        texture.Apply(false, false);
+        texture.wrapMode = TextureWrapMode.Clamp;
+        texture.filterMode = FilterMode.Bilinear;
+        return texture;
     }
 
     private ComputeShader GetImageProcessingCompute()

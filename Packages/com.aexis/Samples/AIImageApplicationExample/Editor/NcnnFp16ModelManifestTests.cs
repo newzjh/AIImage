@@ -42,14 +42,14 @@ public sealed class NcnnFp16ModelManifestTests
     }
 
     [Test]
-    public void PrecisionMode_AutoOnlySelectsFp16ForValidatedModels()
+    public void PrecisionMode_AutoSelectsThePortableValidatedModelContract()
     {
         Assert.That(AexisModelManifestLoader.ResolveAutoPrecision("mobileclip_s0_export"), Is.EqualTo(AexisPrecisionMode.FP16));
         Assert.That(AexisModelManifestLoader.ResolveAutoPrecision("realesrgan-x4plus"), Is.EqualTo(AexisPrecisionMode.FP16));
         Assert.That(AexisModelManifestLoader.ResolveAutoPrecision("realesr-animevideov3-x4"), Is.EqualTo(AexisPrecisionMode.FP16));
         var animeVideoManifest = AexisModelManifestLoader.ResolveRunnerManifest("realesr-animevideov3-x4", AexisPrecisionMode.Auto);
         Assert.That(animeVideoManifest.precision.weightDataType, Is.EqualTo(TensorDataType.Float16));
-        Assert.That(AexisModelManifestLoader.ResolveAutoPrecision("matting.ncnn"), Is.EqualTo(AexisPrecisionMode.FP32));
+        Assert.That(AexisModelManifestLoader.ResolveAutoPrecision("matting.ncnn"), Is.EqualTo(AexisPrecisionMode.FP16));
         Assert.That(AexisModelManifestLoader.ResolveAutoPrecision("stable-diffusion"), Is.EqualTo(AexisPrecisionMode.FP32));
     }
 

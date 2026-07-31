@@ -326,9 +326,13 @@ public sealed class FaceMaskGenerator : MonoBehaviour
 
     private static async UniTask<Texture2D> ReadbackTextureAsync(RenderTexture rt, int w, int h, CancellationToken ct)
     {
+        if (ShouldUseSynchronousTextureReadback())
+            return ReadbackTextureSync(rt, w, h, TextureFormat.RGBA32, ct);
+
         var tcs = new UniTaskCompletionSource<AsyncGPUReadbackRequest>();
         AsyncGPUReadback.Request(rt, 0, TextureFormat.RGBA32, req => tcs.TrySetResult(req));
-        var r = await tcs.Task.AttachExternalCancellation(ct);
+        var r = await tcs.Task;
+        ct.ThrowIfCancellationRequested();
         if (r.hasError)
             return null;
         var data = r.GetData<byte>();
@@ -342,6 +346,9 @@ public sealed class FaceMaskGenerator : MonoBehaviour
 
     private static async UniTask<Texture2D> ReadbackScalarTextureAsync(RenderTexture rt, int w, int h, CancellationToken ct)
     {
+        if (ShouldUseSynchronousTextureReadback())
+            return ReadbackTextureSync(rt, w, h, TextureFormat.RHalf, ct);
+
         var tcs = new UniTaskCompletionSource<AsyncGPUReadbackRequest>();
         AsyncGPUReadback.Request(rt, 0, TextureFormat.RHalf, req => tcs.TrySetResult(req));
         var r = await tcs.Task.AttachExternalCancellation(ct);
@@ -353,6 +360,39 @@ public sealed class FaceMaskGenerator : MonoBehaviour
         tex.LoadRawTextureData(data);
         tex.Apply(false, false);
         return tex;
+    }
+
+    private static bool ShouldUseSynchronousTextureReadback()
+    {
+        return Application.isBatchMode || !SystemInfo.supportsAsyncGPUReadback;
+    }
+
+    private static Texture2D ReadbackTextureSync(
+        RenderTexture rt,
+        int w,
+        int h,
+        TextureFormat format,
+        CancellationToken ct)
+    {
+        if (rt == null || w <= 0 || h <= 0)
+            return null;
+
+        ct.ThrowIfCancellationRequested();
+        var previous = RenderTexture.active;
+        try
+        {
+            RenderTexture.active = rt;
+            var tex = new Texture2D(w, h, format, false, true);
+            tex.ReadPixels(new Rect(0, 0, w, h), 0, 0, false);
+            tex.Apply(false, false);
+            tex.wrapMode = TextureWrapMode.Clamp;
+            tex.filterMode = FilterMode.Bilinear;
+            return tex;
+        }
+        finally
+        {
+            RenderTexture.active = previous;
+        }
     }
 
     private static string CreateDumpDir()

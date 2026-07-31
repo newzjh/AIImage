@@ -20,45 +20,47 @@ public static class AIImageAndroidSmokeTest
     private const string SmokeReportFileName = "aiimage_android_smoke.json";
     private const string RunnerReportFileName = "aiimage_android_runner_smoke.json";
     private const string RunnerInputDirectoryName = "aiimage-smoke";
+    private const string AdbRunnerFaceInputPath = "/data/local/tmp/aiimage-smoke-face.png";
+    private const string AdbRunnerSceneInputPath = "/data/local/tmp/aiimage-smoke-scene.jpg";
     private const string SmokeMarker = "[AIIMAGE_ANDROID_SMOKE] ready";
 
     public static void BuildInstallRunAndroidBatch()
     {
-        RunAndroidSmokeBatch(buildApk: true, requireVulkan: true, runDefaultRunners: false);
+        RunAndroidSmokeBatch(buildApk: true, expectedGraphicsApi: GraphicsDeviceType.Vulkan, runDefaultRunners: false);
     }
 
     public static void InstallRunExistingAndroidApkBatch()
     {
-        RunAndroidSmokeBatch(buildApk: false, requireVulkan: false, runDefaultRunners: false);
+        RunAndroidSmokeBatch(buildApk: false, expectedGraphicsApi: null, runDefaultRunners: false);
     }
 
     public static void InstallRunExistingAndroidVulkanApkBatch()
     {
-        RunAndroidSmokeBatch(buildApk: false, requireVulkan: true, runDefaultRunners: false);
+        RunAndroidSmokeBatch(buildApk: false, expectedGraphicsApi: GraphicsDeviceType.Vulkan, runDefaultRunners: false);
     }
 
     public static void BuildInstallRunAndroidDefaultRunnersVulkanBatch()
     {
-        RunAndroidSmokeBatch(buildApk: true, requireVulkan: true, runDefaultRunners: true);
+        RunAndroidSmokeBatch(buildApk: true, expectedGraphicsApi: GraphicsDeviceType.Vulkan, runDefaultRunners: true);
     }
 
     public static void BuildInstallRunAndroidDefaultRunnersVulkanDeviceQualificationBatch()
     {
         RunAndroidSmokeBatch(
             buildApk: true,
-            requireVulkan: true,
+            expectedGraphicsApi: GraphicsDeviceType.Vulkan,
             runDefaultRunners: true,
             runQwenDeviceQualification: true);
     }
 
     public static void InstallRunExistingAndroidDefaultRunnersVulkanBatch()
     {
-        RunAndroidSmokeBatch(buildApk: false, requireVulkan: true, runDefaultRunners: true);
+        RunAndroidSmokeBatch(buildApk: false, expectedGraphicsApi: GraphicsDeviceType.Vulkan, runDefaultRunners: true);
     }
 
     private static void RunAndroidSmokeBatch(
         bool buildApk,
-        bool requireVulkan,
+        GraphicsDeviceType? expectedGraphicsApi,
         bool runDefaultRunners,
         bool runQwenDeviceQualification = false)
     {
@@ -80,7 +82,7 @@ public static class AIImageAndroidSmokeTest
             report["adb_path"] = adbPath;
             report["device_serial"] = serial;
             report["apk_path"] = apkPath;
-            report["require_vulkan"] = requireVulkan;
+            report["expected_graphics_api"] = expectedGraphicsApi?.ToString();
             report["run_default_runners"] = runDefaultRunners;
             report["run_qwen_device_qualification"] = runQwenDeviceQualification;
 
@@ -132,6 +134,7 @@ public static class AIImageAndroidSmokeTest
                 "-s " + Quote(serial) + " shell am start -W -S -n " + Quote(packageInfo.ComponentName)
                 + " --ez aiimage_smoke true"
                 + (runDefaultRunners ? " --ez aiimage_runner_smoke true" : string.Empty)
+                + (runDefaultRunners ? " --ez aiimage_runner_smoke_stage_input true" : string.Empty)
                 + (runQwenDeviceQualification ? " --ez aiimage_runner_qwen_device_qualification true" : string.Empty),
                 TimeSpan.FromSeconds(45));
             report["start"] = start.ToJson();
@@ -160,18 +163,20 @@ public static class AIImageAndroidSmokeTest
                     File.WriteAllText(logcatPath, latestLogcat.StandardOutput + latestLogcat.StandardError);
                     smokeReady = latestLogcat.StandardOutput.Contains(SmokeMarker, StringComparison.Ordinal);
                 }
-                smokeFile = RunAdb(
+                smokeFile = ReadAppPrivateFile(
                     adbPath,
-                    "-s " + Quote(serial) + " shell cat /sdcard/Android/data/" + packageInfo.PackageName + "/files/" + SmokeReportFileName,
-                    TimeSpan.FromSeconds(20));
+                    serial,
+                    packageInfo.PackageName,
+                    SmokeReportFileName);
                 smokeFileReady = smokeFile.ExitCode == 0
                     && smokeFile.StandardOutput.Contains("\"status\": \"ready\"", StringComparison.Ordinal);
                 if (runDefaultRunners)
                 {
-                    runnerReportFile = RunAdb(
+                    runnerReportFile = ReadAppPrivateFile(
                         adbPath,
-                        "-s " + Quote(serial) + " shell cat /sdcard/Android/data/" + packageInfo.PackageName + "/files/" + RunnerReportFileName,
-                        TimeSpan.FromSeconds(20));
+                        serial,
+                        packageInfo.PackageName,
+                        RunnerReportFileName);
                     runnerReportReady = runnerReportFile.ExitCode == 0
                         && IsRunnerReportComplete(runnerReportFile.StandardOutput);
                     if (runnerReportReady)
@@ -204,9 +209,11 @@ public static class AIImageAndroidSmokeTest
             var playerGraphicsApi = (string)playerSmoke["graphicsDeviceType"];
             report["player_graphics_api"] = playerGraphicsApi;
             report["vulkan_detection_log_observed"] = latestLogcat.StandardOutput.Contains("Vulkan detection: 1", StringComparison.Ordinal);
-            if (requireVulkan && !string.Equals(playerGraphicsApi, GraphicsDeviceType.Vulkan.ToString(), StringComparison.Ordinal))
+            if (expectedGraphicsApi.HasValue
+                && !string.Equals(playerGraphicsApi, expectedGraphicsApi.Value.ToString(), StringComparison.Ordinal))
                 throw new InvalidOperationException(
-                    "Android Player did not acquire Vulkan. Runtime graphicsDeviceType=" + playerGraphicsApi
+                    "Android Player did not acquire " + expectedGraphicsApi.Value
+                    + ". Runtime graphicsDeviceType=" + playerGraphicsApi
                     + ". See " + logcatPath);
 
             if (runDefaultRunners)
@@ -309,10 +316,12 @@ public static class AIImageAndroidSmokeTest
         {
             EditorUserBuildSettings.buildAppBundle = false;
 
+            const GraphicsDeviceType graphicsApi = GraphicsDeviceType.Vulkan;
+
             report["test_variant"] = new JObject
             {
-                ["purpose"] = "android-arm64-vulkan-install-startup-smoke",
-                ["graphics_api"] = GraphicsDeviceType.Vulkan.ToString(),
+                ["purpose"] = "android-arm64-" + graphicsApi.ToString().ToLowerInvariant() + "-install-startup-smoke",
+                ["graphics_api"] = graphicsApi.ToString(),
                 ["android_architecture"] = AndroidArchitecture.ARM64.ToString(),
                 ["application_entry"] = "GameActivity"
             };
@@ -348,15 +357,11 @@ public static class AIImageAndroidSmokeTest
         if (!File.Exists(faceInput) || !File.Exists(sceneInput))
             throw new FileNotFoundException("Android default runner smoke input is missing from the ref directory.");
 
-        var deviceDirectory = "/sdcard/Android/data/" + packageInfo.PackageName + "/files/" + RunnerInputDirectoryName;
-        var createDirectory = RunAdb(adbPath, "-s " + Quote(serial) + " shell mkdir -p " + Quote(deviceDirectory), TimeSpan.FromSeconds(20));
-        report["runner_input_directory"] = createDirectory.ToJson();
-        EnsureSuccess(createDirectory, "Could not create the Android runner smoke input directory");
-
-        var pushFace = RunAdb(adbPath, "-s " + Quote(serial) + " push " + Quote(faceInput) + " " + Quote(deviceDirectory + "/face.png"), TimeSpan.FromMinutes(2));
-        var pushScene = RunAdb(adbPath, "-s " + Quote(serial) + " push " + Quote(sceneInput) + " " + Quote(deviceDirectory + "/scene.jpg"), TimeSpan.FromMinutes(2));
+        var pushFace = RunAdb(adbPath, "-s " + Quote(serial) + " push " + Quote(faceInput) + " " + Quote(AdbRunnerFaceInputPath), TimeSpan.FromMinutes(2));
+        var pushScene = RunAdb(adbPath, "-s " + Quote(serial) + " push " + Quote(sceneInput) + " " + Quote(AdbRunnerSceneInputPath), TimeSpan.FromMinutes(2));
         report["runner_input_face"] = pushFace.ToJson();
         report["runner_input_scene"] = pushScene.ToJson();
+        report["runner_input_staging"] = "Android development build copies /data/local/tmp inputs into persistentDataPath at startup.";
         EnsureSuccess(pushFace, "Could not push the CodeFormer/GFPGAN/YOLO/CLIP runner smoke input");
         EnsureSuccess(pushScene, "Could not push the Matting/QWEN runner smoke input");
     }
@@ -404,6 +409,20 @@ public static class AIImageAndroidSmokeTest
     private static CommandResult RunAdb(string adbPath, string arguments, TimeSpan timeout)
     {
         return RunProcess(adbPath, arguments, timeout);
+    }
+
+    private static CommandResult ReadAppPrivateFile(
+        string adbPath,
+        string serial,
+        string packageName,
+        string fileName)
+    {
+        return RunAdb(
+            adbPath,
+            "-s " + Quote(serial)
+            + " shell run-as " + Quote(packageName)
+            + " cat " + Quote("cache/" + fileName),
+            TimeSpan.FromSeconds(20));
     }
 
     private static bool RequiresAdbConnect(string serial)

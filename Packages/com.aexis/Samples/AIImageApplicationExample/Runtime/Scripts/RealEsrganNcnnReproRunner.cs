@@ -586,17 +586,18 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         if (src == null)
             return default;
 
+        EnsureRuntimeObjects();
+        _useCmdThisRun = useCommandBuffer && IsComputeCmdSupported(SystemInfo.graphicsDeviceType);
         try
         {
-            UnityEngine.Debug.Log("[RealESRGAN(repro)] ProcessAsync start | mode=" + (useCommandBuffer ? "command_buffer" : "immediate") + " | input=" + src.width + "x" + src.height);
+            UnityEngine.Debug.Log("[RealESRGAN(repro)] ProcessAsync start | mode=" + (_useCmdThisRun ? "command_buffer" : "immediate")
+                + " | requested_command_buffer=" + useCommandBuffer
+                + " | graphics_api=" + SystemInfo.graphicsDeviceType
+                + " | input=" + src.width + "x" + src.height);
         }
         catch
         {
         }
-
-        EnsureRuntimeObjects();
-        var isVulkan = SystemInfo.graphicsDeviceType == GraphicsDeviceType.Vulkan;
-        _useCmdThisRun = useCommandBuffer && IsComputeCmdSupported(SystemInfo.graphicsDeviceType);
         _repro.LayerRuntimeProfileEnabled = enableLayerRuntimeProfile;
         _repro.LayerRuntimeProfileSyncGpu = syncLayerRuntimeProfile;
         _repro.LayerRuntimeProfilePathKindOverride = _useCmdThisRun ? "cmd" : "pack4_rt";
@@ -1306,6 +1307,11 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         _hasAppliedPrecisionMode = false;
     }
 
+    public void ReleaseRuntimeResources()
+    {
+        ReleaseRuntime();
+    }
+
     private static int InferModelFactor(string model)
     {
         if (string.IsNullOrWhiteSpace(model))
@@ -1341,7 +1347,9 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
     
     private async UniTask<Texture2D> ReadbackTextureAsync(RenderTexture rt, int w, int h, CancellationToken ct)
     {
-        if (Application.isBatchMode)
+        if (Application.isBatchMode
+            || (Application.platform == RuntimePlatform.Android
+                && SystemInfo.graphicsDeviceType == GraphicsDeviceType.Vulkan))
         {
             ct.ThrowIfCancellationRequested();
             var prev = RenderTexture.active;
