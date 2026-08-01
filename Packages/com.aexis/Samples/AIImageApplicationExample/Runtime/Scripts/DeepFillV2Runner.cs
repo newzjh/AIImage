@@ -149,10 +149,12 @@ public sealed class DeepFillV2Runner : MonoBehaviour
             var inputFormat = useArgbFloatTensor ? RenderTextureFormat.ARGBFloat : RenderTextureFormat.ARGBHalf;
             if (!useLongCommandBufferExecution)
             {
-                // One texture-only layer per frame is deliberately conservative.
-                // It is the shared execution policy for desktop and mobile; no
-                // Android/iOS branch or buffer materialization is involved.
-                UnityEngine.Debug.Log("[DeepFillV2] execution=paced-immediate | layers-per-frame=1");
+                // Keep the texture-only path responsive without turning every
+                // lightweight graph step into a full display frame. Incremental
+                // layers that need GPU retirement still yield until their fence
+                // passes, so this does not weaken the TBDR dependency guard.
+                const int layersPerFrame = 12;
+                UnityEngine.Debug.Log("[DeepFillV2] execution=paced-immediate | layers-per-frame=" + layersPerFrame);
                 ReportProgress(0.38f, "Pack source");
                 sourcePack4 = _repro.RentTempArray(InputWidth, InputHeight, 1, inputFormat);
                 _ops.PackRgbToPack4(source512, 0, 0, 1f, 1f, sourcePack4, flipYInput, 1f);
@@ -173,7 +175,7 @@ public sealed class DeepFillV2Runner : MonoBehaviour
                            pinned,
                            textureShapes,
                            cancellationToken: ct,
-                           yieldEveryLayers: 1,
+                           yieldEveryLayers: layersPerFrame,
                            progress: inferenceProgress => ReportProgress(
                                0.52f + 0.32f * inferenceProgress.progress01,
                                inferenceProgress.layerType == "DeepFillV2ContextualAttention"

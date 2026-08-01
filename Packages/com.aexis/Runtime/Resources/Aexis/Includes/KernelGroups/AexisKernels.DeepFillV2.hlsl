@@ -212,11 +212,20 @@ void AexisDeepFillV2Reconstruct_Impl(uint3 id)
 {
     int outputX = (int)id.x;
     int outputY = (int)id.y;
-    int outputPack = (int)id.z;
-    if (outputX >= _DeepFillFeatureW || outputY >= _DeepFillFeatureH || outputPack >= _DeepFillFeaturePacks)
+    // Four Pack4 output slices share every weight and source coordinate. Keep
+    // their reductions independent, but evaluate them together to avoid
+    // reloading those common values once per slice.
+    int outputPackBase = (int)id.z * 4;
+    if (outputX >= _DeepFillFeatureW || outputY >= _DeepFillFeatureH || outputPackBase >= _DeepFillFeaturePacks)
         return;
 
-    float4 sum = 0.0;
+    float4 sum0 = 0.0;
+    float4 sum1 = 0.0;
+    float4 sum2 = 0.0;
+    float4 sum3 = 0.0;
+    int sourcePackEnd = min(
+        _DeepFillSourcePacks,
+        _DeepFillSourcePackOffset + _DeepFillSourcePackCount);
     [unroll]
     for (int ky = 0; ky < 4; ky++)
     {
@@ -237,35 +246,62 @@ void AexisDeepFillV2Reconstruct_Impl(uint3 id)
             if (targetX < 0 || targetX >= _DeepFillMatchW)
                 continue;
 
-            int sourcePackEnd = min(
-                _DeepFillSourcePacks,
-                _DeepFillSourcePackOffset + _DeepFillSourcePackCount);
             for (int sourcePack = _DeepFillSourcePackOffset; sourcePack < sourcePackEnd; sourcePack++)
             {
                 float4 weights = _DeepFillWeightsArr[int3(targetX, targetY, sourcePack)];
                 int sourceBase = sourcePack * 4;
+                int sourceY = sourceBase / _DeepFillMatchW;
+                int sourceX = sourceBase - sourceY * _DeepFillMatchW;
                 [unroll]
                 for (int lane = 0; lane < 4; lane++)
                 {
                     int sourceIndex = sourceBase + lane;
                     if (sourceIndex >= _DeepFillSourceCount)
                         continue;
-                    int sourceX = sourceIndex % _DeepFillMatchW;
-                    int sourceY = sourceIndex / _DeepFillMatchW;
-                    int featureX = sourceX * 2 + kx - 1;
-                    int featureY = sourceY * 2 + ky - 1;
-                    sum += AexisReadLane(weights, lane) * AexisDeepFillReadFeature(featureX, featureY, outputPack);
+                    int laneSourceX = sourceX + lane;
+                    int laneSourceY = sourceY;
+                    if (laneSourceX >= _DeepFillMatchW)
+                    {
+                        laneSourceX -= _DeepFillMatchW;
+                        laneSourceY++;
+                    }
+                    int featureX = laneSourceX * 2 + kx - 1;
+                    int featureY = laneSourceY * 2 + ky - 1;
+                    float weight = AexisReadLane(weights, lane);
+                    sum0 += weight * AexisDeepFillReadFeature(featureX, featureY, outputPackBase);
+                    if (outputPackBase + 1 < _DeepFillFeaturePacks)
+                        sum1 += weight * AexisDeepFillReadFeature(featureX, featureY, outputPackBase + 1);
+                    if (outputPackBase + 2 < _DeepFillFeaturePacks)
+                        sum2 += weight * AexisDeepFillReadFeature(featureX, featureY, outputPackBase + 2);
+                    if (outputPackBase + 3 < _DeepFillFeaturePacks)
+                        sum3 += weight * AexisDeepFillReadFeature(featureX, featureY, outputPackBase + 3);
                 }
             }
         }
     }
-    int3 outputIndex = int3(outputX, outputY, outputPack);
     // Each invocation owns one output texel, so one UAV can safely carry the
     // previous chunk's value and receive this chunk's contribution. Binding a
     // separate SRV plus UAV here causes a resource-cycle deadlock on some TBDR
     // Vulkan drivers even when the textures are distinct.
-    float4 accumulated = _DeepFillUseAccumulator != 0
-        ? _DeepFillOutputArr[outputIndex]
-        : 0.0;
-    _DeepFillOutputArr[outputIndex] = accumulated + sum * 0.25;
+    int3 outputIndex = int3(outputX, outputY, outputPackBase);
+    float4 accumulated = _DeepFillUseAccumulator != 0 ? _DeepFillOutputArr[outputIndex] : 0.0;
+    _DeepFillOutputArr[outputIndex] = accumulated + sum0 * 0.25;
+    if (outputPackBase + 1 < _DeepFillFeaturePacks)
+    {
+        outputIndex.z++;
+        accumulated = _DeepFillUseAccumulator != 0 ? _DeepFillOutputArr[outputIndex] : 0.0;
+        _DeepFillOutputArr[outputIndex] = accumulated + sum1 * 0.25;
+    }
+    if (outputPackBase + 2 < _DeepFillFeaturePacks)
+    {
+        outputIndex.z++;
+        accumulated = _DeepFillUseAccumulator != 0 ? _DeepFillOutputArr[outputIndex] : 0.0;
+        _DeepFillOutputArr[outputIndex] = accumulated + sum2 * 0.25;
+    }
+    if (outputPackBase + 3 < _DeepFillFeaturePacks)
+    {
+        outputIndex.z++;
+        accumulated = _DeepFillUseAccumulator != 0 ? _DeepFillOutputArr[outputIndex] : 0.0;
+        _DeepFillOutputArr[outputIndex] = accumulated + sum3 * 0.25;
+    }
 }

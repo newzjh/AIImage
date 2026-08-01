@@ -7,7 +7,7 @@ namespace Aexis.Execution
 {
     public sealed class AexisDeepFillV2ContextualAttentionLayer : AexisBaseLayer
     {
-        private const int SourcePacksPerDispatch = 8;
+        private const int SourcePacksPerDispatch = 16;
         private const int ProfileSourcePacks = 800;
 
         public AexisDeepFillV2ContextualAttentionLayer()

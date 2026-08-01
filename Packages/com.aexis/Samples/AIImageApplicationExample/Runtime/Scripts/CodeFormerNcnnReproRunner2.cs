@@ -420,7 +420,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
                 null,
                 pinned,
                 cancellationToken: ct,
-                yieldEveryLayers: 1,
+                yieldEveryLayers: 12,
                 progress: inferenceProgress => ReportProgress(
                     0.18f + 0.20f * inferenceProgress.progress01,
                     "Run encoder")))
@@ -627,7 +627,7 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
                     generatorPinned,
                     textureInputShapes,
                     cancellationToken: ct,
-                    yieldEveryLayers: 1,
+                    yieldEveryLayers: 12,
                     progress: inferenceProgress => ReportProgress(
                         0.40f + 0.48f * inferenceProgress.progress01,
                         "Run generator")))

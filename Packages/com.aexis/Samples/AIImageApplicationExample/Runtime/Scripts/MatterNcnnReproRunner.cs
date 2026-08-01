@@ -205,7 +205,7 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
                            null,
                            pinned,
                            cancellationToken: ct,
-                           yieldEveryLayers: 1))
+                           yieldEveryLayers: 12))
                 {
                     if (enableDebugDump && pinned != null && pinned.Count > 0)
                         DumpPinnedBlobStats(infer, _lastDumpDir, pinned);

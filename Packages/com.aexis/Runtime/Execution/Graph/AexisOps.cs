@@ -9253,7 +9253,9 @@ namespace Aexis.Execution
             // drivers can deadlock when reconstruction has both SRV and UAV
             // texture dependencies.
             _cs.SetTexture(_kDeepFillV2Reconstruct, "_DeepFillOutputArr", output);
-            Dispatch3D(_kDeepFillV2Reconstruct, featureW, featureH, featurePacks, 4, 4);
+            // Reconstruct evaluates four independent Pack4 slices per thread;
+            // see AexisDeepFillV2Reconstruct_Impl for the matching packing.
+            Dispatch3D(_kDeepFillV2Reconstruct, featureW, featureH, Mathf.CeilToInt(featurePacks / 4f), 4, 4);
         }
 
         public void DeepFillV2Reconstruct(
@@ -9312,7 +9314,8 @@ namespace Aexis.Execution
             cmd.SetComputeTextureParam(_cs, _kDeepFillV2Reconstruct, "_DeepFillFeatureArr", feature.nameID);
             cmd.SetComputeTextureParam(_cs, _kDeepFillV2Reconstruct, "_DeepFillWeightsArr", weights.nameID);
             cmd.SetComputeTextureParam(_cs, _kDeepFillV2Reconstruct, "_DeepFillOutputArr", output.nameID);
-            Dispatch3D(cmd, _kDeepFillV2Reconstruct, featureW, featureH, featurePacks, 4, 4);
+            // Keep command-buffer execution identical to immediate execution.
+            Dispatch3D(cmd, _kDeepFillV2Reconstruct, featureW, featureH, Mathf.CeilToInt(featurePacks / 4f), 4, 4);
         }
 
         public void ExtractPatchesPack4(

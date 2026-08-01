@@ -434,7 +434,7 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
                     pinned,
                     inputShapes,
                     cancellationToken: ct,
-                    yieldEveryLayers: 1,
+                    yieldEveryLayers: 12,
                     progress: inferenceProgress =>
                     {
                         try { progress?.Invoke(inferenceProgress.progress01, "Detect face"); } catch { }

@@ -441,7 +441,7 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
                        null,
                        pinned,
                        cancellationToken: ct,
-                       yieldEveryLayers: 1,
+                       yieldEveryLayers: 12,
                        progress: inferenceProgress => ReportProgress(
                            0.16f + 0.24f * inferenceProgress.progress01,
                            "Encode face")))
