@@ -206,7 +206,11 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
         _hasAppliedPrecisionMode = false;
     }
 
-    public async UniTask<FaceRegionResult> GenerateAsync(Texture2D src, bool dumpDebug, CancellationToken ct)
+    public async UniTask<FaceRegionResult> GenerateAsync(
+        Texture2D src,
+        bool dumpDebug,
+        CancellationToken ct,
+        Action<float, string> progress = null)
     {
         if (!enableNcnnFaceRegion)
             return new FaceRegionResult { error = "NcnnFaceRegion disabled" };
@@ -269,10 +273,6 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
                 + " | padTop=" + prep.padTop);
             if (letterbox == null)
                 return new FaceRegionResult { error = "Face detector letterbox build failed" };
-            await UniTask.NextFrame();
-            ct.ThrowIfCancellationRequested();
-            LogPhase("letterbox-frame-retired");
-
             // Layer-by-layer comparison reads activation data back to the CPU. Keep
             // that diagnostic solely in the explicit DebugOracle mode; a production
             // Pack4 session may still collect non-invasive phase logs and resource
@@ -378,9 +378,6 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
                 // _ScaleX/_ScaleY here are spatial sampling scale, not color normalization.
                 _ops.PackRgbToPack4(letterbox, 0, 0, 1f, 1f, inputPack4);
                 LogPhase("pack4-input-fill-done");
-                await UniTask.NextFrame();
-                ct.ThrowIfCancellationRequested();
-                LogPhase("pack4-input-frame-retired");
             }
 
             var pinned = new HashSet<string>(StringComparer.Ordinal)
@@ -403,9 +400,6 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
 
             var proposals = new List<FaceProposal>();
             LogPhase("infer-start | pinned=" + pinned.Count);
-            await UniTask.NextFrame();
-            ct.ThrowIfCancellationRequested();
-            LogPhase("infer-frame-ready");
             if (useCommandBuffer)
             {
                 proposals.AddRange(await InferCommandBufferAsync(
@@ -440,12 +434,13 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
                     pinned,
                     inputShapes,
                     cancellationToken: ct,
-                    yieldEveryLayers: 1))
+                    yieldEveryLayers: 1,
+                    progress: inferenceProgress =>
+                    {
+                        try { progress?.Invoke(inferenceProgress.progress01, "Detect face"); } catch { }
+                    }))
                 {
                 LogPhase("infer-returned");
-                await UniTask.NextFrame();
-                ct.ThrowIfCancellationRequested();
-                LogPhase("infer-output-frame-retired");
                 for (var i = 0; i < YoloV7StrideValues.Length; i++)
                 {
                     var blobName = "stride_" + YoloV7StrideValues[i].ToString(CultureInfo.InvariantCulture);
@@ -1307,16 +1302,12 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
             throw new InvalidOperationException("pack4 output unavailable | blob=" + blobName);
         }
 
-        // The completed graph and each texture slice receive a frame boundary before
-        // synchronous output materialization. This keeps a tiled renderer from having
-        // to submit a completed Pack4 graph and a readback in the same frame.
-        await UniTask.NextFrame();
         ct.ThrowIfCancellationRequested();
         var values = await ReadPack4TextureDataPacedAsync(texture, logicalShape, storageShape, ct, blobName);
         return new BlobReadback(values, "texture-sync-paced");
     }
 
-    private static async UniTask<float[]> ReadPack4TextureDataPacedAsync(
+    private static UniTask<float[]> ReadPack4TextureDataPacedAsync(
         RenderTexture texture,
         AexisGraphSession.BufferShape logicalShape,
         AexisGraphSession.BufferShape storageShape,
@@ -1324,7 +1315,7 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
         string blobName)
     {
         if (texture == null)
-            return Array.Empty<float>();
+            return UniTask.FromResult(Array.Empty<float>());
         if (logicalShape.dims != 3)
             throw new InvalidOperationException("expected 3D Pack4 output | dims=" + logicalShape.dims);
 
@@ -1355,7 +1346,6 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
             readback = new Texture2D(physicalW, physicalH, TextureFormat.RGBAFloat, false, true);
             for (var pack = 0; pack < packCount; pack++)
             {
-                await UniTask.NextFrame();
                 ct.ThrowIfCancellationRequested();
                 if (logReadback)
                 {
@@ -1385,7 +1375,6 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
                 }
                 if (logReadback)
                     Debug.Log("[NcnnFaceRegion] [OutputReadback] complete | blob=" + blobName + " | slice=" + pack);
-                await UniTask.NextFrame();
             }
         }
         finally
@@ -1395,7 +1384,7 @@ public sealed class NcnnFaceRegionGenerator : MonoBehaviour
                 UnityEngine.Object.Destroy(readback);
         }
 
-        return values;
+        return UniTask.FromResult(values);
     }
 
     private float[] ReadInferBlobData(AexisGraphSession.InferResult infer, string blobName, out string sourceKind)

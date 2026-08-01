@@ -9451,7 +9451,8 @@ namespace Aexis.Execution
             string stopAfterTopName = null,
             string startAtTopName = null,
             CancellationToken cancellationToken = default,
-            int yieldEveryLayers = 12)
+            int yieldEveryLayers = 12,
+            Action<InferenceProgress> progress = null)
         {
             if (Model == null || _blobUseCount == null)
                 throw new InvalidOperationException("model not loaded");
@@ -9468,7 +9469,8 @@ namespace Aexis.Execution
                     stopAfterTopName,
                     startAtTopName,
                     cancellationToken,
-                    yieldEveryLayers);
+                    yieldEveryLayers,
+                    progress);
             }
 
             return Task.FromResult<InferResult>(null);
@@ -12361,6 +12363,32 @@ namespace Aexis.Execution
                 this.layerCount = layerCount;
                 this.layerName = layerName;
                 this.layerType = layerType;
+                this.progress01 = progress01;
+            }
+        }
+
+        public readonly struct InferenceProgress
+        {
+            public readonly int layerIndex;
+            public readonly int layerCount;
+            public readonly string layerName;
+            public readonly string layerType;
+            public readonly float layerProgress01;
+            public readonly float progress01;
+
+            public InferenceProgress(
+                int layerIndex,
+                int layerCount,
+                string layerName,
+                string layerType,
+                float layerProgress01,
+                float progress01)
+            {
+                this.layerIndex = layerIndex;
+                this.layerCount = layerCount;
+                this.layerName = layerName;
+                this.layerType = layerType;
+                this.layerProgress01 = layerProgress01;
                 this.progress01 = progress01;
             }
         }

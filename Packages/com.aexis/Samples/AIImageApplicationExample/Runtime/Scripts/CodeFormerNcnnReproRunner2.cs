@@ -344,9 +344,6 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
 
             stage = "prepare encoder input";
             ReportProgress(0.18f, "Run encoder");
-            await UniTask.NextFrame();
-            ct.ThrowIfCancellationRequested();
-
             encoderInput = _encoderRepro.RentTempArray(512, 512, 1, RenderTextureFormat.ARGBHalf);
             AexisGpuResourceTracker.UpdateTextureLabel(encoderInput, "CodeFormer.encoderInput");
             await ExecuteCodeFormerGpuOperationAsync(
@@ -414,7 +411,6 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
             }
 
             stage = "encoder inference";
-            await WaitForCodeFormerGpuStageAsync("encoder-before-infer", ct);
             var encoderInputs = new Dictionary<string, RenderTexture>(StringComparer.Ordinal)
             {
                 { "input", encoderInput }
@@ -424,9 +420,11 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
                 null,
                 pinned,
                 cancellationToken: ct,
-                yieldEveryLayers: 1))
+                yieldEveryLayers: 1,
+                progress: inferenceProgress => ReportProgress(
+                    0.18f + 0.20f * inferenceProgress.progress01,
+                    "Run encoder")))
             {
-                await WaitForCodeFormerGpuStageAsync("encoder-after-infer", ct);
                 stage = "extract encoder blob enc_feat_32";
                 encFeat32 = encoderResult.ExtractTexture("enc_feat_32");
                 stage = "extract encoder blob enc_feat_64";
@@ -623,16 +621,17 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
             }
             else
             {
-                await WaitForCodeFormerGpuStageAsync("generator-before-infer", ct);
                 using (var generatorResult = await _generatorRepro.InferWithMultiInputsAsync(
                     textureInputs,
                     null,
                     generatorPinned,
                     textureInputShapes,
                     cancellationToken: ct,
-                    yieldEveryLayers: 1))
+                    yieldEveryLayers: 1,
+                    progress: inferenceProgress => ReportProgress(
+                        0.40f + 0.48f * inferenceProgress.progress01,
+                        "Run generator")))
                 {
-                    await WaitForCodeFormerGpuStageAsync("generator-after-infer", ct);
                     RenderTexture outputTex = null;
                     RenderTexture clipTex = null;
                     if (enableDebugDump)
@@ -784,7 +783,6 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
                 "output-pack-rgb",
                 () => _ops.Pack4ToRgb01(clipTex, rgbRt, true),
                 ct);
-            await WaitForCodeFormerGpuStageAsync("output-before-readpixels", ct);
             Texture2D result = null;
             var prev = RenderTexture.active;
             try
@@ -801,7 +799,6 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
             {
                 RenderTexture.active = prev;
             }
-            await WaitForCodeFormerGpuStageAsync("output-after-readpixels", ct);
             return result;
         }
         finally
@@ -810,23 +807,12 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
         }
     }
 
-    private static async UniTask ExecuteCodeFormerGpuOperationAsync(string stage, Action execute, CancellationToken ct)
+    private static UniTask ExecuteCodeFormerGpuOperationAsync(string stage, Action execute, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         UnityEngine.Debug.Log("[CodeFormer] gpu-begin | stage=" + stage);
         execute();
-        await UniTask.NextFrame();
-        ct.ThrowIfCancellationRequested();
-        UnityEngine.Debug.Log("[CodeFormer] gpu-frame-complete | stage=" + stage);
-    }
-
-    private static async UniTask WaitForCodeFormerGpuStageAsync(string stage, CancellationToken ct)
-    {
-        ct.ThrowIfCancellationRequested();
-        UnityEngine.Debug.Log("[CodeFormer] gpu-wait | stage=" + stage);
-        await UniTask.NextFrame();
-        ct.ThrowIfCancellationRequested();
-        UnityEngine.Debug.Log("[CodeFormer] gpu-frame-complete | stage=" + stage);
+        return UniTask.CompletedTask;
     }
 
     private float[] ReadSingleChannelPack4TextureData(RenderTexture pack4Tex, int width, int height)

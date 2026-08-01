@@ -197,7 +197,11 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
             RectInt rect = default;
             if (faceRegion != null && faceRegion.enabled)
             {
-                var rr = await faceRegion.GenerateAsync(inputTex, enableFaceRegionDebugDump, ct);
+                var rr = await faceRegion.GenerateAsync(
+                    inputTex,
+                    enableFaceRegionDebugDump,
+                    ct,
+                    (progress, _) => ReportProgress(0.06f + 0.04f * progress, "Detect face"));
                 if (string.IsNullOrWhiteSpace(rr.error) && rr.faceRect.width > 0 && rr.faceRect.height > 0)
                 {
                     faceMask = rr.mask;
@@ -304,13 +308,12 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
 
         try
         {
-            await UniTask.NextFrame();
-            ct.ThrowIfCancellationRequested();
             inArr = _repro.RentTempArray(512, 512, 1, RenderTextureFormat.ARGBHalf);
             await ExecuteGfpganGpuOperationAsync(
                 "input-pack-rgb",
                 () => _repro.Ops.PackRgbToPack4Gfpgan(face512, 0, 0, 1, 1, inArr),
                 ct);
+            ReportProgress(0.16f, "Encode face");
             var encoderOutputs = await RunEncoderForGfpganAsync(inArr, ct);
             styles = encoderOutputs?.styles;
             cond = encoderOutputs?.conditions;
@@ -318,6 +321,8 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
                 return null;
             if (cond == null || cond.Length != 14)
                 return null;
+
+            ReportProgress(0.42f, "Restore face");
 
             constIn = _repro.RentTempArray(4, 4, 128, RenderTextureFormat.ARGBHalf);
             await ExecuteGfpganGpuOperationAsync(
@@ -349,11 +354,12 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
                 skip = await RunToRgbAsync(outFeat, styles, i + 2, _toRgb[j], skip, ct);
                 j++;
 
-                ReportProgress(0.15f + (float)i / 14.0f * 0.8f, "推理分块 " + i + "/" + 14);
+                ReportProgress(0.42f + (float)i / 14.0f * 0.40f, "Restore face " + i + "/14");
                 await UniTask.Yield();
             }
 
             skipClip = _repro.RentTempArray(512, 512, 1, RenderTextureFormat.ARGBHalf);
+            ReportProgress(0.83f, "Finalize face");
             await ExecuteGfpganGpuOperationAsync(
                 "final-clip",
                 () => _repro.Ops.ClipPack4(skip, -1f, 1f, 1, skipClip),
@@ -435,7 +441,10 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
                        null,
                        pinned,
                        cancellationToken: ct,
-                       yieldEveryLayers: 1))
+                       yieldEveryLayers: 1,
+                       progress: inferenceProgress => ReportProgress(
+                           0.16f + 0.24f * inferenceProgress.progress01,
+                           "Encode face")))
             {
                 outputs.styles = ExtractExistingGpuTexture(result, "420");
 
@@ -477,16 +486,13 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         return result.ExtractTexture(blobName);
     }
 
-    private static async UniTask ExecuteGfpganGpuOperationAsync(string stage, Action execute, CancellationToken ct)
+    private static UniTask ExecuteGfpganGpuOperationAsync(string stage, Action execute, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         if (UnityEngine.Debug.isDebugBuild)
             UnityEngine.Debug.Log("[GFPGAN Generator] gpu-begin | stage=" + stage);
         execute();
-        await UniTask.NextFrame();
-        ct.ThrowIfCancellationRequested();
-        if (UnityEngine.Debug.isDebugBuild)
-            UnityEngine.Debug.Log("[GFPGAN Generator] gpu-frame-complete | stage=" + stage);
+        return UniTask.CompletedTask;
     }
 
     private async UniTask<RenderTexture> RunStyleConvAsync(
@@ -802,16 +808,15 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
     }
 
 
-    private static async UniTask<Texture2D> RenderTextureToTexture2DAsync(
+    private static UniTask<Texture2D> RenderTextureToTexture2DAsync(
         RenderTexture rt,
         int w,
         int h,
         CancellationToken ct)
     {
         if (rt == null || w <= 0 || h <= 0)
-            return null;
+            return UniTask.FromResult<Texture2D>(null);
 
-        await UniTask.NextFrame();
         ct.ThrowIfCancellationRequested();
         if (UnityEngine.Debug.isDebugBuild)
             UnityEngine.Debug.Log("[GFPGAN OutputReadback] begin | texture=" + rt.GetInstanceID() + " | size=" + w + "x" + h);
@@ -826,7 +831,7 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
             tex.filterMode = FilterMode.Bilinear;
             if (UnityEngine.Debug.isDebugBuild)
                 UnityEngine.Debug.Log("[GFPGAN OutputReadback] complete | texture=" + rt.GetInstanceID());
-            return tex;
+            return UniTask.FromResult(tex);
         }
         finally
         {

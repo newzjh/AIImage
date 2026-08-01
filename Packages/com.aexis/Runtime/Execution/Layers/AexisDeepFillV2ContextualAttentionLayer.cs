@@ -7,11 +7,17 @@ namespace Aexis.Execution
 {
     public sealed class AexisDeepFillV2ContextualAttentionLayer : AexisBaseLayer
     {
-        private const int SourcePacksPerDispatch = 1;
+        private const int SourcePacksPerDispatch = 8;
+        private const int ProfileSourcePacks = 800;
 
         public AexisDeepFillV2ContextualAttentionLayer()
             : base(AexisLayerTypes.DeepFillV2ContextualAttention, supportsBufferPath: false, supportsCommandBufferPath: true)
         {
+        }
+
+        internal override int GetIncrementalWorkEstimate(AexisGraphSession owner, AexisGraphModel.Layer layer)
+        {
+            return 3 + 2 * Mathf.CeilToInt(ProfileSourcePacks / (float)SourcePacksPerDispatch);
         }
 
         public override void ExecuteBuffer(AexisGraphSession owner, AexisGraphModel.Layer layer, AexisLayerBufferContext context)
@@ -88,6 +94,7 @@ namespace Aexis.Execution
                 foreach (var _ in WaitForGpuRetirement())
                     yield return true;
                 LogStage(owner, layer, "patch-stats-resumed");
+                context.ReportInferenceProgress(0.02f);
                 yield return true;
                 for (var sourcePackOffset = 0; sourcePackOffset < sourcePacks; sourcePackOffset += SourcePacksPerDispatch)
                 {
@@ -107,6 +114,7 @@ namespace Aexis.Execution
                         yield return true;
                     if (logScoreChunk)
                         LogStage(owner, layer, "scores-resumed | packs=" + sourcePackOffset + "+" + sourcePackCount + "/" + sourcePacks);
+                    context.ReportInferenceProgress(0.02f + 0.48f * (sourcePackOffset + sourcePackCount) / sourcePacks);
                     yield return true;
                 }
                 LogStage(owner, layer, "softmax-submit-begin");
@@ -119,11 +127,12 @@ namespace Aexis.Execution
                 foreach (var _ in WaitForGpuRetirement())
                     yield return true;
                 LogStage(owner, layer, "softmax-resumed");
+                context.ReportInferenceProgress(0.52f);
                 yield return true;
 
-                // RentTempArray clears this output. Reconstruction then keeps
-                // each source-pack contribution in one UAV; it never creates an
-                // SRV/UAV texture dependency in a single dispatch.
+                // The first chunk starts from the cleared temp output. Subsequent
+                // chunks accumulate through the same UAV after their fence has
+                // retired, avoiding an SRV/UAV dependency on tile-based GPUs.
                 output = owner.RentTempArray(featureShape.w, featureShape.h, featurePacks, format);
                 for (var sourcePackOffset = 0; sourcePackOffset < sourcePacks; sourcePackOffset += SourcePacksPerDispatch)
                 {
@@ -144,6 +153,7 @@ namespace Aexis.Execution
                         yield return true;
                     if (logReconstructChunk)
                         LogStage(owner, layer, "reconstruct-resumed | packs=" + sourcePackOffset + "+" + sourcePackCount + "/" + sourcePacks);
+                    context.ReportInferenceProgress(0.52f + 0.47f * (sourcePackOffset + sourcePackCount) / sourcePacks);
                     yield return true;
                 }
 

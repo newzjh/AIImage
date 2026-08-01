@@ -124,10 +124,8 @@ public sealed class DeepFillV2Runner : MonoBehaviour
 
             ReportProgress(0.22f, "Resize source");
             source512 = PrepareModelInput(readableSource);
-            await NextGpuFrameAsync(ct, "resize-source");
             ReportProgress(0.30f, "Resize mask");
             mask512 = PrepareModelInput(readableMask);
-            await NextGpuFrameAsync(ct, "resize-mask");
             if (source512 == null || mask512 == null)
                 return Finish(new DeepFillV2Result { error = "DeepFillV2 failed to prepare the 400x512 source or mask." });
 
@@ -148,7 +146,6 @@ public sealed class DeepFillV2Runner : MonoBehaviour
 
             var inferSw = Stopwatch.StartNew();
             ReportProgress(0.34f, "Prepare DeepFillV2");
-            await NextGpuFrameAsync(ct, "before-infer");
             var inputFormat = useArgbFloatTensor ? RenderTextureFormat.ARGBFloat : RenderTextureFormat.ARGBHalf;
             if (!useLongCommandBufferExecution)
             {
@@ -159,12 +156,10 @@ public sealed class DeepFillV2Runner : MonoBehaviour
                 ReportProgress(0.38f, "Pack source");
                 sourcePack4 = _repro.RentTempArray(InputWidth, InputHeight, 1, inputFormat);
                 _ops.PackRgbToPack4(source512, 0, 0, 1f, 1f, sourcePack4, flipYInput, 1f);
-                await NextGpuFrameAsync(ct, "pack-source");
 
                 ReportProgress(0.46f, "Pack mask");
                 maskPack4 = _repro.RentTempArray(InputWidth, InputHeight, 1, inputFormat);
                 _ops.PackRgbToPack4(mask512, 0, 0, 1f, 1f, maskPack4, flipYInput, 1f);
-                await NextGpuFrameAsync(ct, "pack-mask");
                 ReportProgress(0.52f, "Run DeepFillV2");
 
                 var textureInputs = new Dictionary<string, RenderTexture>(StringComparer.Ordinal)
@@ -178,7 +173,12 @@ public sealed class DeepFillV2Runner : MonoBehaviour
                            pinned,
                            textureShapes,
                            cancellationToken: ct,
-                           yieldEveryLayers: 1))
+                           yieldEveryLayers: 1,
+                           progress: inferenceProgress => ReportProgress(
+                               0.52f + 0.32f * inferenceProgress.progress01,
+                               inferenceProgress.layerType == "DeepFillV2ContextualAttention"
+                                   ? "DeepFillV2 context"
+                                   : "Run DeepFillV2")))
                 {
                     if (debugTensorBlobs.Count > 0 && enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir))
                     {
@@ -190,7 +190,6 @@ public sealed class DeepFillV2Runner : MonoBehaviour
                     rgb512 = NewRenderTexture(InputWidth, InputHeight, RenderTextureFormat.ARGB32, true, "DeepFillV2.Rgb400x512");
                     ReportProgress(0.86f, "Unpack output");
                     _ops.Pack4ToRgbScaled(outPack4, rgb512, 0.5f, 0.5f, flipYOutput);
-                    await NextGpuFrameAsync(ct, "unpack-output");
                     ReportProgress(0.92f, "Read output");
                     generated512 = await ReadRenderTexturePacedAsync(rgb512, TextureFormat.RGBA32, false, ct);
                 }
@@ -250,12 +249,10 @@ public sealed class DeepFillV2Runner : MonoBehaviour
                             Graphics.ExecuteCommandBuffer(commandBuffer);
                         }
 
-                        await NextGpuFrameAsync(ct, "command-buffer-submitted");
                         var outPack4 = commandOutputPack4;
                         rgb512 = NewRenderTexture(InputWidth, InputHeight, RenderTextureFormat.ARGB32, true, "DeepFillV2.Rgb400x512");
                         ReportProgress(0.86f, "Unpack output");
                         _ops.Pack4ToRgbScaled(outPack4, rgb512, 0.5f, 0.5f, flipYOutput);
-                        await NextGpuFrameAsync(ct, "unpack-output");
                         ReportProgress(0.92f, "Read output");
                         generated512 = await ReadRenderTexturePacedAsync(rgb512, TextureFormat.RGBA32, false, ct);
                     }
@@ -546,13 +543,6 @@ public sealed class DeepFillV2Runner : MonoBehaviour
             commandBuffer.CopyTexture(source.nameID, slice, 0, target, slice, 0);
     }
 
-    private static async UniTask NextGpuFrameAsync(CancellationToken ct, string stage)
-    {
-        await UniTask.NextFrame();
-        ct.ThrowIfCancellationRequested();
-        UnityEngine.Debug.Log("[DeepFillV2] frame retired | stage=" + stage);
-    }
-
     private string BuildModelReport()
     {
         if (_effectiveBackend != DeepFillV2Backend.OnnxDirect || _lastOnnxReport == null)
@@ -609,7 +599,6 @@ public sealed class DeepFillV2Runner : MonoBehaviour
             return null;
         try
         {
-            await NextGpuFrameAsync(ct, "restore-output-size");
             return await ReadRenderTexturePacedAsync(rt, TextureFormat.RGBA32, false, ct);
         }
         finally
@@ -674,15 +663,14 @@ public sealed class DeepFillV2Runner : MonoBehaviour
         }
     }
 
-    private static async UniTask<Texture2D> ReadRenderTexturePacedAsync(RenderTexture rt, TextureFormat format, bool linear, CancellationToken ct)
+    private static UniTask<Texture2D> ReadRenderTexturePacedAsync(RenderTexture rt, TextureFormat format, bool linear, CancellationToken ct)
     {
         if (rt == null)
-            return null;
+            return UniTask.FromResult<Texture2D>(null);
 
-        await NextGpuFrameAsync(ct, "before-readpixels");
+        ct.ThrowIfCancellationRequested();
         var result = ReadRenderTexture(rt, format, linear);
-        await NextGpuFrameAsync(ct, "after-readpixels");
-        return result;
+        return UniTask.FromResult(result);
     }
 
     private static async UniTask<Texture2D> CompositeMaskedPacedAsync(
@@ -706,7 +694,6 @@ public sealed class DeepFillV2Runner : MonoBehaviour
                 // graphics queue; tile renderers can otherwise submit a circular
                 // wait. This is the same platform-neutral pacing used by the model
                 // input and output conversions.
-                await NextGpuFrameAsync(ct, "resize-mask-for-composite");
                 originalSizedMask = await ReadRenderTexturePacedAsync(
                     resizedMask,
                     TextureFormat.RGBA32,
@@ -722,8 +709,6 @@ public sealed class DeepFillV2Runner : MonoBehaviour
         }
         try
         {
-            await UniTask.NextFrame();
-            ct.ThrowIfCancellationRequested();
             var src = original.GetPixels32();
             var gen = candidate.GetPixels32();
             var maskPixels = originalSizedMask.GetPixels32();

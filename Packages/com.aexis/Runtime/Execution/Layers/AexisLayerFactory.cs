@@ -564,7 +564,8 @@ namespace Aexis.Execution
             string stopAfterTopName = null,
             string startAtTopName = null,
             CancellationToken cancellationToken = default,
-            int yieldEveryLayers = 12)
+            int yieldEveryLayers = 12,
+            Action<InferenceProgress> progress = null)
         {
             yieldEveryLayers = Mathf.Max(1, yieldEveryLayers);
             var layersSinceYield = 0;
@@ -576,7 +577,8 @@ namespace Aexis.Execution
                 textureInputShapes,
                 stopAfterTopName,
                 startAtTopName,
-                execution).GetEnumerator())
+                execution,
+                progress).GetEnumerator())
             {
                 while (true)
                 {
@@ -604,7 +606,8 @@ namespace Aexis.Execution
             Dictionary<string, BufferShape> textureInputShapes = null,
             string stopAfterTopName = null,
             string startAtTopName = null,
-            LayerInferenceExecution execution = null)
+            LayerInferenceExecution execution = null,
+            Action<InferenceProgress> progress = null)
         {
             if (execution == null)
                 throw new ArgumentNullException(nameof(execution));
@@ -771,6 +774,27 @@ namespace Aexis.Execution
                         + " | required_layers=" + requiredCount);
                 }
             }
+
+            var layerWork = new float[Model.layers.Count];
+            var totalWork = 0f;
+            for (var li = startLayerIndex; li < Model.layers.Count; li++)
+            {
+                if (replayRequiredLayerIndices != null && !replayRequiredLayerIndices.Contains(li))
+                    continue;
+
+                var planLayer = Model.layers[li];
+                var planRepro = LayerRepros != null && li < LayerRepros.Count ? LayerRepros[li] : null;
+                var work = planRepro != null ? planRepro.GetIncrementalWorkEstimate(this, planLayer) : 1;
+                layerWork[li] = Mathf.Max(1, work);
+                totalWork += layerWork[li];
+                if (!string.IsNullOrWhiteSpace(stopAfterTopName)
+                    && planLayer?.topNames != null
+                    && Array.IndexOf(planLayer.topNames, stopAfterTopName) >= 0)
+                {
+                    break;
+                }
+            }
+            totalWork = Mathf.Max(1f, totalWork);
 
             var remaining = BuildScopedBlobUseCount(startLayerIndex, replayRequiredLayerIndices, stopAfterTopName);
             var textureBlobs = new Dictionary<string, TensorRef>(StringComparer.Ordinal);
@@ -968,12 +992,22 @@ namespace Aexis.Execution
             try
             {
                 var runtimeProfile = BeginLayerRuntimeProfile("buffer");
+                var completedWork = 0f;
                 for (var li = startLayerIndex; li < Model.layers.Count; li++)
                 {
                     if (replayRequiredLayerIndices != null && !replayRequiredLayerIndices.Contains(li))
                         continue;
 
                     var layer = Model.layers[li];
+                    var currentLayerWork = Mathf.Max(1f, layerWork[li]);
+                    context.BeginInferenceProgress(
+                        progress,
+                        li,
+                        Model.layers.Count,
+                        layer,
+                        completedWork,
+                        currentLayerWork,
+                        totalWork);
                     var layerOutputPath = string.Empty;
                     var emitHeartbeat = DebugLog != null
                         && (DebugLogAllLayerHeartbeats
@@ -995,6 +1029,8 @@ namespace Aexis.Execution
                         if (emitHeartbeat)
                             DebugLog("[LayerOutput] idx=" + li + " | name=" + (layer?.name ?? string.Empty) + " | path=skip-already-available");
                         Consume(textureBlobs, bufferBlobs, bufferRefs, bufferViews, remaining, layer.bottomNames, pinnedNames);
+                        context.ReportInferenceProgress(1f);
+                        completedWork += currentLayerWork;
                         yield return true;
                         continue;
                     }
@@ -1028,6 +1064,8 @@ namespace Aexis.Execution
                                 + " | path=" + layerOutputPath);
                         }
                         TryLogFirstNonFiniteLayerOutput(li, layer);
+                        context.ReportInferenceProgress(1f);
+                        completedWork += currentLayerWork;
                         if (!string.IsNullOrWhiteSpace(stopAfterTopName)
                             && layer?.topNames != null
                             && Array.IndexOf(layer.topNames, stopAfterTopName) >= 0
@@ -1085,6 +1123,8 @@ namespace Aexis.Execution
                             splitSyncSw.ElapsedTicks * 1000d / Stopwatch.Frequency);
                     }
                     TryLogFirstNonFiniteLayerOutput(li, layer);
+                    context.ReportInferenceProgress(1f);
+                    completedWork += currentLayerWork;
                     if (!string.IsNullOrWhiteSpace(stopAfterTopName)
                         && layer?.topNames != null
                         && Array.IndexOf(layer.topNames, stopAfterTopName) >= 0

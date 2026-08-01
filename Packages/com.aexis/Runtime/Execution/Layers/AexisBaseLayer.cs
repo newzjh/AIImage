@@ -23,6 +23,55 @@ namespace Aexis.Execution
         public Dictionary<string, int> remaining;
         public ICollection<string> pinnedNames;
         public List<IDisposable> tempOwned;
+
+        internal Action<AexisGraphSession.InferenceProgress> inferenceProgressCallback;
+        internal int inferenceProgressLayerIndex;
+        internal int inferenceProgressLayerCount;
+        internal AexisGraphModel.Layer inferenceProgressLayer;
+        internal float inferenceProgressCompletedWork;
+        internal float inferenceProgressLayerWork;
+        internal float inferenceProgressTotalWork;
+        internal float inferenceProgressLastLayer01;
+
+        internal void BeginInferenceProgress(
+            Action<AexisGraphSession.InferenceProgress> callback,
+            int layerIndex,
+            int layerCount,
+            AexisGraphModel.Layer layer,
+            float completedWork,
+            float layerWork,
+            float totalWork)
+        {
+            inferenceProgressCallback = callback;
+            inferenceProgressLayerIndex = layerIndex;
+            inferenceProgressLayerCount = layerCount;
+            inferenceProgressLayer = layer;
+            inferenceProgressCompletedWork = completedWork;
+            inferenceProgressLayerWork = Mathf.Max(1f, layerWork);
+            inferenceProgressTotalWork = Mathf.Max(1f, totalWork);
+            inferenceProgressLastLayer01 = 0f;
+        }
+
+        internal void ReportInferenceProgress(float layerProgress01)
+        {
+            if (inferenceProgressCallback == null)
+                return;
+
+            var clampedLayerProgress = Mathf.Clamp01(layerProgress01);
+            if (clampedLayerProgress < inferenceProgressLastLayer01)
+                clampedLayerProgress = inferenceProgressLastLayer01;
+            inferenceProgressLastLayer01 = clampedLayerProgress;
+            var progress = Mathf.Clamp01(
+                (inferenceProgressCompletedWork + inferenceProgressLayerWork * clampedLayerProgress)
+                / inferenceProgressTotalWork);
+            inferenceProgressCallback(new AexisGraphSession.InferenceProgress(
+                inferenceProgressLayerIndex,
+                inferenceProgressLayerCount,
+                inferenceProgressLayer?.name ?? string.Empty,
+                inferenceProgressLayer?.typeName ?? string.Empty,
+                clampedLayerProgress,
+                progress));
+        }
     }
 
     public sealed class AexisLayerCommandBufferContext
@@ -73,6 +122,11 @@ namespace Aexis.Execution
         {
             ExecuteBuffer(owner, layer, context);
             yield return true;
+        }
+
+        internal virtual int GetIncrementalWorkEstimate(AexisGraphSession owner, AexisGraphModel.Layer layer)
+        {
+            return 1;
         }
 
         [Obsolete(ComputeBufferPathObsoleteMessage)]

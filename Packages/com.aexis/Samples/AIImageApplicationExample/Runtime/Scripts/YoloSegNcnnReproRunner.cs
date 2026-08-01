@@ -308,7 +308,24 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
                 pinned = new HashSet<string>(DebugBlobNames, StringComparer.Ordinal);
 
             UnityEngine.Debug.Log("[YoloSegRunner] Infer begin");
-            using (var infer = _repro.Infer(inputPack4, 1, InputBlobName, pinned))
+            var inferenceInputs = new Dictionary<string, RenderTexture>(StringComparer.Ordinal)
+            {
+                { InputBlobName, inputPack4 }
+            };
+            var inferenceInputShapes = new Dictionary<string, AexisGraphSession.BufferShape>(StringComparer.Ordinal)
+            {
+                { InputBlobName, new AexisGraphSession.BufferShape(3, letterbox.inputWidth, letterbox.inputHeight, 1, 3) }
+            };
+            using (var infer = await _repro.InferWithMultiInputsAsync(
+                       inferenceInputs,
+                       null,
+                       pinned,
+                       inferenceInputShapes,
+                       cancellationToken: ct,
+                       yieldEveryLayers: 1,
+                       progress: inferenceProgress => ReportProgress(
+                           0.35f + 0.23f * inferenceProgress.progress01,
+                           "Run YOLO seg")))
             {
                 UnityEngine.Debug.Log("[YoloSegRunner] Infer read blobs begin");
                 predBlob = ReadBlobData(infer, OutputBoxesBlobName);
@@ -981,8 +998,6 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
             if (binaryMaskBuffer == null)
                 return null;
             binaryMaskBuffer.SetData(maskData);
-            await WaitForYoloGpuStageAsync("output-mask-upload", ct);
-
             sourceRt = CreateWorkingRenderTexture(width, height, "YoloSeg.SourceRt");
             maskRt = CreateWorkingRenderTexture(width, height, "YoloSeg.MaskRt");
             transparentRt = CreateWorkingRenderTexture(width, height, "YoloSeg.TransparentRt");
@@ -1125,30 +1140,16 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
             UnityEngine.Object.Destroy(obj);
     }
 
-    private static async UniTask ExecuteYoloGpuOperationAsync(string stage, Action execute, CancellationToken ct)
+    private static UniTask ExecuteYoloGpuOperationAsync(string stage, Action execute, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         if (UnityEngine.Debug.isDebugBuild)
             UnityEngine.Debug.Log("[YoloSegRunner] gpu-begin | stage=" + stage);
         execute();
-        await UniTask.NextFrame();
-        ct.ThrowIfCancellationRequested();
-        if (UnityEngine.Debug.isDebugBuild)
-            UnityEngine.Debug.Log("[YoloSegRunner] gpu-frame-complete | stage=" + stage);
+        return UniTask.CompletedTask;
     }
 
-    private static async UniTask WaitForYoloGpuStageAsync(string stage, CancellationToken ct)
-    {
-        ct.ThrowIfCancellationRequested();
-        if (UnityEngine.Debug.isDebugBuild)
-            UnityEngine.Debug.Log("[YoloSegRunner] gpu-begin | stage=" + stage);
-        await UniTask.NextFrame();
-        ct.ThrowIfCancellationRequested();
-        if (UnityEngine.Debug.isDebugBuild)
-            UnityEngine.Debug.Log("[YoloSegRunner] gpu-frame-complete | stage=" + stage);
-    }
-
-    private static async UniTask<Texture2D> ReadbackTextureAsync(
+    private static UniTask<Texture2D> ReadbackTextureAsync(
         RenderTexture rt,
         int width,
         int height,
@@ -1156,17 +1157,14 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
         CancellationToken ct)
     {
         if (rt == null)
-            return null;
+            return UniTask.FromResult<Texture2D>(null);
 
-        // Tile-based drivers can form a queue dependency when a callback races a compute
-        // dispatch. Drain the producer frame and use one synchronous texture readback.
         var stage = "output-" + (string.IsNullOrWhiteSpace(outputName) ? "texture" : outputName) + "-readback";
-        await WaitForYoloGpuStageAsync(stage + "-ready", ct);
+        ct.ThrowIfCancellationRequested();
         if (UnityEngine.Debug.isDebugBuild)
             UnityEngine.Debug.Log("[YoloSegRunner] output-readback-begin | stage=" + stage + " | texture=" + rt.GetInstanceID());
         var texture = ReadbackTextureSync(rt, width, height);
-        await WaitForYoloGpuStageAsync(stage + "-complete", ct);
-        return texture;
+        return UniTask.FromResult(texture);
     }
 
     private static Texture2D ReadbackTextureSync(RenderTexture rt, int width, int height)

@@ -120,8 +120,6 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
             resizedInput = ResizeTextureBilinear(src, inputW, inputH);
             if (resizedInput == null)
                 return Finish(new MattingResult { error = "Resize input failed" });
-            await WaitForMattingGpuStageAsync("input-resize", ct);
-
             if (!useCommandBuffer)
             {
                 inputPack4 = _repro.RentTempArray(inputW, inputH, 1, RenderTextureFormat.ARGBHalf);
@@ -498,47 +496,29 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
         }
     }
 
-    private static async UniTask ExecuteMattingGpuOperationAsync(string stage, Action execute, CancellationToken ct)
+    private static UniTask ExecuteMattingGpuOperationAsync(string stage, Action execute, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         if (UnityEngine.Debug.isDebugBuild)
             UnityEngine.Debug.Log("[Matting] gpu-begin | stage=" + stage);
         execute();
-        await UniTask.NextFrame();
-        ct.ThrowIfCancellationRequested();
-        if (UnityEngine.Debug.isDebugBuild)
-            UnityEngine.Debug.Log("[Matting] gpu-frame-complete | stage=" + stage);
+        return UniTask.CompletedTask;
     }
 
-    private static async UniTask WaitForMattingGpuStageAsync(string stage, CancellationToken ct)
-    {
-        ct.ThrowIfCancellationRequested();
-        if (UnityEngine.Debug.isDebugBuild)
-            UnityEngine.Debug.Log("[Matting] gpu-begin | stage=" + stage);
-        await UniTask.NextFrame();
-        ct.ThrowIfCancellationRequested();
-        if (UnityEngine.Debug.isDebugBuild)
-            UnityEngine.Debug.Log("[Matting] gpu-frame-complete | stage=" + stage);
-    }
-
-    private static async UniTask<float[]> ReadbackSingleChannelAsync(
+    private static UniTask<float[]> ReadbackSingleChannelAsync(
         RenderTexture pack4,
         int width,
         int height,
         CancellationToken ct)
     {
         if (pack4 == null)
-            return null;
+            return UniTask.FromResult<float[]>(null);
 
-        // A driver callback can create a queue dependency on tile-based devices. Keep this
-        // texture-only path deterministic: drain the producer frame, read one slice, then
-        // give the render thread a frame before releasing any graph activation.
-        await WaitForMattingGpuStageAsync("alpha-readback-ready", ct);
+        ct.ThrowIfCancellationRequested();
         if (UnityEngine.Debug.isDebugBuild)
             UnityEngine.Debug.Log("[Matting] alpha-readback-begin | texture=" + pack4.GetInstanceID());
         var alpha = ReadbackSingleChannelSync(pack4, width, height);
-        await WaitForMattingGpuStageAsync("alpha-readback-complete", ct);
-        return alpha;
+        return UniTask.FromResult(alpha);
     }
 
     private static float[] ReadbackSingleChannelSync(RenderTexture pack4, int width, int height)
