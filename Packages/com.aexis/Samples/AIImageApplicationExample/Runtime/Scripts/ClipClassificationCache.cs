@@ -6,6 +6,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using Aexis.Samples.Async;
+using Aexis.Samples.Json;
 using UnityEngine;
 
 // Stores CLIP classification results in one JSON file to avoid PlayerPrefs churn.
@@ -34,6 +35,60 @@ public static class ClipClassificationCache
         public string cameraText;
         public string apertureText;
         public long updatedUtcTicks;
+    }
+
+    public sealed class CachedClipImageRecordIndex
+    {
+        private readonly List<CachedClipImageRecord> _records = new List<CachedClipImageRecord>();
+        private readonly Dictionary<string, int> _indexByFilePath = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+        public IReadOnlyList<CachedClipImageRecord> Records => _records;
+
+        public bool TryGet(string filePath, out CachedClipImageRecord record)
+        {
+            record = null;
+            return !string.IsNullOrWhiteSpace(filePath) &&
+                   _indexByFilePath.TryGetValue(filePath, out var index) &&
+                   index >= 0 &&
+                   index < _records.Count &&
+                   (record = _records[index]) != null;
+        }
+
+        internal void Upsert(CachedClipImageRecord record)
+        {
+            if (record == null || string.IsNullOrWhiteSpace(record.filePath))
+                return;
+
+            if (_indexByFilePath.TryGetValue(record.filePath, out var index))
+            {
+                _records[index] = record;
+                return;
+            }
+
+            _indexByFilePath[record.filePath] = _records.Count;
+            _records.Add(record);
+        }
+
+        internal void Remove(string filePath)
+        {
+            if (string.IsNullOrWhiteSpace(filePath) || !_indexByFilePath.TryGetValue(filePath, out var index))
+                return;
+
+            _indexByFilePath.Remove(filePath);
+            var lastIndex = _records.Count - 1;
+            if (index < 0 || index > lastIndex)
+                return;
+
+            if (index != lastIndex)
+            {
+                var lastRecord = _records[lastIndex];
+                _records[index] = lastRecord;
+                if (lastRecord != null && !string.IsNullOrWhiteSpace(lastRecord.filePath))
+                    _indexByFilePath[lastRecord.filePath] = index;
+            }
+
+            _records.RemoveAt(lastIndex);
+        }
     }
 
     [Serializable]
@@ -74,10 +129,17 @@ public static class ClipClassificationCache
 
     private static readonly object Sync = new object();
     private static readonly Dictionary<string, ClipClassificationCacheEntry> Entries = new Dictionary<string, ClipClassificationCacheEntry>(StringComparer.Ordinal);
+    private static readonly Dictionary<string, CachedClipImageRecordIndex> ImageRecordIndexes = new Dictionary<string, CachedClipImageRecordIndex>(StringComparer.Ordinal);
 
     private static bool _loaded;
+    private static bool _loadStarted;
     private static bool _dirty;
     private static bool _saveRunning;
+
+    public static void Preload()
+    {
+        EnsureLoaded();
+    }
 
     public static bool TryGet(ClipNcnnReproRunner runner, Texture2D texture, string filePath, bool preferFileIdentity, out ClipClassificationResult result)
     {
@@ -145,8 +207,8 @@ public static class ClipClassificationCache
         {
             RemoveStaleEntriesForIdentityNoLock(key, normalizedPath);
 
-            Entries.TryGetValue(key, out var entry);
-            entry ??= new ClipClassificationCacheEntry
+            Entries.TryGetValue(key, out var existingEntry);
+            var entry = existingEntry != null ? CloneCacheEntry(existingEntry) : new ClipClassificationCacheEntry
             {
                 key = key
             };
@@ -156,13 +218,18 @@ public static class ClipClassificationCache
             if (!changed)
                 return;
 
+            RemoveImageRecordFromIndexNoLock(existingEntry);
             entry.updatedUtcTicks = DateTime.UtcNow.Ticks;
             Entries[key] = entry;
+            UpdateImageRecordIndexNoLock(entry);
 
             PruneIfNeededNoLock();
 
             _dirty = true;
             if (_saveRunning)
+                return;
+
+            if (!_loaded)
                 return;
 
             _saveRunning = true;
@@ -233,40 +300,32 @@ public static class ClipClassificationCache
 
     public static List<CachedClipImageRecord> GetAllImageRecords(ClipNcnnReproRunner runner)
     {
-        var list = new List<CachedClipImageRecord>();
-        if (runner == null)
-            return list;
+        var index = GetImageRecordIndex(runner);
+        return index == null ? new List<CachedClipImageRecord>() : new List<CachedClipImageRecord>(index.Records);
+    }
+
+    public static CachedClipImageRecordIndex GetImageRecordIndex(ClipNcnnReproRunner runner)
+    {
+        if (runner == null || string.IsNullOrWhiteSpace(runner.ClassificationCacheSignature))
+            return null;
 
         EnsureLoaded();
         var signature = runner.ClassificationCacheSignature;
         lock (Sync)
         {
+            if (ImageRecordIndexes.TryGetValue(signature, out var existingIndex))
+                return existingIndex;
+
+            var index = new CachedClipImageRecordIndex();
             foreach (var entry in Entries.Values)
             {
-                if (entry == null ||
-                    string.IsNullOrWhiteSpace(entry.signature) ||
-                    !string.Equals(entry.signature, signature, StringComparison.Ordinal) ||
-                    entry.imageEmbedding == null ||
-                    entry.imageEmbedding.Length == 0)
-                {
-                    continue;
-                }
-
-                list.Add(new CachedClipImageRecord
-                {
-                    entryVersion = GetEffectiveEntryVersion(entry),
-                    key = entry.key,
-                    identityPath = entry.identityPath,
-                    filePath = entry.filePath,
-                    bestLabel = entry.bestLabel,
-                    bestProbability = entry.bestProbability,
-                    updatedUtcTicks = entry.updatedUtcTicks,
-                    imageEmbedding = CloneEmbedding(entry.imageEmbedding)
-                });
+                if (HasImageRecordForSignature(entry, signature))
+                    index.Upsert(BuildImageRecord(entry));
             }
-        }
 
-        return list;
+            ImageRecordIndexes[signature] = index;
+            return index;
+        }
     }
 
     public static bool TryGetImageRecordForFile(ClipNcnnReproRunner runner, string filePath, out CachedClipImageRecord record)
@@ -383,6 +442,7 @@ public static class ClipClassificationCache
         CancellationToken cancellationToken,
         bool requireEmbedding = false)
     {
+        await EnsureLoadedAsync(cancellationToken);
         if (TryGetInternal(key, signature, out var cached) &&
             (!requireEmbedding || (cached.imageEmbedding != null && cached.imageEmbedding.Length > 0)))
         {
@@ -436,8 +496,8 @@ public static class ClipClassificationCache
         {
             RemoveStaleEntriesForIdentityNoLock(key, identityPath);
 
-            Entries.TryGetValue(key, out var entry);
-            entry ??= new ClipClassificationCacheEntry
+            Entries.TryGetValue(key, out var existingEntry);
+            var entry = existingEntry != null ? CloneCacheEntry(existingEntry) : new ClipClassificationCacheEntry
             {
                 key = key
             };
@@ -449,7 +509,9 @@ public static class ClipClassificationCache
             entry.scores = CloneScores(result.scores);
             entry.imageEmbedding = CloneEmbedding(result.imageEmbedding);
             entry.updatedUtcTicks = DateTime.UtcNow.Ticks;
+            RemoveImageRecordFromIndexNoLock(existingEntry);
             Entries[key] = entry;
+            UpdateImageRecordIndexNoLock(entry);
 
             PruneIfNeededNoLock();
 
@@ -458,6 +520,9 @@ public static class ClipClassificationCache
 
             _dirty = true;
             if (_saveRunning)
+                return;
+
+            if (!_loaded)
                 return;
 
             _saveRunning = true;
@@ -470,53 +535,114 @@ public static class ClipClassificationCache
 
     private static void EnsureLoaded()
     {
+        var startLoad = false;
+        string path = null;
         lock (Sync)
         {
-            if (_loaded)
+            if (_loaded || _loadStarted)
                 return;
 
-            _loaded = true;
-            var path = GetCacheFilePath();
-            if (!File.Exists(path))
-                return;
+            _loadStarted = true;
+            path = GetCacheFilePath();
+            startLoad = true;
+        }
 
-            try
+        if (startLoad)
+            LoadCacheAsync(path).Forget();
+    }
+
+    private static async UniTask EnsureLoadedAsync(CancellationToken cancellationToken)
+    {
+        EnsureLoaded();
+        while (true)
+        {
+            lock (Sync)
             {
-                var payload = File.ReadAllText(path);
-                if (string.IsNullOrWhiteSpace(payload))
+                if (_loaded)
                     return;
-
-                var cache = JsonUtility.FromJson<CacheFile>(payload);
-                if (cache?.entries == null)
-                    return;
-
-                Entries.Clear();
-                for (var i = 0; i < cache.entries.Length; i++)
-                {
-                    var entry = cache.entries[i];
-                    if (entry == null || string.IsNullOrWhiteSpace(entry.key))
-                        continue;
-
-                    if (entry.entryVersion <= 0)
-                        entry.entryVersion = 1;
-                    Entries[entry.key] = entry;
-                }
-
-                PruneIfNeededNoLock();
             }
-            catch (Exception e)
+
+            await UniTask.DelayFrame(1, cancellationToken: cancellationToken);
+        }
+    }
+
+    private static async UniTaskVoid LoadCacheAsync(string path)
+    {
+        CacheFile cache = null;
+        Exception loadException = null;
+        try
+        {
+            cache = await UniTask.RunOnThreadPool(() => LoadCacheFromDisk(path));
+        }
+        catch (Exception e)
+        {
+            loadException = e;
+        }
+
+        var startSaveLoop = false;
+        lock (Sync)
+        {
+            _loadStarted = false;
+            _loaded = true;
+            if (cache?.entries != null)
+                MergeLoadedEntriesNoLock(cache.entries);
+
+            if (_dirty && !_saveRunning)
             {
-                Debug.LogWarning("[CLIP-CACHE] Failed to load classification cache: " + e.Message);
+                _saveRunning = true;
+                startSaveLoop = true;
             }
         }
+
+        if (loadException != null)
+            Debug.LogWarning("[CLIP-CACHE] Failed to load classification cache: " + loadException.Message);
+
+        if (startSaveLoop)
+            PersistDirtyAsync().Forget();
+    }
+
+    private static CacheFile LoadCacheFromDisk(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+            return null;
+
+        var payload = File.ReadAllText(path);
+        return string.IsNullOrWhiteSpace(payload)
+            ? null
+            : JsonConvert.DeserializeObject<CacheFile>(payload);
+    }
+
+    private static void MergeLoadedEntriesNoLock(ClipClassificationCacheEntry[] loadedEntries)
+    {
+        if (loadedEntries == null || loadedEntries.Length == 0)
+            return;
+
+        for (var i = 0; i < loadedEntries.Length; i++)
+        {
+            var entry = loadedEntries[i];
+            if (entry == null || string.IsNullOrWhiteSpace(entry.key))
+                continue;
+
+            if (entry.entryVersion <= 0)
+                entry.entryVersion = 1;
+
+            if (!Entries.TryGetValue(entry.key, out var existing) || existing == null)
+                Entries[entry.key] = entry;
+            else
+                Entries[entry.key] = MergeEntries(existing, entry);
+        }
+
+        // The asynchronous load can replace entries that were indexed while it was in flight.
+        ImageRecordIndexes.Clear();
+        PruneIfNeededNoLock();
     }
 
     private static async UniTaskVoid PersistDirtyAsync()
     {
         while (true)
         {
-            string json;
             string path;
+            ClipClassificationCacheEntry[] snapshot;
             lock (Sync)
             {
                 if (!_dirty)
@@ -527,16 +653,13 @@ public static class ClipClassificationCache
 
                 _dirty = false;
                 path = GetCacheFilePath();
-                json = BuildJsonNoLock();
+                snapshot = new ClipClassificationCacheEntry[Entries.Count];
+                Entries.Values.CopyTo(snapshot, 0);
             }
 
             try
             {
-                var directory = Path.GetDirectoryName(path);
-                if (!string.IsNullOrWhiteSpace(directory) && !Directory.Exists(directory))
-                    Directory.CreateDirectory(directory);
-
-                await UniTask.RunOnThreadPool(() => File.WriteAllText(path, json ?? string.Empty, Encoding.UTF8));
+                await UniTask.RunOnThreadPool(() => PersistSnapshot(path, snapshot));
             }
             catch (Exception e)
             {
@@ -551,15 +674,17 @@ public static class ClipClassificationCache
         }
     }
 
-    private static string BuildJsonNoLock()
+    private static void PersistSnapshot(string path, ClipClassificationCacheEntry[] snapshot)
     {
-        var list = new List<ClipClassificationCacheEntry>(Entries.Count);
-        foreach (var entry in Entries.Values)
+        var list = new List<ClipClassificationCacheEntry>(snapshot?.Length ?? 0);
+        if (snapshot != null)
         {
-            if (entry == null || !ShouldPersistKey(entry.key))
-                continue;
-
-            list.Add(entry);
+            for (var i = 0; i < snapshot.Length; i++)
+            {
+                var entry = snapshot[i];
+                if (entry != null && ShouldPersistKey(entry.key))
+                    list.Add(entry);
+            }
         }
 
         list.Sort((a, b) => b.updatedUtcTicks.CompareTo(a.updatedUtcTicks));
@@ -571,7 +696,12 @@ public static class ClipClassificationCache
             version = CurrentVersion,
             entries = list.ToArray()
         };
-        return JsonUtility.ToJson(cache);
+        var json = JsonConvert.SerializeObject(cache);
+        var directory = Path.GetDirectoryName(path);
+        if (!string.IsNullOrWhiteSpace(directory) && !Directory.Exists(directory))
+            Directory.CreateDirectory(directory);
+
+        File.WriteAllText(path, json ?? string.Empty, Encoding.UTF8);
     }
 
     private static void PruneIfNeededNoLock()
@@ -597,7 +727,11 @@ public static class ClipClassificationCache
         }
 
         for (var i = 0; i < staleKeys.Count; i++)
+        {
+            if (Entries.TryGetValue(staleKeys[i], out var staleEntry))
+                RemoveImageRecordFromIndexNoLock(staleEntry);
             Entries.Remove(staleKeys[i]);
+        }
     }
 
     private static bool IsSuccessful(ClipClassificationResult result)
@@ -624,6 +758,143 @@ public static class ClipClassificationCache
         var clone = new float[embedding.Length];
         Array.Copy(embedding, clone, embedding.Length);
         return clone;
+    }
+
+    // Entries are copy-on-write so a background persistence snapshot can safely retain array references.
+    private static ClipClassificationCacheEntry CloneCacheEntry(ClipClassificationCacheEntry entry)
+    {
+        if (entry == null)
+            return null;
+
+        return new ClipClassificationCacheEntry
+        {
+            entryVersion = entry.entryVersion,
+            key = entry.key,
+            signature = entry.signature,
+            identityPath = entry.identityPath,
+            filePath = entry.filePath,
+            bestLabel = entry.bestLabel,
+            bestProbability = entry.bestProbability,
+            scores = entry.scores,
+            imageEmbedding = entry.imageEmbedding,
+            hasCaptureTime = entry.hasCaptureTime,
+            captureTimeBinary = entry.captureTimeBinary,
+            locationText = entry.locationText,
+            cameraText = entry.cameraText,
+            apertureText = entry.apertureText,
+            updatedUtcTicks = entry.updatedUtcTicks
+        };
+    }
+
+    private static ClipClassificationCacheEntry MergeEntries(
+        ClipClassificationCacheEntry current,
+        ClipClassificationCacheEntry loaded)
+    {
+        var currentIsNewer = current.updatedUtcTicks >= loaded.updatedUtcTicks;
+        var primary = currentIsNewer ? current : loaded;
+        var secondary = currentIsNewer ? loaded : current;
+        var merged = CloneCacheEntry(primary);
+        merged.entryVersion = Math.Max(GetEffectiveEntryVersion(current), GetEffectiveEntryVersion(loaded));
+
+        if (string.IsNullOrWhiteSpace(merged.identityPath))
+            merged.identityPath = secondary.identityPath;
+        if (string.IsNullOrWhiteSpace(merged.filePath))
+            merged.filePath = secondary.filePath;
+
+        if (!HasClassificationResult(merged) && HasClassificationResult(secondary))
+        {
+            merged.signature = secondary.signature;
+            merged.bestLabel = secondary.bestLabel;
+            merged.bestProbability = secondary.bestProbability;
+            merged.scores = secondary.scores;
+            merged.imageEmbedding = secondary.imageEmbedding;
+        }
+        else if ((merged.imageEmbedding == null || merged.imageEmbedding.Length == 0) &&
+                 secondary.imageEmbedding != null &&
+                 secondary.imageEmbedding.Length > 0 &&
+                 string.Equals(merged.signature, secondary.signature, StringComparison.Ordinal))
+        {
+            merged.imageEmbedding = secondary.imageEmbedding;
+        }
+
+        if (!merged.hasCaptureTime && secondary.hasCaptureTime)
+        {
+            merged.hasCaptureTime = true;
+            merged.captureTimeBinary = secondary.captureTimeBinary;
+        }
+        if (string.IsNullOrWhiteSpace(merged.locationText))
+            merged.locationText = secondary.locationText;
+        if (string.IsNullOrWhiteSpace(merged.cameraText))
+            merged.cameraText = secondary.cameraText;
+        if (string.IsNullOrWhiteSpace(merged.apertureText))
+            merged.apertureText = secondary.apertureText;
+
+        merged.updatedUtcTicks = Math.Max(current.updatedUtcTicks, loaded.updatedUtcTicks);
+        return merged;
+    }
+
+    private static bool HasClassificationResult(ClipClassificationCacheEntry entry)
+    {
+        return entry != null &&
+               !string.IsNullOrWhiteSpace(entry.signature) &&
+               (!string.IsNullOrWhiteSpace(entry.bestLabel) ||
+                (entry.scores != null && entry.scores.Length > 0));
+    }
+
+    private static bool HasImageRecordForSignature(ClipClassificationCacheEntry entry, string signature)
+    {
+        return entry != null &&
+               !string.IsNullOrWhiteSpace(entry.filePath) &&
+               !string.IsNullOrWhiteSpace(entry.signature) &&
+               string.Equals(entry.signature, signature, StringComparison.Ordinal) &&
+               entry.imageEmbedding != null &&
+               entry.imageEmbedding.Length > 0;
+    }
+
+    private static CachedClipImageRecord BuildImageRecord(ClipClassificationCacheEntry entry)
+    {
+        if (entry == null)
+            return null;
+
+        return new CachedClipImageRecord
+        {
+            entryVersion = GetEffectiveEntryVersion(entry),
+            key = entry.key,
+            identityPath = entry.identityPath,
+            filePath = entry.filePath,
+            bestLabel = entry.bestLabel,
+            bestProbability = entry.bestProbability,
+            updatedUtcTicks = entry.updatedUtcTicks,
+            imageEmbedding = entry.imageEmbedding
+        };
+    }
+
+    private static void UpdateImageRecordIndexNoLock(ClipClassificationCacheEntry entry)
+    {
+        if (entry == null ||
+            string.IsNullOrWhiteSpace(entry.signature) ||
+            !ImageRecordIndexes.TryGetValue(entry.signature, out var index))
+        {
+            return;
+        }
+
+        if (HasImageRecordForSignature(entry, entry.signature))
+            index.Upsert(BuildImageRecord(entry));
+        else
+            index.Remove(entry.filePath);
+    }
+
+    private static void RemoveImageRecordFromIndexNoLock(ClipClassificationCacheEntry entry)
+    {
+        if (entry == null ||
+            string.IsNullOrWhiteSpace(entry.signature) ||
+            string.IsNullOrWhiteSpace(entry.filePath) ||
+            !ImageRecordIndexes.TryGetValue(entry.signature, out var index))
+        {
+            return;
+        }
+
+        index.Remove(entry.filePath);
     }
 
     private static CachedFileMetadata BuildCachedMetadata(ClipClassificationCacheEntry entry)
@@ -732,7 +1003,11 @@ public static class ClipClassificationCache
         }
 
         for (var i = 0; i < staleKeys.Count; i++)
+        {
+            if (Entries.TryGetValue(staleKeys[i], out var staleEntry))
+                RemoveImageRecordFromIndexNoLock(staleEntry);
             Entries.Remove(staleKeys[i]);
+        }
     }
 
     private static string BuildFileKey(string filePath, out string normalizedPath)

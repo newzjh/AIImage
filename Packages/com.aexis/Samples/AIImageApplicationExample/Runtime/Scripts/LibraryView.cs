@@ -22,6 +22,9 @@ public sealed class LibraryView : BasePageView
     private const string PendingClipText = "\u5F85\u63A5\u5165";
     private const string EmptyText = "\u65E0";
     private const int ThumbnailMaxEdge = 640;
+    private const int ClipSourceMaxEdge = 256;
+    private const int ThumbnailCardBuildBatchSize = 4;
+    private const float ThumbnailRefreshIdleSeconds = 0.12f;
     private const int HiddenOriginalImportLimit = 512;
     private static readonly string[] HiddenOriginalDirectoryKeywords =
     {
@@ -68,9 +71,10 @@ public sealed class LibraryView : BasePageView
         public DateTime modifiedTime;
         public DateTime? captureTime;
         public long fileSize;
-        public Texture2D thumbnail;
+        public Texture thumbnail;
         public bool thumbnailLoading;
         public bool thumbnailFailed;
+        public bool clipClassificationQueued;
         public bool clipClassificationLoading;
         public bool clipClassificationReady;
         public LibraryImageType type;
@@ -142,6 +146,13 @@ public sealed class LibraryView : BasePageView
         public string tooltip;
     }
 
+    private sealed class ThumbnailTextureSet
+    {
+        public Texture displayTexture;
+        public Texture2D clipSourceTexture;
+        public bool disposeClipSourceTexture;
+    }
+
     public override AppPageId PageId => AppPageId.LibraryView;
 
     private PopupField<string> _drivePopup;
@@ -168,6 +179,7 @@ public sealed class LibraryView : BasePageView
 
     private readonly List<ThumbnailEntry> _thumbnailEntries = new List<ThumbnailEntry>();
     private readonly List<ThumbnailEntry> _visibleEntries = new List<ThumbnailEntry>();
+    private readonly Queue<ThumbnailEntry> _pendingClipClassificationEntries = new Queue<ThumbnailEntry>();
     private readonly HashSet<int> _loadedDirectoryIds = new HashSet<int>();
     private readonly Dictionary<string, ThumbnailEntry> _entryByPath = new Dictionary<string, ThumbnailEntry>(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, Image> _imageByPath = new Dictionary<string, Image>(StringComparer.OrdinalIgnoreCase);
@@ -193,12 +205,17 @@ public sealed class LibraryView : BasePageView
     private CancellationTokenSource _thumbnailLoadCts;
     private CancellationTokenSource _directoryScanCts;
     private CancellationTokenSource _clipClassificationCts;
+    private bool _clipClassificationQueueProcessorRunning;
     private int _thumbnailLoadGeneration;
     private int _directoryScanGeneration;
+    private string _pendingHiddenOriginalImportDirectory;
+    private int _pendingHiddenOriginalImportScanGeneration;
+    private float _lastThumbnailInteractionTime = float.NegativeInfinity;
     private bool _storagePermissionRequestInFlight;
     private bool _selectionTipsCollapsed;
     private bool _hasAppliedLayout;
     private bool _lastLayoutWasPortrait;
+    private bool _faceSortRefreshPending;
 
     private sealed class StorageAccessSnapshot
     {
@@ -583,6 +600,9 @@ public sealed class LibraryView : BasePageView
         _thumbnailScroll = new ScrollView(ScrollViewMode.Vertical);
         _thumbnailScroll.style.flexGrow = 1;
         _thumbnailScroll.style.minHeight = 0;
+        _thumbnailScroll.RegisterCallback<PointerDownEvent>(_ => MarkThumbnailInteraction());
+        _thumbnailScroll.RegisterCallback<PointerMoveEvent>(_ => MarkThumbnailInteraction());
+        _thumbnailScroll.RegisterCallback<WheelEvent>(_ => MarkThumbnailInteraction());
         pane.Add(_thumbnailScroll);
 
         _thumbnailGrid = new VisualElement();
@@ -1720,6 +1740,8 @@ public sealed class LibraryView : BasePageView
         if (forceRescan)
         {
             ClearThumbnailEntries(true);
+            _pendingHiddenOriginalImportDirectory = null;
+            _pendingHiddenOriginalImportScanGeneration = 0;
             _materializedDirectoryPath = directoryPath;
             ShowGridStatus(string.IsNullOrWhiteSpace(directoryPath) || !Directory.Exists(directoryPath) ? "\u8BE5\u76EE\u5F55\u4E0D\u5B58\u5728\u3002" : "\u6B63\u5728\u626B\u63CF\u76EE\u5F55...");
             if (string.IsNullOrWhiteSpace(directoryPath) || !Directory.Exists(directoryPath))
@@ -1754,10 +1776,13 @@ public sealed class LibraryView : BasePageView
                 foreach (var entry in files)
                     _entryByPath[entry.fullPath] = entry;
 
-                await ImportHiddenOriginalDirectoriesAsync(directoryPath, cancellationToken);
-
                 if (files.Count == 0)
                     MaybeShowStorageAccessToast(directoryPath);
+
+                // Hidden originals are only used to improve edited-image matching. Do not hold the
+                // directory scan state hostage to their metadata reads and CLIP classifications.
+                _pendingHiddenOriginalImportDirectory = directoryPath;
+                _pendingHiddenOriginalImportScanGeneration = generation;
             }
             catch (OperationCanceledException)
             {
@@ -1784,6 +1809,8 @@ public sealed class LibraryView : BasePageView
     private void ApplyFilters()
     {
         CancelThumbnailRefresh();
+        if (_sortFaceToggle?.value != true)
+            _faceSortRefreshPending = false;
         if (_thumbnailGrid == null)
             return;
 
@@ -1822,11 +1849,7 @@ public sealed class LibraryView : BasePageView
             return;
         }
 
-        foreach (var entry in _visibleEntries)
-            _thumbnailGrid.Add(BuildThumbnailCard(entry));
-
         StartThumbnailRefresh();
-        StartPendingClipClassification();
         RestoreSelectedThumbnailTips();
         ScrollToSelectedThumbnailSoon();
     }
@@ -1924,22 +1947,6 @@ public sealed class LibraryView : BasePageView
             ApplySelectedCardBorder(card, true);
 
         return card;
-    }
-
-    private void StartPendingClipClassification()
-    {
-        if (Host?.ClipRunner == null || _thumbnailLoadCts == null)
-            return;
-
-        var cancellationToken = _thumbnailLoadCts.Token;
-        foreach (var entry in _visibleEntries)
-        {
-            var needsEmbeddingUpgrade = NeedsClipEmbeddingUpgrade(entry);
-            if (entry.thumbnail == null || entry.clipClassificationLoading || (entry.clipClassificationReady && !needsEmbeddingUpgrade))
-                continue;
-
-            StartClipClassificationForEntry(entry, cancellationToken).Forget();
-        }
     }
 
     private static void ApplySelectedCardBorder(VisualElement card, bool selected)
@@ -2060,17 +2067,28 @@ public sealed class LibraryView : BasePageView
 
         _thumbnailLoadGeneration++;
         _thumbnailLoadCts = new CancellationTokenSource();
-        RefreshVisibleThumbnailsAsync(_thumbnailLoadGeneration, _thumbnailLoadCts.Token).Forget();
+        var generation = _thumbnailLoadGeneration;
+        var cancellationToken = _thumbnailLoadCts.Token;
+        ClipClassificationCache.Preload();
+        BuildThumbnailCardsAsync(generation, cancellationToken).Forget();
+        RefreshVisibleThumbnailsAsync(generation, cancellationToken).Forget();
     }
 
     private void CancelThumbnailRefresh()
     {
-        if (_thumbnailLoadCts == null)
-            return;
+        if (_thumbnailLoadCts != null)
+        {
+            try { _thumbnailLoadCts.Cancel(); } catch { }
+            try { _thumbnailLoadCts.Dispose(); } catch { }
+            _thumbnailLoadCts = null;
+        }
 
-        try { _thumbnailLoadCts.Cancel(); } catch { }
-        try { _thumbnailLoadCts.Dispose(); } catch { }
-        _thumbnailLoadCts = null;
+        while (_pendingClipClassificationEntries.Count > 0)
+        {
+            var entry = _pendingClipClassificationEntries.Dequeue();
+            if (entry != null)
+                entry.clipClassificationQueued = false;
+        }
     }
 
     private void CancelDirectoryScan()
@@ -2093,6 +2111,136 @@ public sealed class LibraryView : BasePageView
         _clipClassificationCts = null;
     }
 
+    private void MarkThumbnailInteraction()
+    {
+        _lastThumbnailInteractionTime = Time.realtimeSinceStartup;
+    }
+
+    private async UniTask WaitForThumbnailRefreshIdleAsync(CancellationToken cancellationToken)
+    {
+        while (Time.realtimeSinceStartup - _lastThumbnailInteractionTime < ThumbnailRefreshIdleSeconds)
+            await UniTask.DelayFrame(1, cancellationToken: cancellationToken);
+    }
+
+    private void QueueClipClassification(ThumbnailEntry entry)
+    {
+        if (entry == null ||
+            entry.thumbnail == null ||
+            entry.clipClassificationQueued ||
+            entry.clipClassificationLoading ||
+            entry.clipClassificationReady ||
+            Host?.ClipRunner == null)
+        {
+            return;
+        }
+
+        entry.clipClassificationQueued = true;
+        _pendingClipClassificationEntries.Enqueue(entry);
+    }
+
+    private void StartClipClassificationQueueProcessor(int generation, CancellationToken cancellationToken)
+    {
+        if (_clipClassificationQueueProcessorRunning || _pendingClipClassificationEntries.Count == 0)
+            return;
+
+        ProcessClipClassificationQueueAsync(generation, cancellationToken).Forget();
+    }
+
+    private async UniTaskVoid ProcessClipClassificationQueueAsync(int generation, CancellationToken cancellationToken)
+    {
+        _clipClassificationQueueProcessorRunning = true;
+        try
+        {
+            while (_pendingClipClassificationEntries.Count > 0)
+            {
+                if (cancellationToken.IsCancellationRequested || generation != _thumbnailLoadGeneration)
+                    return;
+
+                var entry = _pendingClipClassificationEntries.Dequeue();
+                entry.clipClassificationQueued = false;
+                if (entry.thumbnail == null || entry.clipClassificationReady || entry.clipClassificationLoading)
+                    continue;
+
+                await UniTask.DelayFrame(1, cancellationToken: cancellationToken);
+                await WaitForThumbnailRefreshIdleAsync(cancellationToken);
+                await ClassifyThumbnailIfNeededAsync(entry, null, false, cancellationToken);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        finally
+        {
+            _clipClassificationQueueProcessorRunning = false;
+            if (_pendingClipClassificationEntries.Count > 0 &&
+                _thumbnailLoadCts != null &&
+                !_thumbnailLoadCts.IsCancellationRequested)
+            {
+                StartClipClassificationQueueProcessor(_thumbnailLoadGeneration, _thumbnailLoadCts.Token);
+            }
+        }
+    }
+
+    private void StartPendingHiddenOriginalImport(int thumbnailGeneration, CancellationToken cancellationToken)
+    {
+        var directoryPath = _pendingHiddenOriginalImportDirectory;
+        if (string.IsNullOrWhiteSpace(directoryPath) ||
+            _pendingHiddenOriginalImportScanGeneration != _directoryScanGeneration ||
+            thumbnailGeneration != _thumbnailLoadGeneration ||
+            !string.Equals(_selectedDirectoryPath, directoryPath, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        _pendingHiddenOriginalImportDirectory = null;
+        _pendingHiddenOriginalImportScanGeneration = 0;
+        ImportHiddenOriginalDirectoriesWhenIdleAsync(directoryPath, cancellationToken).Forget();
+    }
+
+    private async UniTaskVoid ImportHiddenOriginalDirectoriesWhenIdleAsync(string directoryPath, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await WaitForThumbnailRefreshIdleAsync(cancellationToken);
+            await ImportHiddenOriginalDirectoriesAsync(directoryPath, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            if (string.Equals(_selectedDirectoryPath, directoryPath, StringComparison.OrdinalIgnoreCase))
+            {
+                _pendingHiddenOriginalImportDirectory = directoryPath;
+                _pendingHiddenOriginalImportScanGeneration = _directoryScanGeneration;
+            }
+        }
+    }
+
+    private async UniTaskVoid BuildThumbnailCardsAsync(int generation, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var entries = _visibleEntries.ToArray();
+            var batchSize = IsPortraitLayout ? 1 : ThumbnailCardBuildBatchSize;
+            for (var i = 0; i < entries.Length; i++)
+            {
+                if (cancellationToken.IsCancellationRequested || generation != _thumbnailLoadGeneration || _thumbnailGrid == null)
+                    return;
+
+                if (i > 0 && i % batchSize == 0)
+                {
+                    await UniTask.DelayFrame(1, cancellationToken: cancellationToken);
+                    await WaitForThumbnailRefreshIdleAsync(cancellationToken);
+                }
+
+                var entry = entries[i];
+                _thumbnailGrid.Add(BuildThumbnailCard(entry));
+                UpdateThumbnailVisuals(entry);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
     private async UniTaskVoid RefreshVisibleThumbnailsAsync(int generation, CancellationToken cancellationToken)
     {
         foreach (var entry in _visibleEntries.ToArray())
@@ -2100,7 +2248,14 @@ public sealed class LibraryView : BasePageView
             if (cancellationToken.IsCancellationRequested || generation != _thumbnailLoadGeneration)
                 return;
 
-            if (entry.thumbnail != null || entry.thumbnailLoading || entry.thumbnailFailed)
+            if (entry.thumbnail != null)
+            {
+                UpdateThumbnailVisuals(entry);
+                QueueClipClassification(entry);
+                continue;
+            }
+
+            if (entry.thumbnailLoading || entry.thumbnailFailed)
             {
                 UpdateThumbnailVisuals(entry);
                 continue;
@@ -2110,6 +2265,7 @@ public sealed class LibraryView : BasePageView
             UpdateThumbnailVisuals(entry);
             try
             {
+                await WaitForThumbnailRefreshIdleAsync(cancellationToken);
                 var payload = await UniTask.RunOnThreadPool(
                     () => LoadThumbnailPayload(entry.fullPath, ThumbnailMaxEdge),
                     cancellationToken: cancellationToken);
@@ -2129,21 +2285,20 @@ public sealed class LibraryView : BasePageView
                     continue;
                 }
 
-                var texture = new Texture2D(2, 2, TextureFormat.RGBA32, false);
-                if (!texture.LoadImage(payload.thumbnailBytes, true))
+                await WaitForThumbnailRefreshIdleAsync(cancellationToken);
+                var textureSet = CreateThumbnailTextureSet(payload.thumbnailBytes, ThumbnailMaxEdge, entry.fileName);
+                if (textureSet?.displayTexture == null)
                 {
-                    UnityEngine.Object.Destroy(texture);
                     entry.thumbnailFailed = true;
                     UpdateThumbnailVisuals(entry);
                     continue;
                 }
 
-                texture.wrapMode = TextureWrapMode.Clamp;
-                texture.filterMode = FilterMode.Bilinear;
-                texture.name = entry.fileName;
-                entry.thumbnail = texture;
+                entry.thumbnail = textureSet.displayTexture;
                 UpdateThumbnailVisuals(entry);
-                StartClipClassificationForEntry(entry, cancellationToken).Forget();
+                if (textureSet.disposeClipSourceTexture && textureSet.clipSourceTexture != null)
+                    UnityEngine.Object.Destroy(textureSet.clipSourceTexture);
+                QueueClipClassification(entry);
             }
             catch (OperationCanceledException)
             {
@@ -2162,24 +2317,72 @@ public sealed class LibraryView : BasePageView
 
             await UniTask.DelayFrame(1, cancellationToken: cancellationToken);
         }
-    }
 
-    private async UniTaskVoid StartClipClassificationForEntry(ThumbnailEntry entry, CancellationToken thumbnailCancellationToken)
-    {
-        if (entry == null || entry.thumbnail == null || Host?.ClipRunner == null)
-            return;
-
-        var needsEmbeddingUpgrade = false;
-        if (ClipClassificationCache.TryGetForFile(Host.ClipRunner, entry.fullPath, out var cached))
+        if (_faceSortRefreshPending && _sortFaceToggle?.value == true)
         {
-            ApplyClipClassification(entry, cached);
-            needsEmbeddingUpgrade = NeedsClipEmbeddingUpgrade(entry);
-            if (!needsEmbeddingUpgrade)
-                return;
+            _faceSortRefreshPending = false;
+            ApplyFilters();
+            return;
         }
 
-        if (entry.clipClassificationLoading || (entry.clipClassificationReady && !needsEmbeddingUpgrade))
+        StartClipClassificationQueueProcessor(generation, cancellationToken);
+        StartPendingHiddenOriginalImport(generation, cancellationToken);
+    }
+
+    private async UniTask ClassifyThumbnailIfNeededAsync(
+        ThumbnailEntry entry,
+        Texture2D clipSourceTexture,
+        bool disposeClipSourceTexture,
+        CancellationToken cancellationToken)
+    {
+        var ownsClipSourceTexture = disposeClipSourceTexture;
+        try
+        {
+            if (entry == null || entry.thumbnail == null || Host?.ClipRunner == null)
+                return;
+
+            await WaitForThumbnailRefreshIdleAsync(cancellationToken);
+
+            var needsEmbeddingUpgrade = false;
+            if (ClipClassificationCache.TryGetForFile(Host.ClipRunner, entry.fullPath, out var cached))
+            {
+                ApplyClipClassification(entry, cached);
+                needsEmbeddingUpgrade = NeedsClipEmbeddingUpgrade(entry);
+                if (!needsEmbeddingUpgrade)
+                    return;
+            }
+
+            if (entry.clipClassificationLoading || (entry.clipClassificationReady && !needsEmbeddingUpgrade))
+                return;
+
+            if (clipSourceTexture == null)
+                clipSourceTexture = CreateClipSourceTexture(entry.thumbnail, ClipSourceMaxEdge, out ownsClipSourceTexture);
+            if (clipSourceTexture == null)
+                return;
+
+            await StartClipClassificationForEntry(entry, clipSourceTexture, ownsClipSourceTexture, cancellationToken, needsEmbeddingUpgrade);
+            ownsClipSourceTexture = false;
+        }
+        finally
+        {
+            if (ownsClipSourceTexture && clipSourceTexture != null)
+                UnityEngine.Object.Destroy(clipSourceTexture);
+        }
+    }
+
+    private async UniTask StartClipClassificationForEntry(
+        ThumbnailEntry entry,
+        Texture2D clipSourceTexture,
+        bool disposeClipSourceTexture,
+        CancellationToken thumbnailCancellationToken,
+        bool needsEmbeddingUpgrade)
+    {
+        if (entry == null || clipSourceTexture == null || Host?.ClipRunner == null)
+        {
+            if (disposeClipSourceTexture && clipSourceTexture != null)
+                UnityEngine.Object.Destroy(clipSourceTexture);
             return;
+        }
 
         entry.clipClassificationLoading = true;
 
@@ -2196,8 +2399,9 @@ public sealed class LibraryView : BasePageView
                 acquired = true;
                 try
                 {
+                    await WaitForThumbnailRefreshIdleAsync(ct);
                     if (!needsEmbeddingUpgrade &&
-                        ClipClassificationCache.TryGetForFile(Host.ClipRunner, entry.fullPath, out cached))
+                        ClipClassificationCache.TryGetForFile(Host.ClipRunner, entry.fullPath, out var cached))
                     {
                         ApplyClipClassification(entry, cached);
                         return;
@@ -2205,7 +2409,7 @@ public sealed class LibraryView : BasePageView
 
                     var result = await ClipClassificationCache.GetOrClassifyForFileAsync(
                         Host.ClipRunner,
-                        entry.thumbnail,
+                        clipSourceTexture,
                         entry.fullPath,
                         ct,
                         needsEmbeddingUpgrade);
@@ -2227,6 +2431,8 @@ public sealed class LibraryView : BasePageView
             finally
             {
                 entry.clipClassificationLoading = false;
+                if (disposeClipSourceTexture)
+                    UnityEngine.Object.Destroy(clipSourceTexture);
             }
         }
     }
@@ -2241,6 +2447,7 @@ public sealed class LibraryView : BasePageView
         if (entry == null || !string.IsNullOrWhiteSpace(result.error))
             return;
 
+        var previousFaceText = entry.faceText;
         var best = string.IsNullOrWhiteSpace(result.bestLabel) ? EmptyText : result.bestLabel;
         var top = FormatClipTopScores(result.scores, 2);
         entry.clipBaseText = string.IsNullOrWhiteSpace(top) ? best : (best + "  " + top);
@@ -2254,7 +2461,8 @@ public sealed class LibraryView : BasePageView
 
         if (_sortFaceToggle?.value == true)
         {
-            ApplyFilters();
+            if (!string.Equals(previousFaceText, entry.faceText, StringComparison.Ordinal))
+                _faceSortRefreshPending = true;
             return;
         }
 
@@ -2522,7 +2730,7 @@ public sealed class LibraryView : BasePageView
             foreach (var entry in _thumbnailEntries)
             {
                 if (entry.thumbnail != null)
-                    UnityEngine.Object.Destroy(entry.thumbnail);
+                    ReleaseThumbnailTexture(entry.thumbnail);
                 entry.thumbnail = null;
             }
         }
@@ -2582,6 +2790,175 @@ public sealed class LibraryView : BasePageView
             result.accessSnapshot.sawIoError = true;
             return result;
         }
+    }
+
+    private static ThumbnailTextureSet CreateThumbnailTextureSet(byte[] imageBytes, int maxEdge, string name)
+    {
+        var sourceTexture = CreateTextureFromImageBytes(imageBytes, name);
+        if (sourceTexture == null)
+            return null;
+
+        if (Mathf.Max(sourceTexture.width, sourceTexture.height) <= Mathf.Max(1, maxEdge))
+        {
+            return new ThumbnailTextureSet
+            {
+                displayTexture = sourceTexture,
+                clipSourceTexture = sourceTexture,
+                disposeClipSourceTexture = false
+            };
+        }
+
+        var displayTexture = CreateScaledDisplayTexture(sourceTexture, maxEdge, name);
+        var clipSourceTexture = CreateClipSourceTexture(sourceTexture, ClipSourceMaxEdge, out var disposeClipSourceTexture);
+        UnityEngine.Object.Destroy(sourceTexture);
+
+        if (displayTexture == null || clipSourceTexture == null)
+        {
+            if (displayTexture != null)
+                ReleaseThumbnailTexture(displayTexture);
+            if (disposeClipSourceTexture && clipSourceTexture != null)
+                UnityEngine.Object.Destroy(clipSourceTexture);
+            return null;
+        }
+
+        return new ThumbnailTextureSet
+        {
+            displayTexture = displayTexture,
+            clipSourceTexture = clipSourceTexture,
+            disposeClipSourceTexture = disposeClipSourceTexture
+        };
+    }
+
+    private static Texture2D CreateClipSourceTexture(byte[] imageBytes, int maxEdge, string name)
+    {
+        var sourceTexture = CreateTextureFromImageBytes(imageBytes, name);
+        if (sourceTexture == null)
+            return null;
+
+        if (Mathf.Max(sourceTexture.width, sourceTexture.height) <= Mathf.Max(1, maxEdge))
+            return sourceTexture;
+
+        var clipSourceTexture = CreateClipSourceTexture(sourceTexture, maxEdge, out _);
+        UnityEngine.Object.Destroy(sourceTexture);
+        return clipSourceTexture;
+    }
+
+    private static Texture2D CreateClipSourceTexture(Texture sourceTexture, int maxEdge, out bool disposeTexture)
+    {
+        disposeTexture = false;
+        if (sourceTexture == null)
+            return null;
+
+        if (sourceTexture is Texture2D texture2D &&
+            Mathf.Max(texture2D.width, texture2D.height) <= Mathf.Max(1, maxEdge))
+        {
+            return texture2D;
+        }
+
+        var targetSize = ResolveThumbnailSize(sourceTexture.width, sourceTexture.height, maxEdge);
+        if (targetSize.x <= 0 || targetSize.y <= 0)
+            return null;
+
+        RenderTexture temporary = null;
+        var previousActive = RenderTexture.active;
+        try
+        {
+            temporary = RenderTexture.GetTemporary(targetSize.x, targetSize.y, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Default);
+            temporary.filterMode = FilterMode.Bilinear;
+            temporary.wrapMode = TextureWrapMode.Clamp;
+            Graphics.Blit(sourceTexture, temporary);
+            RenderTexture.active = temporary;
+
+            var result = new Texture2D(targetSize.x, targetSize.y, TextureFormat.RGBA32, false);
+            result.ReadPixels(new Rect(0, 0, targetSize.x, targetSize.y), 0, 0);
+            result.Apply(false, true);
+            result.wrapMode = TextureWrapMode.Clamp;
+            result.filterMode = FilterMode.Bilinear;
+            result.name = sourceTexture.name;
+            disposeTexture = true;
+            return result;
+        }
+        catch
+        {
+            return null;
+        }
+        finally
+        {
+            RenderTexture.active = previousActive;
+            if (temporary != null)
+                RenderTexture.ReleaseTemporary(temporary);
+        }
+    }
+
+    private static RenderTexture CreateScaledDisplayTexture(Texture sourceTexture, int maxEdge, string name)
+    {
+        var targetSize = ResolveThumbnailSize(sourceTexture.width, sourceTexture.height, maxEdge);
+        if (targetSize.x <= 0 || targetSize.y <= 0)
+            return null;
+
+        var result = new RenderTexture(targetSize.x, targetSize.y, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Default)
+        {
+            filterMode = FilterMode.Bilinear,
+            wrapMode = TextureWrapMode.Clamp,
+            useMipMap = false,
+            autoGenerateMips = false,
+            name = name
+        };
+
+        try
+        {
+            result.Create();
+            Graphics.Blit(sourceTexture, result);
+            return result;
+        }
+        catch
+        {
+            ReleaseThumbnailTexture(result);
+            return null;
+        }
+    }
+
+    private static Texture2D CreateTextureFromImageBytes(byte[] imageBytes, string name)
+    {
+        if (imageBytes == null || imageBytes.Length == 0)
+            return null;
+
+        var texture = new Texture2D(2, 2, TextureFormat.RGBA32, false);
+        if (!texture.LoadImage(imageBytes, true))
+        {
+            UnityEngine.Object.Destroy(texture);
+            return null;
+        }
+
+        texture.wrapMode = TextureWrapMode.Clamp;
+        texture.filterMode = FilterMode.Bilinear;
+        texture.name = name;
+        return texture;
+    }
+
+    private static Vector2Int ResolveThumbnailSize(int width, int height, int maxEdge)
+    {
+        if (width <= 0 || height <= 0 || maxEdge <= 0)
+            return default;
+
+        var largestEdge = Mathf.Max(width, height);
+        if (largestEdge <= maxEdge)
+            return new Vector2Int(width, height);
+
+        var scale = maxEdge / (float)largestEdge;
+        return new Vector2Int(
+            Mathf.Max(1, Mathf.RoundToInt(width * scale)),
+            Mathf.Max(1, Mathf.RoundToInt(height * scale)));
+    }
+
+    private static void ReleaseThumbnailTexture(Texture texture)
+    {
+        if (texture is RenderTexture renderTexture)
+        {
+            try { renderTexture.Release(); } catch { }
+        }
+
+        try { UnityEngine.Object.Destroy(texture); } catch { }
     }
 
     private static ThumbnailPayload LoadThumbnailPayload(string filePath, int maxEdge)
@@ -2857,6 +3234,7 @@ public sealed class LibraryView : BasePageView
                 ThumbnailPayload metadataPayload = null;
                 try
                 {
+                    await WaitForThumbnailRefreshIdleAsync(cancellationToken);
                     metadataPayload = await UniTask.RunOnThreadPool(
                         () => LoadMetadataPayload(entry.fullPath),
                         cancellationToken: cancellationToken);
@@ -2888,6 +3266,7 @@ public sealed class LibraryView : BasePageView
             ThumbnailPayload payload = null;
             try
             {
+                await WaitForThumbnailRefreshIdleAsync(cancellationToken);
                 payload = await UniTask.RunOnThreadPool(
                     () => LoadThumbnailPayload(entry.fullPath, ThumbnailMaxEdge),
                     cancellationToken: cancellationToken);
@@ -2909,38 +3288,42 @@ public sealed class LibraryView : BasePageView
             if (payload?.thumbnailBytes == null || payload.thumbnailBytes.Length == 0)
                 continue;
 
-            var texture = new Texture2D(2, 2, TextureFormat.RGBA32, false);
-            if (!texture.LoadImage(payload.thumbnailBytes, true))
-            {
-                UnityEngine.Object.Destroy(texture);
+            await WaitForThumbnailRefreshIdleAsync(cancellationToken);
+            var texture = CreateClipSourceTexture(payload.thumbnailBytes, ClipSourceMaxEdge, entry.fileName);
+            if (texture == null)
                 continue;
-            }
-
-            texture.wrapMode = TextureWrapMode.Clamp;
-            texture.filterMode = FilterMode.Bilinear;
-            texture.name = entry.fileName;
             entry.thumbnail = texture;
 
             try
             {
-                var result = await ClipClassificationCache.GetOrClassifyForFileAsync(
-                    Host.ClipRunner,
-                    texture,
-                    entry.fullPath,
-                    cancellationToken,
-                    true);
+                await _clipClassificationSemaphore.WaitAsync(cancellationToken);
+                try
+                {
+                    await WaitForThumbnailRefreshIdleAsync(cancellationToken);
+                    var result = await ClipClassificationCache.GetOrClassifyForFileAsync(
+                        Host.ClipRunner,
+                        texture,
+                        entry.fullPath,
+                        cancellationToken,
+                        true);
 
-                if (!string.IsNullOrWhiteSpace(result.error))
-                    continue;
+                    if (!string.IsNullOrWhiteSpace(result.error))
+                        continue;
 
-                ApplyClipClassificationCore(entry, result, false);
-                RememberOriginalMetadata(entry);
-                _entryByPath[entry.fullPath] = entry;
-                try { UnityEngine.Object.Destroy(texture); } catch { }
-                entry.thumbnail = null;
-                imported++;
+                    ApplyClipClassificationCore(entry, result, false);
+                    RememberOriginalMetadata(entry);
+                    _entryByPath[entry.fullPath] = entry;
+                    imported++;
+                }
+                finally
+                {
+                    _clipClassificationSemaphore.Release();
+                }
             }
             catch
+            {
+            }
+            finally
             {
                 try { UnityEngine.Object.Destroy(texture); } catch { }
                 entry.thumbnail = null;
@@ -3026,47 +3409,49 @@ public sealed class LibraryView : BasePageView
             return;
         }
 
-        if (!ClipClassificationCache.TryGetImageRecordForFile(Host.ClipRunner, entry.fullPath, out var sourceRecord))
-            return;
-
-        var allRecords = ClipClassificationCache.GetAllImageRecords(Host.ClipRunner);
-        if (allRecords == null || allRecords.Count == 0)
+        var recordIndex = ClipClassificationCache.GetImageRecordIndex(Host.ClipRunner);
+        if (recordIndex == null || !recordIndex.TryGet(entry.fullPath, out var sourceRecord))
             return;
 
         var originalCandidates = new List<ClipClassificationCache.CachedClipImageRecord>();
         var selectedDirectory = _selectedDirectoryPath;
-        for (var i = 0; i < allRecords.Count; i++)
+        foreach (var candidateEntry in _entryByPath.Values)
         {
-            var candidate = allRecords[i];
-            if (candidate == null || string.IsNullOrWhiteSpace(candidate.filePath))
+            if (candidateEntry == null ||
+                string.IsNullOrWhiteSpace(candidateEntry.fullPath) ||
+                string.Equals(candidateEntry.fullPath, entry.fullPath, StringComparison.OrdinalIgnoreCase) ||
+                !IsMappingCandidateAllowed(candidateEntry.fullPath, selectedDirectory) ||
+                (candidateEntry.type != LibraryImageType.RawOriginal && candidateEntry.metadataOriginalScore < 0.62f) ||
+                !recordIndex.TryGet(candidateEntry.fullPath, out var candidate))
+            {
                 continue;
-            if (string.Equals(candidate.filePath, entry.fullPath, StringComparison.OrdinalIgnoreCase))
-                continue;
+            }
 
-            if (_entryByPath.TryGetValue(candidate.filePath, out var candidateEntry))
+            originalCandidates.Add(candidate);
+        }
+
+        foreach (var pair in _originalMetadataByPath)
+        {
+            var candidatePath = pair.Key;
+            var snapshot = pair.Value;
+            if (string.IsNullOrWhiteSpace(candidatePath) ||
+                snapshot == null ||
+                _entryByPath.ContainsKey(candidatePath) ||
+                string.Equals(candidatePath, entry.fullPath, StringComparison.OrdinalIgnoreCase) ||
+                !IsMappingCandidateAllowed(candidatePath, selectedDirectory) ||
+                (snapshot.type != LibraryImageType.RawOriginal &&
+                 snapshot.score < 0.62f &&
+                 !IsRawOriginalFile(candidatePath)) ||
+                !recordIndex.TryGet(candidatePath, out var candidate))
             {
-                if (!IsMappingCandidateAllowed(candidate.filePath, selectedDirectory))
-                    continue;
-                if (candidateEntry.type == LibraryImageType.RawOriginal || candidateEntry.metadataOriginalScore >= 0.62f)
-                    originalCandidates.Add(candidate);
+                continue;
             }
-            else if (_originalMetadataByPath.TryGetValue(candidate.filePath, out var snapshot))
-            {
-                if (!IsMappingCandidateAllowed(candidate.filePath, selectedDirectory))
-                    continue;
-                if (snapshot.type == LibraryImageType.RawOriginal || snapshot.score >= 0.62f)
-                    originalCandidates.Add(candidate);
-            }
-            else if (IsRawOriginalFile(candidate.filePath))
-            {
-                if (!IsMappingCandidateAllowed(candidate.filePath, selectedDirectory))
-                    continue;
-                originalCandidates.Add(candidate);
-            }
+
+            originalCandidates.Add(candidate);
         }
 
         var best = ClipImageSimilarity.FindBestMatch(sourceRecord, originalCandidates);
-        if (best != null && best.target != null && ShouldTreatAsOriginalFromSimilarity(entry, sourceRecord, best, allRecords))
+        if (best != null && best.target != null && ShouldTreatAsOriginalFromSimilarity(entry, sourceRecord, best, recordIndex))
         {
             entry.type = LibraryImageType.Original;
             entry.metadataOriginalScore = Mathf.Max(entry.metadataOriginalScore, 0.62f);
@@ -3110,7 +3495,7 @@ public sealed class LibraryView : BasePageView
         ThumbnailEntry entry,
         ClipClassificationCache.CachedClipImageRecord sourceRecord,
         ClipImageSimilarity.SimilarImageMatch best,
-        IReadOnlyList<ClipClassificationCache.CachedClipImageRecord> allRecords)
+        ClipClassificationCache.CachedClipImageRecordIndex recordIndex)
     {
         if (entry == null || sourceRecord == null || best?.target == null)
             return false;
@@ -3125,7 +3510,7 @@ public sealed class LibraryView : BasePageView
             return true;
 
         return HasReasonableNearDuplicateSize(entry, best.target.filePath) &&
-               IsBestVisibleNearDuplicate(entry, sourceRecord, best.target, best.cosineSimilarity, allRecords);
+               IsBestVisibleNearDuplicate(entry, sourceRecord, best.target, best.cosineSimilarity, recordIndex);
     }
 
     private static string BuildMappedClipText(string currentClipText, float similarity, string originalName)
@@ -3232,9 +3617,9 @@ public sealed class LibraryView : BasePageView
         ClipClassificationCache.CachedClipImageRecord sourceRecord,
         ClipClassificationCache.CachedClipImageRecord targetRecord,
         float currentSimilarity,
-        IReadOnlyList<ClipClassificationCache.CachedClipImageRecord> allRecords)
+        ClipClassificationCache.CachedClipImageRecordIndex recordIndex)
     {
-        if (entry == null || sourceRecord == null || targetRecord?.imageEmbedding == null || allRecords == null)
+        if (entry == null || sourceRecord == null || targetRecord?.imageEmbedding == null || recordIndex == null)
             return false;
 
         for (var i = 0; i < _thumbnailEntries.Count; i++)
@@ -3247,7 +3632,7 @@ public sealed class LibraryView : BasePageView
                 continue;
             }
 
-            var candidateRecord = FindImageRecordByPath(allRecords, candidate.fullPath);
+            recordIndex.TryGet(candidate.fullPath, out var candidateRecord);
             if (candidateRecord?.imageEmbedding == null)
                 continue;
 
@@ -3312,26 +3697,6 @@ public sealed class LibraryView : BasePageView
         {
             return false;
         }
-    }
-
-    private static ClipClassificationCache.CachedClipImageRecord FindImageRecordByPath(
-        IReadOnlyList<ClipClassificationCache.CachedClipImageRecord> records,
-        string filePath)
-    {
-        if (records == null || string.IsNullOrWhiteSpace(filePath))
-            return null;
-
-        for (var i = 0; i < records.Count; i++)
-        {
-            var record = records[i];
-            if (record != null &&
-                string.Equals(record.filePath, filePath, StringComparison.OrdinalIgnoreCase))
-            {
-                return record;
-            }
-        }
-
-        return null;
     }
 
     private void RememberOriginalMetadata(ThumbnailEntry entry)

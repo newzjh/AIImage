@@ -31,6 +31,13 @@ namespace Aexis.Execution
             public uint zw;
         }
 
+        [StructLayout(LayoutKind.Explicit)]
+        private struct FloatUInt32
+        {
+            [FieldOffset(0)] public float value;
+            [FieldOffset(0)] public uint bits;
+        }
+
         internal sealed class Int8WeightOnlyUpload
         {
             public ComputeBuffer packedWeights;
@@ -12997,7 +13004,7 @@ namespace Aexis.Execution
         // immutable weights. Activations remain texture-native throughout execution.
         private static ushort FloatToHalfBits(float value)
         {
-            var bits = unchecked((uint)BitConverter.ToInt32(BitConverter.GetBytes(value), 0));
+            var bits = new FloatUInt32 { value = value }.bits;
             var sign = (bits >> 16) & 0x8000u;
             var exponent = (int)((bits >> 23) & 0xff) - 127 + 15;
             var mantissa = bits & 0x7fffffu;
