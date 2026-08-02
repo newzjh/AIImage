@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using Aexis.Samples.Async;
+using Aexis.Execution;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.UIElements;
@@ -1124,27 +1125,77 @@ public sealed class DesignView : BasePageView
         }
 
         var originalHistory = GetOriginalHistoryTexture();
-        if (originalHistory == null)
+        if (originalHistory == null || Host?.DeepFillV2Runner == null)
         {
             ShowToast("找不到原始背景图", 2400);
             return;
         }
 
-        ShowBusy(L("Apply design", "应用生成"));
         if (_maskedBackgroundPreview == null || _maskedBackgroundHoleMask == null)
         {
             ShowToast("缺少背景或遮罩数据，请先重新识别图层", 2600);
             return;
         }
 
+        if (!await Host.EnsureModelGroupsAvailableAsync(
+                "Design background inpainting model download",
+                System.Threading.CancellationToken.None,
+                AIImageModelGroupId.DeepFillV2Case1Ncnn))
+            return;
+
         ApplyCompositeResult applyResult = null;
+        Texture2D inpaintedBackground = null;
+        ShowProgress(L("Apply design", "应用生成"));
         try
         {
-            var backgroundReference = GetCurrentHistoryTexture() ?? originalHistory;
-            var baseTexture = (Texture)backgroundReference;
+            var deepFillRunner = Host.DeepFillV2Runner;
+            deepFillRunner.backend = DeepFillV2Backend.NcnnBin;
+            deepFillRunner.enableDebugDump = _exportCompositeDebug;
+            deepFillRunner.precisionMode = AexisPrecisionMode.Auto;
+            deepFillRunner.useArgbFloatTensor = false;
+            deepFillRunner.preserveUnmaskedPixels = true;
+            deepFillRunner.enableGeneralTextureConvolution = true;
+            deepFillRunner.enableDepthWiseTextureConvolution = true;
+            deepFillRunner.enableConv1x1TextureConvolution = true;
+
+            void OnInpaintProgress(float progress, string stage)
+            {
+                SetProgress(0.05f + 0.75f * progress, string.IsNullOrWhiteSpace(stage) ? "DeepFillV2" : "DeepFillV2 " + stage);
+            }
+
+            SetProgress(0.02f, L("Prepare background inpainting", "准备背景补全"));
+            deepFillRunner.ProgressChanged -= OnInpaintProgress;
+            deepFillRunner.ProgressChanged += OnInpaintProgress;
+            DeepFillV2Result inpaintResult;
+            try
+            {
+                inpaintResult = await deepFillRunner.ProcessAsync(
+                    _maskedBackgroundPreview,
+                    _maskedBackgroundHoleMask,
+                    System.Threading.CancellationToken.None);
+            }
+            finally
+            {
+                deepFillRunner.ProgressChanged -= OnInpaintProgress;
+                // The result is CPU-owned; release Pack4 intermediates before the composite dispatches.
+                deepFillRunner.Release();
+            }
+
+            if (!string.IsNullOrWhiteSpace(inpaintResult.error) || inpaintResult.texture == null)
+            {
+                if (inpaintResult.texture != null)
+                    DestroyTexture(ref inpaintResult.texture);
+                ShowToast(string.IsNullOrWhiteSpace(inpaintResult.error) ? "DeepFillV2 背景补全失败" : inpaintResult.error, 3600);
+                return;
+            }
+
+            inpaintedBackground = inpaintResult.texture;
+            inpaintResult.texture = null;
+
+            SetProgress(0.83f, L("Composite layers", "合成图层"));
             applyResult = await BuildAppliedCompositeAsync(
-                baseTexture,
-                backgroundReference,
+                inpaintedBackground,
+                inpaintedBackground,
                 _maskedBackgroundHoleMask,
                 _layerData,
                 _edgeCloseRadius,
@@ -1171,21 +1222,21 @@ public sealed class DesignView : BasePageView
             {
                 _tipsLabel.text = applyResult.remainingMaskPixels > 0
                     ? L(
-                        $"Created a new design result. {applyResult.remainingMaskPixels} pixels remain to be filled; the SD inpainting integration is reserved but not invoked.",
-                        $"已生成新的设计结果，剩余 {applyResult.remainingMaskPixels} 个待补区域像素，SD inpainting 接口已预留但暂未调用。")
+                        $"Created a new design result. DeepFillV2 restored {applyResult.remainingMaskPixels} background-mask pixels before the layers were composited.",
+                        $"已生成新的设计结果。DeepFillV2 已在合成图层前补全 {applyResult.remainingMaskPixels} 个背景遮罩像素。")
                     : L(
-                        "Created a new design result. All current layers have been composited into the background.",
-                        "已生成新的设计结果，当前图层已全部合成回背景。");
+                        "Created a new design result. DeepFillV2 restored the background and all current layers were composited.",
+                        "已生成新的设计结果。DeepFillV2 已补全背景，当前图层已全部合成回背景。");
             }
 
             ShowToast(
                 applyResult.remainingMaskPixels > 0
                     ? L(
-                        "Composited into the background. Black gaps remain and can be filled through the reserved SD inpainting integration.",
-                        "已合成到背景，仍有黑色缺口，后续可从预留的 SD inpainting 接口补洞。")
+                        "DeepFillV2 restored the masked background and the layers were composited.",
+                        "DeepFillV2 已补全遮罩背景，并已合成图层。")
                     : L(
-                        "Composited into the background and cleared all layers.",
-                        "已合成到背景，并已清除所有图层。"),
+                        "Composited into the restored background and cleared all layers.",
+                        "已合成到补全背景，并已清除所有图层。"),
                 3200);
         }
         finally
@@ -1194,7 +1245,8 @@ public sealed class DesignView : BasePageView
                 DestroyTexture(ref applyResult.composedTexture);
             if (applyResult?.remainingMask != null)
                 DestroyTexture(ref applyResult.remainingMask);
-            HideBusy();
+            DestroyTexture(ref inpaintedBackground);
+            HideProgress();
             await UniTask.Yield();
         }
     }
@@ -1219,12 +1271,6 @@ public sealed class DesignView : BasePageView
         try { kernel = cs.FindKernel("DesignViewCompositeLayer"); }
         catch { return null; }
         if (kernel < 0)
-            return null;
-
-        int applyRemainingKernel;
-        try { applyRemainingKernel = cs.FindKernel("DesignViewApplyRemainingMask"); }
-        catch { return null; }
-        if (applyRemainingKernel < 0)
             return null;
 
         int buildClosedMaskKernel;
@@ -1429,19 +1475,11 @@ public sealed class DesignView : BasePageView
                 DestroyRenderTexture(ref erodePongRt);
             }
 
-            tempRtA = CreateWorkingRenderTexture(width, height, "DesignViewCompositeFinal");
-            cs.SetTexture(applyRemainingKernel, "_Source", compositeRt);
-            cs.SetTexture(applyRemainingKernel, "_FaceMaskIn", remainingMaskRt);
-            cs.SetTexture(applyRemainingKernel, "_Result", tempRtA);
-            cs.Dispatch(applyRemainingKernel, gx, gy, 1);
-
             if (_exportCompositeDebug)
             {
-                await DumpTextureAsync(tempRtA, debugDirectory, "90_after_remaining_mask_apply.png");
+                await DumpTextureAsync(compositeRt, debugDirectory, "90_after_deepfill_background_composite.png");
                 await DumpTextureAsync(remainingMaskRt, debugDirectory, "91_remaining_mask_rt.png");
             }
-            Swap(ref compositeRt, ref tempRtA);
-            DestroyRenderTexture(ref tempRtA);
 
             var composedTexture = await ReadbackTextureAsync(compositeRt, width, height);
             var remainingMaskTex = await ReadbackTextureAsync(remainingMaskRt, width, height);
