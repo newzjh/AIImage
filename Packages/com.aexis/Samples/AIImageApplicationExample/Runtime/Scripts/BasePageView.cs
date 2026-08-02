@@ -1056,7 +1056,7 @@ public abstract class BasePageView : MonoBehaviour
             _progressText = string.Empty;
         }
 
-        _progressTitle.text = AppLocalization.Translate(string.IsNullOrWhiteSpace(title) ? "处理中" : title);
+        _progressTitle.text = AppLocalization.LocalizeProgressText(string.IsNullOrWhiteSpace(title) ? "处理中" : title);
         _progressBar.value = 0f;
         _progressBar.title = "0%";
         _progressDetail.text = string.Empty;
@@ -1079,7 +1079,7 @@ public abstract class BasePageView : MonoBehaviour
             progress = Mathf.Clamp01(progress);
             _progressBar.value = progress * 100f;
             _progressBar.title = Mathf.RoundToInt(progress * 100f) + "%";
-            _progressDetail.text = detail ?? string.Empty;
+            _progressDetail.text = AppLocalization.LocalizeProgressText(detail);
         }).Every(50);
         _progressTick.Resume();
     }

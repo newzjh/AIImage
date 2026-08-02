@@ -170,8 +170,102 @@ public static class AppLocalization
         ["\u5f53\u524d\u683c\u5f0f\u6682\u4e0d\u652f\u6301\u8986\u76d6\u4fdd\u5b58"] = "Overwriting this format is not supported.",
         ["\u5df2\u4fdd\u5b58\uff0c\u5e76\u6309\u539f\u8def\u5f84\u91cd\u65b0\u8f7d\u5165"] = "Saved and reloaded from the original path.",
         ["\u5df2\u4fdd\u5b58\u5230\u539f\u8def\u5f84"] = "Saved to the original path.",
-        ["\u4fdd\u5b58\u5931\u8d25"] = "Save failed."
+        ["\u4fdd\u5b58\u5931\u8d25"] = "Save failed.",
+
+        // Runner progress text can originate from either localized or legacy English runners.
+        ["\u51c6\u5907\u8f93\u5165"] = "Prepare input",
+        ["\u7f29\u5c0f"] = "Scale down",
+        ["\u7f29\u5c0f\u52302k\u4ee5\u5185"] = "Scale down to 2k or less",
+        ["\u751f\u6210\u8138\u90e8\u533a\u57df"] = "Generate face area",
+        ["\u68c0\u6d4b\u4eba\u8138"] = "Detect face",
+        ["\u68c0\u6d4b\u4eba\u8138\u533a\u57df"] = "Detect face area",
+        ["\u88c1\u526a\u8138\u90e8"] = "Crop face",
+        ["\u63a8\u7406\u4e2d\u2026"] = "Running inference...",
+        ["\u56de\u8d34\u5230\u539f\u56fe"] = "Paste back to original image",
+        ["\u56de\u7f29\u653e\u5230\u539f\u5206\u8fa8\u7387"] = "Restore original resolution",
+        ["\u7f16\u7801\u4eba\u8138"] = "Encode face",
+        ["\u4fee\u590d\u4eba\u8138"] = "Restore face",
+        ["\u5b8c\u6210\u4eba\u8138\u4fee\u590d"] = "Finalize face",
+        ["\u8bfb\u53d6\u6a21\u578b\u6587\u4ef6..."] = "Reading Model File...",
+        ["\u52a0\u8f7d\u6a21\u578b..."] = "Loading Model...",
+        ["\u52a0\u8f7d\u6a21\u578b"] = "Load models",
+        ["\u63a8\u7406\u5206\u5757 "] = "Inference tile ",
+        ["\u540e\u5904\u7406"] = "Postprocess",
+        ["\u8bfb\u53d6\u7ed3\u679c"] = "Read results",
+        ["\u8bfb\u53d6\u8f93\u5165"] = "Read inputs",
+        ["\u8c03\u6574\u6e90\u56fe\u5c3a\u5bf8"] = "Resize source",
+        ["\u8c03\u6574\u906e\u7f69\u5c3a\u5bf8"] = "Resize mask",
+        ["\u51c6\u5907 DeepFillV2"] = "Prepare DeepFillV2",
+        ["\u6253\u5305\u6e90\u56fe"] = "Pack source",
+        ["\u6253\u5305\u906e\u7f69"] = "Pack mask",
+        ["\u8fd0\u884c DeepFillV2"] = "Run DeepFillV2",
+        ["DeepFillV2 \u4e0a\u4e0b\u6587\u5904\u7406"] = "DeepFillV2 context",
+        ["\u89e3\u5305\u8f93\u51fa"] = "Unpack output",
+        ["\u8bfb\u53d6\u8f93\u51fa"] = "Read output",
+        ["\u6062\u590d\u56fe\u50cf\u5c3a\u5bf8"] = "Restore image size",
+        ["\u5408\u6210\u8f93\u51fa"] = "Composite output",
+        ["\u52a0\u8f7d\u7f16\u7801\u5668"] = "Load encoder",
+        ["\u52a0\u8f7d\u751f\u6210\u5668"] = "Load generator",
+        ["\u8fd0\u884c\u7f16\u7801\u5668"] = "Run encoder",
+        ["\u8fd0\u884c\u751f\u6210\u5668"] = "Run generator",
+        ["\u6062\u590d\u539f\u59cb\u5c3a\u5bf8"] = "Restore original size",
+        ["\u8fd0\u884c\u62a0\u56fe"] = "Run matting",
+        ["\u8c03\u6574\u900f\u660e\u5ea6\u5c3a\u5bf8"] = "Resize alpha",
+        ["\u8bfb\u53d6\u900f\u660e\u5ea6\u7ed3\u679c"] = "Read back alpha",
+        ["\u52a0\u8f7d MONAI ncnn \u6a21\u578b"] = "Load MONAI ncnn model",
+        ["\u51c6\u5907\u8f93\u5165\u5f20\u91cf"] = "Prepare input tensor",
+        ["\u8fd0\u884c MONAI \u63a8\u7406"] = "Run MONAI inference",
+        ["\u5199\u5165\u63a2\u9488\u8f6c\u50a8"] = "Write probe dumps",
+        ["\u540e\u5904\u7406\u8f93\u51fa"] = "Postprocess output",
+        ["\u5199\u5165\u8f6c\u50a8\u5e76\u6bd4\u8f83"] = "Write dumps and compare",
+        ["\u5206\u7c7b\u6c47\u603b\u7684 MONAI \u7279\u5f81"] = "Classify aggregated MONAI features",
+        ["\u8fd0\u884c MONAI \u5206\u5757 "] = "Run MONAI patch ",
+        ["\u8fd0\u884c YOLO \u5206\u5272"] = "Run YOLO seg",
+        ["\u6784\u5efa\u4eba\u7269\u906e\u7f69"] = "Build person mask",
+        ["\u6784\u5efa\u8f93\u51fa"] = "Build outputs",
+        ["\u51c6\u5907\u56fe\u50cf"] = "Prepare images",
+        ["\u7f16\u7801\u63d0\u793a\u8bcd"] = "Encode prompts",
+        ["\u7f16\u7801\u56fe\u50cf"] = "Encode images",
+        ["\u91c7\u6837\u6f5c\u53d8\u91cf"] = "Sample latent",
+        ["\u53bb\u566a\u6b65\u9aa4 "] = "Denoise step ",
+        ["\u89e3\u7801\u56fe\u50cf"] = "Decode image",
+        ["\u51c6\u5907\u4fee\u8865\u906e\u7f69"] = "Prepare inpaint mask",
+        ["\u7f16\u7801\u63d0\u793a\u8bcd\u5206\u5757 "] = "Encode prompt chunk ",
+        ["\u9884\u70ed CLIP"] = "Warm up CLIP",
+        ["\u52a0\u8f7d\u6807\u7b7e\u7f13\u5b58"] = "Load label cache",
+        ["CLIP \u9884\u70ed\u5c31\u7eea"] = "CLIP warmup ready",
+        ["\u7f16\u7801\u6587\u672c "] = "Encode text ",
+        ["\u6587\u672c\u5d4c\u5165\u5c31\u7eea"] = "Text embeddings ready",
+        ["\u91cd\u7f6e "] = "Reset ",
+        ["\u89e3\u6790 "] = "Parse ",
+        ["\u6784\u5efa "] = "Build ",
+        ["\u52a0\u8f7d "] = "Load ",
+        ["\u56fe\u7ed3\u6784"] = "graph",
+        ["\u8bfb\u53d6 "] = "Read ",
+        ["\u51c6\u5907 "] = "Prepare ",
+        ["\u5c31\u7eea"] = "ready",
+        ["\u6807\u7b7e\u8bc4\u5206"] = "Score labels",
+        ["\u6784\u5efa\u8bbe\u8ba1\u56fe\u5c42"] = "Build design layers",
+        ["\u51c6\u5907\u80cc\u666f\u8865\u5168"] = "Prepare background inpainting",
+        ["\u5408\u6210\u56fe\u5c42"] = "Composite layers",
+        ["\u5f00\u53d1\u8dd1\u6d4b"] = "Development runner test",
+        ["\u5f00\u53d1\u8dd1\u6d4b\u5b8c\u6210"] = "Development runner test complete",
+        ["\u51c6\u5907\u6a21\u578b"] = "preparing model",
+        ["\u8fd0\u884c\u4e2d"] = "running",
+        ["\u6b63\u5728\u91ca\u653e\u8fd0\u884c\u65f6\u8d44\u6e90"] = "releasing runtime resources",
+        ["\u6392\u961f\u4e2d"] = "queued",
+        ["\u5df2\u8df3\u8fc7\uff08\u7f3a\u5c11\u6a21\u578b\uff09"] = "skipped_missing_model",
+        ["\u5df2\u8df3\u8fc7\uff08\u4e0d\u652f\u6301\u7684\u8fd0\u884c\u5668\uff09"] = "skipped_unavailable_runner",
+        ["\u5df2\u8df3\u8fc7\uff08\u7f3a\u5c11\u4f9d\u8d56\uff09"] = "skipped_dependency",
+        ["\u5df2\u901a\u8fc7"] = "passed",
+        ["\u5931\u8d25"] = "failed",
+        ["\u8d85\u65f6"] = "timed_out",
+        ["YOLO + \u56fe\u50cf\u4fee\u8865"] = "YOLO + Inpainting",
+        ["YOLO \u5206\u5272"] = "YOLO Seg",
+        ["SD \u56fe\u50cf\u4fee\u8865"] = "SD Inpainting"
     };
+
+    private static readonly Dictionary<string, string> EnglishToChinese = CreateEnglishToChinese();
 
     public static AppLanguage CurrentLanguage =>
         PlayerPrefs.GetInt(LanguagePrefKey, (int)AppLanguage.English) == (int)AppLanguage.SimplifiedChinese
@@ -205,6 +299,14 @@ public static class AppLocalization
         return result;
     }
 
+    public static string LocalizeProgressText(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+            return string.Empty;
+
+        return IsEnglish ? Translate(text) : TranslateToSimplifiedChinese(text);
+    }
+
     public static void LocalizeVisualTree(VisualElement root)
     {
         if (root == null || !IsEnglish)
@@ -222,5 +324,32 @@ public static class AppLocalization
 
         if (!string.IsNullOrWhiteSpace(element.tooltip))
             element.tooltip = Translate(element.tooltip);
+    }
+
+    private static Dictionary<string, string> CreateEnglishToChinese()
+    {
+        var translations = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var pair in ChineseToEnglish)
+        {
+            if (!string.IsNullOrEmpty(pair.Value) && !translations.ContainsKey(pair.Value))
+                translations.Add(pair.Value, pair.Key);
+        }
+
+        translations["Encode image"] = "\u7f16\u7801\u56fe\u50cf";
+        translations["Load model"] = "\u52a0\u8f7d\u6a21\u578b";
+        translations["Sample latents"] = "\u91c7\u6837\u6f5c\u53d8\u91cf";
+
+        return translations;
+    }
+
+    private static string TranslateToSimplifiedChinese(string text)
+    {
+        if (EnglishToChinese.TryGetValue(text, out var translated))
+            return translated;
+
+        var result = text;
+        foreach (var pair in EnglishToChinese.OrderByDescending(item => item.Key.Length))
+            result = result.Replace(pair.Key, pair.Value);
+        return result;
     }
 }
