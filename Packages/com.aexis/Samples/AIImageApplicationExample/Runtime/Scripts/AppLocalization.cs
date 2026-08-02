@@ -110,7 +110,7 @@ public static class AppLocalization
         ["\u8c03\u8282\u9762\u677f\u5df2\u5c55\u5f00"] = "Adjustment panel expanded.",
         ["\u4fdd\u5b58"] = "Save",
         ["\u6e05\u6670"] = "Sharpen",
-        ["\u62a0\u56fe"] = "Cutout",
+        ["\u62a0\u56fe"] = "Matting",
         ["Qwen3.5 \u56fe\u50cf\u5206\u6790"] = "Qwen3.5 image analysis",
         ["\u590d\u5236"] = "Copy",
         ["\u590d\u5236\u5206\u6790\u7ed3\u679c"] = "Copy analysis result",

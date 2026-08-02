@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using Aexis.Samples.Async;
@@ -22,6 +23,8 @@ public struct MattingResult
 public sealed class MatterNcnnReproRunner : MonoBehaviour
 {
     private const string OutputBlobName = "local";
+    private const int AlphaReadbackTimeoutMilliseconds = 60000;
+    private static readonly float[] HalfToFloatTable = BuildHalfToFloatTable();
 
     public string modelParamRelativePath = "Matting/matting.param";
     public string modelBinRelativePath = "Matting/matting.bin";
@@ -250,9 +253,14 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
 
             if (enableForegroundCleanup)
             {
+                ReportProgress(0.88f, "Clean alpha");
+                await UniTask.Yield();
+                ct.ThrowIfCancellationRequested();
                 ApplyLargestForegroundCleanup(alpha, originalW, originalH, foregroundCleanupThreshold, foregroundCleanupCloseRadius);
             }
 
+            ReportProgress(0.94f, "Build output");
+            await UniTask.Yield();
             readableSrc = EnsureReadable(src);
             if (readableSrc == null)
                 return Finish(new MattingResult { error = "Prepare source pixels failed" });
@@ -505,48 +513,148 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
         return UniTask.CompletedTask;
     }
 
-    private static UniTask<float[]> ReadbackSingleChannelAsync(
+    private async UniTask<float[]> ReadbackSingleChannelAsync(
         RenderTexture pack4,
         int width,
         int height,
         CancellationToken ct)
     {
         if (pack4 == null)
-            return UniTask.FromResult<float[]>(null);
+            return null;
+        if (!SystemInfo.supportsAsyncGPUReadback)
+            throw new NotSupportedException("Matting alpha readback requires AsyncGPUReadback on this texture-only inference path.");
 
         ct.ThrowIfCancellationRequested();
+        var readbackFormat = pack4.format == RenderTextureFormat.ARGBFloat
+            ? TextureFormat.RFloat
+            : TextureFormat.RHalf;
         if (UnityEngine.Debug.isDebugBuild)
-            UnityEngine.Debug.Log("[Matting] alpha-readback-begin | texture=" + pack4.GetInstanceID());
-        var alpha = ReadbackSingleChannelSync(pack4, width, height);
-        return UniTask.FromResult(alpha);
+            UnityEngine.Debug.Log("[Matting] alpha-readback-submit | texture=" + pack4.GetInstanceID() + " | source_format=" + pack4.format + " | format=" + readbackFormat);
+
+        // Do not use a completion callback here. On the affected large-texture
+        // path, callback delivery can wait behind Unity's render-thread work.
+        // Polling lets the player keep presenting frames while the GPU copies one
+        // scalar channel instead of a widened RGBAFloat staging texture. Keep
+        // FP32 source output in RFloat so readback does not change matte values.
+        var request = AsyncGPUReadback.Request(pack4, 0, readbackFormat);
+#if UNITY_EDITOR
+        // The editor's batch-mode pump runs script updates without a presentable
+        // frame, so normal request polling never reaches completion there.
+        // Player builds always use the non-blocking path below.
+        if (Application.isBatchMode)
+            AsyncGPUReadback.WaitAllRequests();
+#endif
+        var waitFrames = 0;
+        var waitStopwatch = Stopwatch.StartNew();
+        while (!request.done)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (waitStopwatch.ElapsedMilliseconds >= AlphaReadbackTimeoutMilliseconds)
+            {
+                throw new TimeoutException(
+                    "Matting alpha readback timed out"
+                    + " | texture=" + pack4.GetInstanceID()
+                    + " | source_format=" + pack4.format
+                    + " | requested_format=" + readbackFormat
+                    + " | waited_ms=" + waitStopwatch.ElapsedMilliseconds);
+            }
+            waitFrames++;
+            if ((waitFrames & 7) == 0)
+                ReportProgress(Mathf.Min(0.87f, 0.82f + waitFrames * 0.001f), "Read back alpha");
+            await UniTask.NextFrame();
+        }
+
+        ct.ThrowIfCancellationRequested();
+        if (request.hasError)
+        {
+            throw new InvalidOperationException(
+                "Matting alpha readback failed"
+                + " | texture=" + pack4.GetInstanceID()
+                + " | requested_format=" + readbackFormat);
+        }
+
+        var pixelCount = checked(width * height);
+        var alpha = new float[pixelCount];
+        if (readbackFormat == TextureFormat.RFloat)
+        {
+            var single = request.GetData<float>();
+            if (single.Length < pixelCount)
+                throw CreateAlphaReadbackPayloadException(pixelCount, single.Length, readbackFormat);
+            for (var index = 0; index < pixelCount; index++)
+                alpha[index] = single[index];
+        }
+        else
+        {
+            var half = request.GetData<ushort>();
+            if (half.Length < pixelCount)
+                throw CreateAlphaReadbackPayloadException(pixelCount, half.Length, readbackFormat);
+            for (var index = 0; index < pixelCount; index++)
+                alpha[index] = HalfToFloatTable[half[index]];
+        }
+
+        if (UnityEngine.Debug.isDebugBuild)
+            UnityEngine.Debug.Log("[Matting] alpha-readback-complete | frames=" + waitFrames + " | samples=" + pixelCount);
+        return alpha;
     }
 
-    private static float[] ReadbackSingleChannelSync(RenderTexture pack4, int width, int height)
+    private static InvalidOperationException CreateAlphaReadbackPayloadException(int expected, int actual, TextureFormat format)
     {
-        var previousActive = RenderTexture.active;
-        Texture2D readback = null;
-        try
-        {
-            readback = new Texture2D(width, height, TextureFormat.RGBAFloat, false, true);
-            if (pack4.dimension == TextureDimension.Tex2D)
-                RenderTexture.active = pack4;
-            else
-                Graphics.SetRenderTarget(pack4, 0, CubemapFace.Unknown, 0);
-            readback.ReadPixels(new Rect(0, 0, width, height), 0, 0, false);
-            readback.Apply(false, false);
+        return new InvalidOperationException(
+            "Matting alpha readback payload is too small"
+            + " | expected=" + expected
+            + " | actual=" + actual
+            + " | format=" + format);
+    }
 
-            var pixels = readback.GetRawTextureData<float>();
-            var alpha = new float[width * height];
-            for (var index = 0; index < alpha.Length; index++)
-                alpha[index] = pixels[index * 4];
-            return alpha;
-        }
-        finally
+    private static float[] BuildHalfToFloatTable()
+    {
+        var table = new float[1 << 16];
+        for (var index = 0; index < table.Length; index++)
+            table[index] = HalfToFloat((ushort)index);
+        return table;
+    }
+
+    private static float HalfToFloat(ushort value)
+    {
+        var sign = (uint)(value & 0x8000) << 16;
+        var exponent = (uint)(value & 0x7c00) >> 10;
+        var mantissa = (uint)(value & 0x03ff);
+        uint bits;
+        if (exponent == 0)
         {
-            RenderTexture.active = previousActive;
-            if (readback != null)
-                Destroy(readback);
+            if (mantissa == 0)
+            {
+                bits = sign;
+            }
+            else
+            {
+                exponent = 1;
+                while ((mantissa & 0x0400) == 0)
+                {
+                    mantissa <<= 1;
+                    exponent--;
+                }
+                mantissa &= 0x03ff;
+                bits = sign | ((exponent + 112) << 23) | (mantissa << 13);
+            }
         }
+        else if (exponent == 31)
+        {
+            bits = sign | 0x7f800000 | (mantissa << 13);
+        }
+        else
+        {
+            bits = sign | ((exponent + 112) << 23) | (mantissa << 13);
+        }
+
+        return new UIntFloat { UInt = bits }.Float;
+    }
+
+    [StructLayout(LayoutKind.Explicit)]
+    private struct UIntFloat
+    {
+        [FieldOffset(0)] public uint UInt;
+        [FieldOffset(0)] public float Float;
     }
 
     private static Texture2D BuildMatteTexture(float[] alpha, int width, int height)
@@ -1143,63 +1251,108 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
 
     private static bool[] MorphDilate(bool[] mask, int width, int height, int radius)
     {
-        var result = new bool[mask.Length];
+        if (radius <= 0)
+            return (bool[])mask.Clone();
+
+        var horizontal = new bool[mask.Length];
         for (var y = 0; y < height; y++)
         {
             for (var x = 0; x < width; x++)
             {
                 var set = false;
-                for (var ny = Mathf.Max(0, y - radius); ny <= Mathf.Min(height - 1, y + radius) && !set; ny++)
+                var minX = Math.Max(0, x - radius);
+                var maxX = Math.Min(width - 1, x + radius);
+                for (var nx = minX; nx <= maxX; nx++)
                 {
-                    var row = ny * width;
-                    for (var nx = Mathf.Max(0, x - radius); nx <= Mathf.Min(width - 1, x + radius); nx++)
+                    if (mask[y * width + nx])
                     {
-                        if (mask[row + nx])
-                        {
-                            set = true;
-                            break;
-                        }
+                        set = true;
+                        break;
+                    }
+                }
+
+                horizontal[y * width + x] = set;
+            }
+        }
+
+        var result = new bool[mask.Length];
+        for (var y = 0; y < height; y++)
+        {
+            var minY = Math.Max(0, y - radius);
+            var maxY = Math.Min(height - 1, y + radius);
+            for (var x = 0; x < width; x++)
+            {
+                var set = false;
+                for (var ny = minY; ny <= maxY; ny++)
+                {
+                    if (horizontal[ny * width + x])
+                    {
+                        set = true;
+                        break;
                     }
                 }
 
                 result[y * width + x] = set;
             }
         }
-
         return result;
     }
 
     private static bool[] MorphErode(bool[] mask, int width, int height, int radius)
     {
-        var result = new bool[mask.Length];
+        if (radius <= 0)
+            return (bool[])mask.Clone();
+
+        var horizontal = new bool[mask.Length];
         for (var y = 0; y < height; y++)
         {
             for (var x = 0; x < width; x++)
             {
                 var keep = true;
-                for (var ny = Mathf.Max(0, y - radius); ny <= Mathf.Min(height - 1, y + radius) && keep; ny++)
+                var minX = Math.Max(0, x - radius);
+                var maxX = Math.Min(width - 1, x + radius);
+                for (var nx = minX; nx <= maxX; nx++)
                 {
-                    var row = ny * width;
-                    for (var nx = Mathf.Max(0, x - radius); nx <= Mathf.Min(width - 1, x + radius); nx++)
+                    if (!mask[y * width + nx])
                     {
-                        if (!mask[row + nx])
-                        {
-                            keep = false;
-                            break;
-                        }
+                        keep = false;
+                        break;
+                    }
+                }
+
+                horizontal[y * width + x] = keep;
+            }
+        }
+
+        var result = new bool[mask.Length];
+        for (var y = 0; y < height; y++)
+        {
+            var minY = Math.Max(0, y - radius);
+            var maxY = Math.Min(height - 1, y + radius);
+            for (var x = 0; x < width; x++)
+            {
+                var keep = true;
+                for (var ny = minY; ny <= maxY; ny++)
+                {
+                    if (!horizontal[ny * width + x])
+                    {
+                        keep = false;
+                        break;
                     }
                 }
 
                 result[y * width + x] = keep;
             }
         }
-
         return result;
     }
 
     private static void ApplyGrayCloseInMask(float[] alpha, bool[] keep, int width, int height, int radius)
     {
-        var dilated = new float[alpha.Length];
+        if (radius <= 0)
+            return;
+
+        var horizontalDilated = new float[alpha.Length];
         for (var y = 0; y < height; y++)
         {
             for (var x = 0; x < width; x++)
@@ -1209,24 +1362,42 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
                     continue;
 
                 var best = 0f;
-                for (var ny = Mathf.Max(0, y - radius); ny <= Mathf.Min(height - 1, y + radius); ny++)
+                var minX = Math.Max(0, x - radius);
+                var maxX = Math.Min(width - 1, x + radius);
+                for (var nx = minX; nx <= maxX; nx++)
                 {
-                    var row = ny * width;
-                    for (var nx = Mathf.Max(0, x - radius); nx <= Mathf.Min(width - 1, x + radius); nx++)
-                    {
-                        var ni = row + nx;
-                        if (!keep[ni])
-                            continue;
-                        if (alpha[ni] > best)
-                            best = alpha[ni];
-                    }
+                    var ni = y * width + nx;
+                    if (keep[ni] && alpha[ni] > best)
+                        best = alpha[ni];
                 }
 
+                horizontalDilated[index] = best;
+            }
+        }
+
+        var dilated = new float[alpha.Length];
+        for (var y = 0; y < height; y++)
+        {
+            var minY = Math.Max(0, y - radius);
+            var maxY = Math.Min(height - 1, y + radius);
+            for (var x = 0; x < width; x++)
+            {
+                var index = y * width + x;
+                if (!keep[index])
+                    continue;
+
+                var best = 0f;
+                for (var ny = minY; ny <= maxY; ny++)
+                {
+                    var ni = ny * width + x;
+                    if (keep[ni] && horizontalDilated[ni] > best)
+                        best = horizontalDilated[ni];
+                }
                 dilated[index] = best;
             }
         }
 
-        var closed = new float[alpha.Length];
+        var horizontalClosed = new float[alpha.Length];
         for (var y = 0; y < height; y++)
         {
             for (var x = 0; x < width; x++)
@@ -1236,29 +1407,39 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
                     continue;
 
                 var best = 1f;
-                var hasValue = false;
-                for (var ny = Mathf.Max(0, y - radius); ny <= Mathf.Min(height - 1, y + radius); ny++)
+                var minX = Math.Max(0, x - radius);
+                var maxX = Math.Min(width - 1, x + radius);
+                for (var nx = minX; nx <= maxX; nx++)
                 {
-                    var row = ny * width;
-                    for (var nx = Mathf.Max(0, x - radius); nx <= Mathf.Min(width - 1, x + radius); nx++)
-                    {
-                        var ni = row + nx;
-                        if (!keep[ni])
-                            continue;
-                        if (!hasValue || dilated[ni] < best)
-                            best = dilated[ni];
-                        hasValue = true;
-                    }
+                    var ni = y * width + nx;
+                    if (keep[ni] && dilated[ni] < best)
+                        best = dilated[ni];
                 }
 
-                closed[index] = hasValue ? best : alpha[index];
+                horizontalClosed[index] = best;
             }
         }
 
-        for (var i = 0; i < alpha.Length; i++)
+        for (var y = 0; y < height; y++)
         {
-            if (keep[i])
-                alpha[i] = Mathf.Clamp01(closed[i]);
+            var minY = Math.Max(0, y - radius);
+            var maxY = Math.Min(height - 1, y + radius);
+            for (var x = 0; x < width; x++)
+            {
+                var index = y * width + x;
+                if (!keep[index])
+                    continue;
+
+                var best = 1f;
+                for (var ny = minY; ny <= maxY; ny++)
+                {
+                    var ni = ny * width + x;
+                    if (keep[ni] && horizontalClosed[ni] < best)
+                        best = horizontalClosed[ni];
+                }
+
+                alpha[index] = Mathf.Clamp01(best);
+            }
         }
     }
 
