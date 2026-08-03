@@ -1541,7 +1541,7 @@ public abstract class BasePageView : MonoBehaviour
 
     private static bool IsPrimaryPointerPressed()
     {
-        return Input.GetMouseButton(0) || Input.touchCount > 0;
+        return AIImageInputCompatibility.IsPrimaryPointerPressed();
     }
 
     private void OnRootKeyDown(KeyDownEvent evt)

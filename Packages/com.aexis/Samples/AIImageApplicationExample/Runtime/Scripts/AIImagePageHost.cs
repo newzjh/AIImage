@@ -63,6 +63,7 @@ public sealed class AIImagePageHost : MonoBehaviour
     private void Awake()
     {
         Aexis.Samples.AexisSampleStreamingAssets.RegisterManifestPathResolver();
+        AIImageInputCompatibility.ConfigureUiInputModule();
         EnsureHostSetup();
     }
 

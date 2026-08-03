@@ -97,7 +97,7 @@ For an embedded package, add the following entry to the consuming project's `Pac
 
 For a registry or Git release, install the published `com.aexis` package through Unity Package Manager. Do not copy `Runtime` files into `Assets`; package-local resources and assembly definitions are part of the runtime contract.
 
-For a standalone `.unitypackage`, run `Aexis/Release/Export Complete UnityPackage` from an Aexis project, then import the exported archive. Its editor bootstrap restores the complete package to `Packages/com.aexis` and registers it with Package Manager. The Main2 application is managed directly at `Packages/com.aexis/Samples/AIImageApplicationExample`; open its scene or run its installer from there.
+For a standalone `.unitypackage`, run `Aexis/Release/Export Complete UnityPackage` from an Aexis project, then import the exported archive with the Aexis entries selected. The import list is the original `Packages/com.aexis/...` file tree, so there is no large ZIP payload to identify or select. Unity places the files directly in `Packages/com.aexis`; the small bootstrap only confirms the Package Manager registration and then deletes itself. The package is ready without restarting the project. The Main2 application is managed directly at `Packages/com.aexis/Samples/AIImageApplicationExample`; open its scene or run its installer from there.
 
 ## Package layout
 

@@ -1,0 +1,17 @@
+{
+  "name": "Aexis.Sample.Application.InputSystem",
+  "rootNamespace": "AIImage.InputSystem",
+  "references": [
+    "Aexis.Sample.Application",
+    "Unity.InputSystem"
+  ],
+  "includePlatforms": [],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": ["ENABLE_INPUT_SYSTEM"],
+  "versionDefines": [],
+  "noEngineReferences": false
+}
