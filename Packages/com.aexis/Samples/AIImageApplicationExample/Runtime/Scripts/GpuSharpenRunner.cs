@@ -497,11 +497,20 @@ public sealed class GpuSharpenRunner : MonoBehaviour
             }
 
             var tex = await ReadbackTextureAsync(finalRt, w, h, ct);
+            if (tex == null)
+                return new GpuSharpenResult { error = "GPU sharpen output readback failed", dumpDir = dumpDir };
+
+            // finalRt is Linear numeric storage. Publish an sRGB display texture so
+            // UI rendering and PNG export do not depend on the project color space.
+            var displayTex = CopyTexture(tex, false);
+            Destroy(tex);
+            if (displayTex == null)
+                return new GpuSharpenResult { error = "GPU sharpen display copy failed", dumpDir = dumpDir };
 
             if (dumpStages && !string.IsNullOrWhiteSpace(dumpDir))
                 OpenFolderInShell(dumpDir);
 
-            return new GpuSharpenResult { texture = tex, dumpDir = dumpDir };
+            return new GpuSharpenResult { texture = displayTex, dumpDir = dumpDir };
         }
         catch (OperationCanceledException)
         {
@@ -675,6 +684,19 @@ public sealed class GpuSharpenRunner : MonoBehaviour
         tex.wrapMode = TextureWrapMode.Clamp;
         tex.filterMode = FilterMode.Bilinear;
         return tex;
+    }
+
+    private static Texture2D CopyTexture(Texture2D source, bool linear)
+    {
+        if (source == null)
+            return null;
+
+        var copy = new Texture2D(source.width, source.height, TextureFormat.RGBA32, false, linear);
+        copy.SetPixels32(source.GetPixels32());
+        copy.Apply(false, false);
+        copy.wrapMode = TextureWrapMode.Clamp;
+        copy.filterMode = FilterMode.Bilinear;
+        return copy;
     }
 
     private static string CreateDumpDir()

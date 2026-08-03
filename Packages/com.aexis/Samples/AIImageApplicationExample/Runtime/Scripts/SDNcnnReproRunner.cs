@@ -2662,7 +2662,10 @@ public sealed class SDNcnnReproRunner : MonoBehaviour
             msaaSamples = 1,
             useMipMap = false,
             autoGenerateMips = false,
-            volumeDepth = 1
+            volumeDepth = 1,
+            // Diffusion images and VAE tensors are numeric storage. Keep their
+            // render targets independent of QualitySettings.activeColorSpace.
+            sRGB = false
         };
         var rt = RenderTexture.GetTemporary(desc);
         rt.wrapMode = TextureWrapMode.Clamp;

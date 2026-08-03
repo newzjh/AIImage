@@ -154,6 +154,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
 
         RenderTexture resized = null;
         RenderTexture inputPack4 = null;
+        Texture2D modelInput = null;
         long loadMs = 0;
         long imageInferMs = 0;
         long scoreMs = 0;
@@ -175,7 +176,13 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
             await UniTask.Yield();
             ct.ThrowIfCancellationRequested();
 
-            resized = ResizeTextureBilinear(src, targetSize, targetSize);
+            // CLIP normalizes encoded RGB values. Preserve those values in a Linear
+            // data texture before resizing so project color-space settings cannot
+            // change the image embedding.
+            modelInput = CopyTexture(src, true);
+            if (modelInput == null)
+                return Finish(new ClipClassificationResult { error = "Copy model input failed" });
+            resized = ResizeTextureBilinear(modelInput, targetSize, targetSize);
             if (resized == null)
                 return Finish(new ClipClassificationResult { error = "Resize input failed" });
 
@@ -312,6 +319,8 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
                 ReleaseTemporaryRt(resized);
             if (inputPack4 != null)
                 _imageRepro?.ReturnTempArray(inputPack4);
+            if (modelInput != null)
+                Destroy(modelInput);
             ReportProgress(1f, string.Empty);
         }
     }
@@ -1079,7 +1088,7 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
     {
         if (src == null)
             return null;
-        var rt = RenderTexture.GetTemporary(width, height, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Default);
+        var rt = RenderTexture.GetTemporary(width, height, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
         var prev = RenderTexture.active;
         try
         {
@@ -1097,6 +1106,19 @@ public sealed class ClipNcnnReproRunner : MonoBehaviour
         if (rt == null)
             return;
         RenderTexture.ReleaseTemporary(rt);
+    }
+
+    private static Texture2D CopyTexture(Texture2D source, bool linear)
+    {
+        if (source == null)
+            return null;
+
+        var copy = new Texture2D(source.width, source.height, TextureFormat.RGBA32, false, linear);
+        copy.SetPixels32(source.GetPixels32());
+        copy.Apply(false, false);
+        copy.wrapMode = TextureWrapMode.Clamp;
+        copy.filterMode = FilterMode.Bilinear;
+        return copy;
     }
 
     private static float Dot(float[] a, float[] b)

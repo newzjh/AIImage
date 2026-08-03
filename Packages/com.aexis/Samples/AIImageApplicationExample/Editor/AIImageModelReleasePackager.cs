@@ -78,8 +78,7 @@ public static class AIImageModelReleasePackager
     [MenuItem("Aexis/Release/Build Reduced/Export Complete UnityPackage")]
     public static void ExportCompleteUnityPackage()
     {
-        var output = Path.Combine(GetOutputDirectory(), "Aexis-Complete.unitypackage");
-        AexisUnityPackageExporter.ExportCompleteUnityPackage(output);
+        AexisUnityPackageExporter.ExportCompleteUnityPackage();
     }
 
     public static void ExportReducedMain2UnityPackage()

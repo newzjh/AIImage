@@ -227,6 +227,7 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
         RenderTexture corePack4 = null;
         RenderTexture inputPack4 = null;
         Texture2D readableSrc = null;
+        Texture2D modelInput = null;
 
         try
         {
@@ -253,10 +254,14 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
                 return Finish(new YoloSegResult { error = "Prepare source pixels failed" });
             LogResourceSnapshot("after_readable");
 
+            modelInput = CopyTexture(readableSrc, true);
+            if (modelInput == null)
+                return Finish(new YoloSegResult { error = "Copy model input failed" });
+
             var letterbox = ComputeLetterbox(readableSrc.width, readableSrc.height, Mathf.Max(32, targetSize), Mathf.Max(32, maxStride));
             _currentLetterbox = letterbox;
             UnityEngine.Debug.Log("[YoloSegRunner] Prepare input: ResizeTextureBilinear begin " + letterbox.resizedWidth + "x" + letterbox.resizedHeight);
-            resizedRt = ResizeTextureBilinear(readableSrc, letterbox.resizedWidth, letterbox.resizedHeight);
+            resizedRt = ResizeTextureBilinear(modelInput, letterbox.resizedWidth, letterbox.resizedHeight);
             UnityEngine.Debug.Log("[YoloSegRunner] Prepare input: ResizeTextureBilinear end");
             if (resizedRt == null)
                 return Finish(new YoloSegResult { error = "Resize input failed" });
@@ -458,7 +463,7 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
             await YieldIfNeeded();
             ct.ThrowIfCancellationRequested();
             var outputTextureData = await BuildOutputTexturesAsync(
-                readableSrc,
+                modelInput,
                 unionMask,
                 overlayColor,
                 Mathf.Clamp01(overlayOpacity),
@@ -521,6 +526,8 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
                 _repro?.ReturnTempArray(inputPack4);
             if (readableSrc != null && readableSrc != src)
                 DestroyRuntimeObject(readableSrc);
+            if (modelInput != null)
+                DestroyRuntimeObject(modelInput);
             LogResourceSnapshot("process_finally_end");
             ReportProgress(1f, string.Empty);
         }
@@ -1176,7 +1183,9 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
         try
         {
             RenderTexture.active = rt;
-            var tex = new Texture2D(width, height, TextureFormat.RGBA32, false, true);
+            // Working textures contain numeric RGB; returned masks and overlays are
+            // display images and must retain an sRGB texture tag.
+            var tex = new Texture2D(width, height, TextureFormat.RGBA32, false, false);
             tex.ReadPixels(new Rect(0, 0, width, height), 0, 0, false);
             tex.Apply(false, false);
             tex.wrapMode = TextureWrapMode.Clamp;
@@ -1352,7 +1361,7 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
 
     private static RenderTexture GetTemporaryRt(int width, int height, RenderTextureFormat format, bool enableRandomWrite, string label = null)
     {
-        var rt = RenderTexture.GetTemporary(width, height, 0, format, RenderTextureReadWrite.Default);
+        var rt = RenderTexture.GetTemporary(width, height, 0, format, RenderTextureReadWrite.Linear);
         rt.enableRandomWrite = enableRandomWrite;
         rt.wrapMode = TextureWrapMode.Clamp;
         rt.filterMode = FilterMode.Bilinear;
@@ -1367,6 +1376,19 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
             return;
         AexisGpuResourceTracker.ReleaseTexture(rt, label ?? "YoloSeg.TempRt");
         RenderTexture.ReleaseTemporary(rt);
+    }
+
+    private static Texture2D CopyTexture(Texture2D source, bool linear)
+    {
+        if (source == null)
+            return null;
+
+        var copy = new Texture2D(source.width, source.height, TextureFormat.RGBA32, false, linear);
+        copy.SetPixels32(source.GetPixels32());
+        copy.Apply(false, false);
+        copy.wrapMode = TextureWrapMode.Clamp;
+        copy.filterMode = FilterMode.Bilinear;
+        return copy;
     }
 
     private static void TryWriteTexturePng(Texture2D texture, string dir, string fileName)

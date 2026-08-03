@@ -619,56 +619,70 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             }
             return r;
         }
-        var runFactor = InferModelFactor(modelName);
-        var limit = Mathf.Max(256, maxInputLongSide);
-        var maxSide = Mathf.Max(originalW, originalH);
-        var runInW = originalW;
-        var runInH = originalH;
-        if (maxSide > limit)
-        {
-            var s = (float)limit / maxSide;
-            runInW = Mathf.Max(1, Mathf.RoundToInt(originalW * s));
-            runInH = Mathf.Max(1, Mathf.RoundToInt(originalH * s));
-        }
-        var baseTileSize = tileSize > 0 ? tileSize : Mathf.Max(runInW, runInH);
-        var effectiveTilePad = tilePad > 0 ? tilePad : 10;
+        // Real-ESRGAN expects the encoded 8-bit RGB values from the source image.
+        // Copy them into a linear data texture so Pack4 sampling is independent of
+        // the importing project's Gamma/Linear setting.
+        var modelInput = CopyTexture(src, true);
+        if (modelInput == null)
+            return Finish(new RealEsrganResult { error = "Model input copy failed" });
 
-        ReportProgress(0f, "准备输入");
-        await YieldIfNeeded();
-
-        var attemptTiles = new[]
+        try
         {
-            Mathf.Max(16, baseTileSize),
-            Mathf.Max(16, baseTileSize / 2),
-            Mathf.Max(16, baseTileSize / 4)
-        };
-
-        Exception lastErr = null;
-        for (var attempt = 0; attempt < attemptTiles.Length; attempt++)
-        {
-            var effectiveTileSize = attemptTiles[attempt];
-            try
+            var runFactor = InferModelFactor(modelName);
+            var limit = Mathf.Max(256, maxInputLongSide);
+            var maxSide = Mathf.Max(originalW, originalH);
+            var runInW = originalW;
+            var runInH = originalH;
+            if (maxSide > limit)
             {
+                var s = (float)limit / maxSide;
+                runInW = Mathf.Max(1, Mathf.RoundToInt(originalW * s));
+                runInH = Mathf.Max(1, Mathf.RoundToInt(originalH * s));
+            }
+            var baseTileSize = tileSize > 0 ? tileSize : Mathf.Max(runInW, runInH);
+            var effectiveTilePad = tilePad > 0 ? tilePad : 10;
+
+            ReportProgress(0f, "准备输入");
+            await YieldIfNeeded();
+
+            var attemptTiles = new[]
+            {
+                Mathf.Max(16, baseTileSize),
+                Mathf.Max(16, baseTileSize / 2),
+                Mathf.Max(16, baseTileSize / 4)
+            };
+
+            Exception lastErr = null;
+            for (var attempt = 0; attempt < attemptTiles.Length; attempt++)
+            {
+                var effectiveTileSize = attemptTiles[attempt];
                 try
                 {
-                    UnityEngine.Debug.Log("[RealESRGAN(repro)] attempt start | mode=" + (_useCmdThisRun ? "command_buffer" : "immediate") + " | tile=" + effectiveTileSize);
+                    try
+                    {
+                        UnityEngine.Debug.Log("[RealESRGAN(repro)] attempt start | mode=" + (_useCmdThisRun ? "command_buffer" : "immediate") + " | tile=" + effectiveTileSize);
+                    }
+                    catch
+                    {
+                    }
+                    var r = await ProcessOnceAsync(modelInput, ct, originalW, originalH, runInW, runInH, runFactor, effectiveTileSize, effectiveTilePad);
+                    return Finish(r);
                 }
-                catch
+                catch (Exception e)
                 {
+                    lastErr = e;
+                    if (!IsLikelyVulkanOom(e))
+                        break;
+                    await YieldIfNeeded();
                 }
-                var r = await ProcessOnceAsync(src, ct, originalW, originalH, runInW, runInH, runFactor, effectiveTileSize, effectiveTilePad);
-                return Finish(r);
             }
-            catch (Exception e)
-            {
-                lastErr = e;
-                if (!IsLikelyVulkanOom(e))
-                    break;
-                await YieldIfNeeded();
-            }
-        }
 
-        return Finish(new RealEsrganResult { error = lastErr != null ? lastErr.Message : "unknown error" });
+            return Finish(new RealEsrganResult { error = lastErr != null ? lastErr.Message : "unknown error" });
+        }
+        finally
+        {
+            DestroyObjectSafe(modelInput);
+        }
     }
 
     private async UniTask<RealEsrganResult> ProcessOnceAsync(Texture2D src, CancellationToken ct, int originalW, int originalH, int runInW, int runInH, int runFactor, int effectiveTileSize, int effectiveTilePad)
@@ -716,7 +730,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             float sx = (float)originalW / (float)runInW;
             float sy = (float)originalH / (float)runInH;
 
-            outRt = new RenderTexture(originalW, originalH, 0, RenderTextureFormat.ARGB32);
+            outRt = new RenderTexture(originalW, originalH, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
             outRt.enableRandomWrite = true;
             outRt.wrapMode = TextureWrapMode.Clamp;
             outRt.filterMode = FilterMode.Bilinear;
@@ -1110,9 +1124,15 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                 }
             }
 
-            Texture2D finalTex = scaledTex;
-            if (finalTex == null)
+            if (scaledTex == null)
                 return new RealEsrganResult { error = "resize output failed" };
+
+            // The model result is encoded display RGB. Return an sRGB texture so UI
+            // rendering and image encoding remain correct in Linear projects.
+            var finalTex = CopyTexture(scaledTex, false);
+            DestroyObjectSafe(scaledTex);
+            if (finalTex == null)
+                return new RealEsrganResult { error = "Display texture copy failed" };
 
             ReportProgress(1f, "完成");
             profileOutcome = "completed";
@@ -1444,6 +1464,19 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         dst.SetPixels32(dstPixels);
         dst.Apply(false, false);
         return dst;
+    }
+
+    private static Texture2D CopyTexture(Texture2D src, bool linear)
+    {
+        if (src == null)
+            return null;
+
+        var tex = new Texture2D(src.width, src.height, TextureFormat.RGBA32, false, linear);
+        tex.SetPixels32(src.GetPixels32());
+        tex.Apply(false, false);
+        tex.wrapMode = TextureWrapMode.Clamp;
+        tex.filterMode = FilterMode.Bilinear;
+        return tex;
     }
 
     private void ReportProgress(float p, string t)

@@ -810,7 +810,9 @@ internal sealed class AIImageRuntimeSmokeReporter : MonoBehaviour
         var scale = maxLongSide / (float)longSide;
         var width = Mathf.Max(1, Mathf.RoundToInt(source.width * scale));
         var height = Mathf.Max(1, Mathf.RoundToInt(source.height * scale));
-        var temporary = RenderTexture.GetTemporary(width, height, 0, RenderTextureFormat.ARGB32);
+        // Smoke inputs carry raw encoded RGB for the model runners. Keep the resize
+        // target Linear so a Gamma/Linear project setting cannot alter the fixture.
+        var temporary = RenderTexture.GetTemporary(width, height, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
         var previous = RenderTexture.active;
         try
         {

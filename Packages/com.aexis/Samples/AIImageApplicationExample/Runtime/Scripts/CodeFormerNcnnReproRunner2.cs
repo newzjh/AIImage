@@ -191,11 +191,18 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
             await UniTask.Yield();
 
             NcnnFaceRegionGenerator faceRegion = null;
+            Texture2D modelInput = null;
             Texture2D scaled = null;
             Texture2D workingTex = null;
             try
             {
-                var inputTex = src;
+                // CodeFormer was trained on the encoded 8-bit RGB values. Keep that data
+                // domain independent of the host project's Gamma/Linear setting.
+                modelInput = CopyTexture(src);
+                if (modelInput == null)
+                    return Finish(new CodeFormerResult { error = "Model input copy failed" });
+
+                var inputTex = modelInput;
                 float scaleDown = 1f;
                 if (maxSide > limit)
                 {
@@ -304,12 +311,24 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
                 finalTex.wrapMode = TextureWrapMode.Clamp;
                 finalTex.filterMode = FilterMode.Bilinear;
                 finalTex.name = "CodeFormer_Repro2";
+
+                // The model result contains encoded display RGB values. Mark the returned
+                // texture sRGB so UI presentation and image encoding stay correct in Linear projects.
+                var displayTex = CopyTextureForDisplay(finalTex);
+                DestroyObjectSafe(finalTex);
+                if (displayTex == null)
+                    return Finish(new CodeFormerResult { error = "Display texture copy failed" });
+
+                displayTex.wrapMode = TextureWrapMode.Clamp;
+                displayTex.filterMode = FilterMode.Bilinear;
+                displayTex.name = "CodeFormer_Repro2";
                 ReportProgress(1f, "Done");
                 await UniTask.Yield();
-                return Finish(new CodeFormerResult { texture = finalTex });
+                return Finish(new CodeFormerResult { texture = displayTex });
             }
             finally
             {
+                DestroyObjectSafe(modelInput);
                 DestroyObjectSafe(scaled);
                 DestroyObjectSafe(workingTex);
                 if (enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir))
@@ -1936,9 +1955,19 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
 
     private static Texture2D CopyTexture(Texture2D src)
     {
+        return CopyTexture(src, true);
+    }
+
+    private static Texture2D CopyTextureForDisplay(Texture2D src)
+    {
+        return CopyTexture(src, false);
+    }
+
+    private static Texture2D CopyTexture(Texture2D src, bool linear)
+    {
         if (src == null)
             return null;
-        var tex = new Texture2D(src.width, src.height, TextureFormat.RGBA32, false, true);
+        var tex = new Texture2D(src.width, src.height, TextureFormat.RGBA32, false, linear);
         tex.SetPixels32(src.GetPixels32());
         tex.Apply(false, false);
         tex.wrapMode = TextureWrapMode.Clamp;
@@ -2369,7 +2398,9 @@ public sealed class CodeFormerNcnnReproRunner2 : MonoBehaviour
 
     private static RenderTexture ResizeTextureBilinear(Texture src, int w, int h)
     {
-        var ret = GetTemporaryRt(w, h, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Default, false);
+        // This is model preprocessing, so Default would make the values depend on
+        // QualitySettings.activeColorSpace in the importing project.
+        var ret = GetTemporaryRt(w, h, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear, false);
         Graphics.Blit(src, ret);
         return ret;
     }

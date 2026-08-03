@@ -136,6 +136,7 @@ public sealed class FaceMaskGenerator : MonoBehaviour
         ComputeBuffer faceParams = null;
         string dumpDir = null;
         Texture2D maskTex = null;
+        Texture2D modelInput = null;
 
         try
         {
@@ -145,6 +146,13 @@ public sealed class FaceMaskGenerator : MonoBehaviour
             var h = src.height;
             var gx = Mathf.CeilToInt(w / 8f);
             var gy = Mathf.CeilToInt(h / 8f);
+
+            // The mask heuristics operate on encoded RGB values. Copy the bytes to
+            // a Linear data texture so sampling never applies the project's sRGB
+            // conversion before the YCbCr thresholds are evaluated.
+            modelInput = CopyTextureAsLinearData(src);
+            if (modelInput == null)
+                return new FaceMaskTextureResult { error = "FaceMask input copy failed" };
 
             faceStats = new ComputeBuffer(7, sizeof(int), ComputeBufferType.Structured);
             faceParams = new ComputeBuffer(1, sizeof(float) * 4, ComputeBufferType.Structured);
@@ -158,7 +166,7 @@ public sealed class FaceMaskGenerator : MonoBehaviour
             faceMaskD5 = NewRT(Mathf.Max(1, (faceMaskD4.width + 1) / 2), Mathf.Max(1, (faceMaskD4.height + 1) / 2), RenderTextureFormat.RHalf);
             boxTmp = NewRT(w, h, RenderTextureFormat.RHalf);
 
-            cs.SetTexture(kRaw, "_Source", src);
+            cs.SetTexture(kRaw, "_Source", modelInput);
             cs.SetTexture(kRaw, "_MaskOut", faceMaskRaw);
             cs.Dispatch(kRaw, gx, gy, 1);
 
@@ -198,7 +206,7 @@ public sealed class FaceMaskGenerator : MonoBehaviour
             cs.SetBuffer(kApply, "_FaceStats", faceStats);
             cs.SetBuffer(kApply, "_FaceParams", faceParams);
             cs.SetInt("_StatsScale", statsScale);
-            cs.SetTexture(kApply, "_Source", src);
+            cs.SetTexture(kApply, "_Source", modelInput);
             cs.SetTexture(kApply, "_MaskOut", faceMask);
             cs.Dispatch(kApply, gx, gy, 1);
 
@@ -254,7 +262,22 @@ public sealed class FaceMaskGenerator : MonoBehaviour
             SafeReleaseRT(boxTmp);
             try { faceStats?.Dispose(); } catch { }
             try { faceParams?.Dispose(); } catch { }
+            if (modelInput != null)
+                Destroy(modelInput);
         }
+    }
+
+    private static Texture2D CopyTextureAsLinearData(Texture2D source)
+    {
+        if (source == null)
+            return null;
+
+        var copy = new Texture2D(source.width, source.height, TextureFormat.RGBA32, false, true);
+        copy.SetPixels32(source.GetPixels32());
+        copy.Apply(false, false);
+        copy.wrapMode = TextureWrapMode.Clamp;
+        copy.filterMode = FilterMode.Bilinear;
+        return copy;
     }
 
     private static RenderTexture NewRT(int w, int h, RenderTextureFormat fmt)

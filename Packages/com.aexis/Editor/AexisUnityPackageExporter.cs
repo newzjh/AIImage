@@ -274,8 +274,8 @@ internal static class AexisUnityPackageImportBootstrap
     {
         EditorApplication.delayCall += () =>
         {
-            AssetDatabase.DeleteAsset(BootstrapAssetPath);
-            AssetDatabase.Refresh(ImportAssetOptions.ForceSynchronousImport);
+            if (AssetDatabase.IsValidFolder(BootstrapAssetPath))
+                AssetDatabase.DeleteAsset(BootstrapAssetPath);
         };
     }
 }

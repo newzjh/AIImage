@@ -264,12 +264,20 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
                     return Finish(new GfpganResult { error = "回缩放失败" });
             }
 
-            finalTex.wrapMode = TextureWrapMode.Clamp;
-            finalTex.filterMode = FilterMode.Bilinear;
-            finalTex.name = "GFPGAN_Repro";
+            // All restoration stages carry encoded RGB as numeric model data. Convert
+            // only at the public boundary so the result looks and encodes the same in
+            // Gamma and Linear projects.
+            var displayTex = CopyTexture(finalTex, false);
+            DestroyObjectSafe(finalTex);
+            if (displayTex == null)
+                return Finish(new GfpganResult { error = "Display texture copy failed" });
+
+            displayTex.wrapMode = TextureWrapMode.Clamp;
+            displayTex.filterMode = FilterMode.Bilinear;
+            displayTex.name = "GFPGAN_Repro";
             ReportProgress(1f, "完成");
             await UniTask.Yield();
-            return Finish(new GfpganResult { texture = finalTex });
+            return Finish(new GfpganResult { texture = displayTex });
         }
         catch (Exception e)
         {
@@ -824,7 +832,9 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         try
         {
             RenderTexture.active = rt;
-            var tex = new Texture2D(w, h, TextureFormat.RGBA32, false, false);
+            // Keep the Pack4 output as raw numeric RGB while it is pasted back into
+            // the source image. The returned result is converted to sRGB above.
+            var tex = new Texture2D(w, h, TextureFormat.RGBA32, false, true);
             tex.ReadPixels(new Rect(0, 0, w, h), 0, 0, false);
             tex.Apply(false, false);
             tex.wrapMode = TextureWrapMode.Clamp;
@@ -976,7 +986,9 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
 
     private static RenderTexture ResizeTextureBilinear(Texture src, int w, int h)
     {
-        RenderTexture ret = new RenderTexture(w, h, 0, RenderTextureFormat.ARGB32);
+        // This resize feeds model data; Default would depend on the project color
+        // space and can silently apply an sRGB conversion in a fresh project.
+        RenderTexture ret = new RenderTexture(w, h, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
         ret.Create();
         Graphics.Blit(src, ret);
         return ret;
@@ -1042,6 +1054,19 @@ public sealed class GfpganNcnnReproRunner : MonoBehaviour
         dst.SetPixels32(dstPixels);
         dst.Apply(false, false);
         return dst;
+    }
+
+    private static Texture2D CopyTexture(Texture2D src, bool linear)
+    {
+        if (src == null)
+            return null;
+
+        var tex = new Texture2D(src.width, src.height, TextureFormat.RGBA32, false, linear);
+        tex.SetPixels32(src.GetPixels32());
+        tex.Apply(false, false);
+        tex.wrapMode = TextureWrapMode.Clamp;
+        tex.filterMode = FilterMode.Bilinear;
+        return tex;
     }
 
     private static void DestroyObjectSafe(UnityEngine.Object obj)

@@ -2860,16 +2860,23 @@ public sealed class LibraryView : BasePageView
             return null;
 
         RenderTexture temporary = null;
+        Texture2D dataSource = null;
         var previousActive = RenderTexture.active;
         try
         {
-            temporary = RenderTexture.GetTemporary(targetSize.x, targetSize.y, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Default);
+            // CLIP consumes encoded RGB values, not display-linear values. Preserve
+            // the texture bytes in a Linear data texture before the GPU resize.
+            dataSource = CopyTextureAsLinearData(sourceTexture);
+            if (dataSource == null)
+                return null;
+
+            temporary = RenderTexture.GetTemporary(targetSize.x, targetSize.y, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
             temporary.filterMode = FilterMode.Bilinear;
             temporary.wrapMode = TextureWrapMode.Clamp;
-            Graphics.Blit(sourceTexture, temporary);
+            Graphics.Blit(dataSource, temporary);
             RenderTexture.active = temporary;
 
-            var result = new Texture2D(targetSize.x, targetSize.y, TextureFormat.RGBA32, false);
+            var result = new Texture2D(targetSize.x, targetSize.y, TextureFormat.RGBA32, false, true);
             result.ReadPixels(new Rect(0, 0, targetSize.x, targetSize.y), 0, 0);
             result.Apply(false, true);
             result.wrapMode = TextureWrapMode.Clamp;
@@ -2887,6 +2894,8 @@ public sealed class LibraryView : BasePageView
             RenderTexture.active = previousActive;
             if (temporary != null)
                 RenderTexture.ReleaseTemporary(temporary);
+            if (dataSource != null)
+                UnityEngine.Object.Destroy(dataSource);
         }
     }
 
@@ -2896,7 +2905,7 @@ public sealed class LibraryView : BasePageView
         if (targetSize.x <= 0 || targetSize.y <= 0)
             return null;
 
-        var result = new RenderTexture(targetSize.x, targetSize.y, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Default)
+        var result = new RenderTexture(targetSize.x, targetSize.y, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.sRGB)
         {
             filterMode = FilterMode.Bilinear,
             wrapMode = TextureWrapMode.Clamp,
@@ -2916,6 +2925,47 @@ public sealed class LibraryView : BasePageView
             ReleaseThumbnailTexture(result);
             return null;
         }
+    }
+
+    private static Texture2D CopyTextureAsLinearData(Texture source)
+    {
+        if (source == null)
+            return null;
+
+        if (source is Texture2D texture2D)
+        {
+            var copy = new Texture2D(texture2D.width, texture2D.height, TextureFormat.RGBA32, false, true);
+            copy.SetPixels32(texture2D.GetPixels32());
+            copy.Apply(false, false);
+            copy.wrapMode = TextureWrapMode.Clamp;
+            copy.filterMode = FilterMode.Bilinear;
+            return copy;
+        }
+
+        if (source is RenderTexture renderTexture)
+        {
+            var previousActive = RenderTexture.active;
+            try
+            {
+                RenderTexture.active = renderTexture;
+                var copy = new Texture2D(renderTexture.width, renderTexture.height, TextureFormat.RGBA32, false, true);
+                copy.ReadPixels(new Rect(0, 0, renderTexture.width, renderTexture.height), 0, 0, false);
+                copy.Apply(false, false);
+                copy.wrapMode = TextureWrapMode.Clamp;
+                copy.filterMode = FilterMode.Bilinear;
+                return copy;
+            }
+            catch
+            {
+                return null;
+            }
+            finally
+            {
+                RenderTexture.active = previousActive;
+            }
+        }
+
+        return null;
     }
 
     private static Texture2D CreateTextureFromImageBytes(byte[] imageBytes, string name)

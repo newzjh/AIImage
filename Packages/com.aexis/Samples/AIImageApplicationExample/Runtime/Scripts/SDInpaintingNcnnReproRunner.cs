@@ -2642,7 +2642,8 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             enableRandomWrite = true,
             msaaSamples = 1,
             useMipMap = false,
-            autoGenerateMips = false
+            autoGenerateMips = false,
+            sRGB = false
         };
 
         var rt = new RenderTexture(desc)
@@ -3009,7 +3010,8 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             enableRandomWrite = true,
             msaaSamples = 1,
             useMipMap = false,
-            autoGenerateMips = false
+            autoGenerateMips = false,
+            sRGB = false
         };
 
         var rt = new RenderTexture(desc)
@@ -5444,7 +5446,9 @@ public sealed class SDInpaintingNcnnReproRunner : MonoBehaviour
             msaaSamples = 1,
             useMipMap = false,
             autoGenerateMips = false,
-            volumeDepth = 1
+            volumeDepth = 1,
+            // VAE output and temporary image tensors are numeric RGB storage.
+            sRGB = false
         };
         var rt = RenderTexture.GetTemporary(desc);
         rt.wrapMode = TextureWrapMode.Clamp;

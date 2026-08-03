@@ -78,6 +78,8 @@ public sealed class DeepFillV2Runner : MonoBehaviour
         var inferMs = 0L;
         Texture2D readableSource = null;
         Texture2D readableMask = null;
+        Texture2D modelSource = null;
+        Texture2D modelMask = null;
         RenderTexture source512 = null;
         RenderTexture mask512 = null;
         RenderTexture sourcePack4 = null;
@@ -122,10 +124,17 @@ public sealed class DeepFillV2Runner : MonoBehaviour
             if (readableSource == null || readableMask == null)
                 return Finish(new DeepFillV2Result { error = "DeepFillV2 failed to read source or mask texture." });
 
+            // Use raw encoded values for model sampling, independent of the
+            // importing project's Gamma/Linear setting.
+            modelSource = CopyTexture(readableSource, true);
+            modelMask = CopyTexture(readableMask, true);
+            if (modelSource == null || modelMask == null)
+                return Finish(new DeepFillV2Result { error = "DeepFillV2 failed to copy model input textures." });
+
             ReportProgress(0.22f, "Resize source");
-            source512 = PrepareModelInput(readableSource);
+            source512 = PrepareModelInput(modelSource);
             ReportProgress(0.30f, "Resize mask");
-            mask512 = PrepareModelInput(readableMask);
+            mask512 = PrepareModelInput(modelMask);
             if (source512 == null || mask512 == null)
                 return Finish(new DeepFillV2Result { error = "DeepFillV2 failed to prepare the 400x512 source or mask." });
 
@@ -193,7 +202,7 @@ public sealed class DeepFillV2Runner : MonoBehaviour
                     ReportProgress(0.86f, "Unpack output");
                     _ops.Pack4ToRgbScaled(outPack4, rgb512, 0.5f, 0.5f, flipYOutput);
                     ReportProgress(0.92f, "Read output");
-                    generated512 = await ReadRenderTexturePacedAsync(rgb512, TextureFormat.RGBA32, false, ct);
+                    generated512 = await ReadRenderTexturePacedAsync(rgb512, TextureFormat.RGBA32, true, ct);
                 }
             }
             else
@@ -256,7 +265,7 @@ public sealed class DeepFillV2Runner : MonoBehaviour
                         ReportProgress(0.86f, "Unpack output");
                         _ops.Pack4ToRgbScaled(outPack4, rgb512, 0.5f, 0.5f, flipYOutput);
                         ReportProgress(0.92f, "Read output");
-                        generated512 = await ReadRenderTexturePacedAsync(rgb512, TextureFormat.RGBA32, false, ct);
+                        generated512 = await ReadRenderTexturePacedAsync(rgb512, TextureFormat.RGBA32, true, ct);
                     }
                     finally
                     {
@@ -288,15 +297,22 @@ public sealed class DeepFillV2Runner : MonoBehaviour
             if (finalTexture == null)
                 return Finish(new DeepFillV2Result { error = "DeepFillV2 final composite failed." });
 
+            var displayTexture = CopyTexture(finalTexture, false);
+            DestroyRuntimeObject(finalTexture);
+            if (ReferenceEquals(finalTexture, generatedFull))
+                generatedFull = null;
+            if (displayTexture == null)
+                return Finish(new DeepFillV2Result { error = "DeepFillV2 failed to create display output." });
+
             if (enableDebugDump && !string.IsNullOrWhiteSpace(_lastDumpDir))
             {
                 TryWriteTexturePng(generated512, Path.Combine(_lastDumpDir, "02_deepfillv2_400x512.png"));
-                TryWriteTexturePng(finalTexture, Path.Combine(_lastDumpDir, "03_deepfillv2_final.png"));
-                WriteSummary(Path.Combine(_lastDumpDir, "summary.txt"), readableSource, readableMask, finalTexture, loadMs, inferMs);
+                TryWriteTexturePng(displayTexture, Path.Combine(_lastDumpDir, "03_deepfillv2_final.png"));
+                WriteSummary(Path.Combine(_lastDumpDir, "summary.txt"), readableSource, readableMask, displayTexture, loadMs, inferMs);
             }
 
             ReportProgress(1f, "Done");
-            return Finish(new DeepFillV2Result { texture = finalTexture });
+            return Finish(new DeepFillV2Result { texture = displayTexture });
         }
         catch (OperationCanceledException)
         {
@@ -316,6 +332,8 @@ public sealed class DeepFillV2Runner : MonoBehaviour
             ReleaseRenderTexture(mask512);
             ReleaseRenderTexture(rgb512);
             if (generated512 != null) DestroyRuntimeObject(generated512);
+            if (modelSource != null) DestroyRuntimeObject(modelSource);
+            if (modelMask != null) DestroyRuntimeObject(modelMask);
             if (readableSource != null && !ReferenceEquals(readableSource, sourceImage)) DestroyRuntimeObject(readableSource);
             if (readableMask != null && !ReferenceEquals(readableMask, maskImage)) DestroyRuntimeObject(readableMask);
         }
@@ -563,11 +581,11 @@ public sealed class DeepFillV2Runner : MonoBehaviour
             return null;
         if (texture is Texture2D tex2d && tex2d.isReadable)
             return tex2d;
-        var rt = RenderTexture.GetTemporary(Mathf.Max(1, texture.width), Mathf.Max(1, texture.height), 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Default);
+        var rt = RenderTexture.GetTemporary(Mathf.Max(1, texture.width), Mathf.Max(1, texture.height), 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear);
         try
         {
             Graphics.Blit(texture, rt);
-            return ReadRenderTexture(rt, TextureFormat.RGBA32, false);
+            return ReadRenderTexture(rt, TextureFormat.RGBA32, true);
         }
         finally
         {
@@ -601,7 +619,7 @@ public sealed class DeepFillV2Runner : MonoBehaviour
             return null;
         try
         {
-            return await ReadRenderTexturePacedAsync(rt, TextureFormat.RGBA32, false, ct);
+            return await ReadRenderTexturePacedAsync(rt, TextureFormat.RGBA32, true, ct);
         }
         finally
         {
@@ -635,7 +653,7 @@ public sealed class DeepFillV2Runner : MonoBehaviour
 
     private static RenderTexture NewRenderTexture(int width, int height, RenderTextureFormat format, bool randomWrite, string name)
     {
-        var rt = new RenderTexture(Mathf.Max(1, width), Mathf.Max(1, height), 0, format, RenderTextureReadWrite.Default)
+        var rt = new RenderTexture(Mathf.Max(1, width), Mathf.Max(1, height), 0, format, RenderTextureReadWrite.Linear)
         {
             enableRandomWrite = randomWrite,
             useMipMap = false,
@@ -663,6 +681,19 @@ public sealed class DeepFillV2Runner : MonoBehaviour
         {
             RenderTexture.active = prev;
         }
+    }
+
+    private static Texture2D CopyTexture(Texture2D source, bool linear)
+    {
+        if (source == null)
+            return null;
+
+        var copy = new Texture2D(source.width, source.height, TextureFormat.RGBA32, false, linear);
+        copy.SetPixels32(source.GetPixels32());
+        copy.Apply(false, false);
+        copy.wrapMode = TextureWrapMode.Clamp;
+        copy.filterMode = FilterMode.Bilinear;
+        return copy;
     }
 
     private static UniTask<Texture2D> ReadRenderTexturePacedAsync(RenderTexture rt, TextureFormat format, bool linear, CancellationToken ct)

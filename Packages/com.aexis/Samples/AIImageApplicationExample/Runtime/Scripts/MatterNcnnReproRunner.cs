@@ -104,6 +104,7 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
         RenderTexture mattePack4 = null;
         RenderTexture matteFullResPack4 = null;
         Texture2D readableSrc = null;
+        Texture2D modelInput = null;
         _lastDumpDir = null;
         List<string> textureConvCompareLines = null;
 
@@ -119,8 +120,15 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
             ReportProgress(0.05f, "Prepare input");
             await UniTask.Yield();
 
+            readableSrc = EnsureReadable(src);
+            if (readableSrc == null)
+                return Finish(new MattingResult { error = "Prepare source pixels failed" });
+            modelInput = CopyTexture(readableSrc, true);
+            if (modelInput == null)
+                return Finish(new MattingResult { error = "Copy model input failed" });
+
             var (inputW, inputH) = ComputeModelInputSize(originalW, originalH, refSize, preserveAspectRatioInput);
-            resizedInput = ResizeTextureBilinear(src, inputW, inputH);
+            resizedInput = ResizeTextureBilinear(modelInput, inputW, inputH);
             if (resizedInput == null)
                 return Finish(new MattingResult { error = "Resize input failed" });
             if (!useCommandBuffer)
@@ -261,10 +269,6 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
 
             ReportProgress(0.94f, "Build output");
             await UniTask.Yield();
-            readableSrc = EnsureReadable(src);
-            if (readableSrc == null)
-                return Finish(new MattingResult { error = "Prepare source pixels failed" });
-
             var matte = BuildMatteTexture(alpha, originalW, originalH);
             var composite = BuildCompositeTexture(readableSrc, alpha, compositeBackgroundColor);
             return Finish(new MattingResult { texture = composite, matte = matte });
@@ -287,6 +291,8 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
                 _repro?.ReturnTempArray(mattePack4);
             if (matteFullResPack4 != null)
                 _repro?.ReturnTempArray(matteFullResPack4);
+            if (modelInput != null)
+                Destroy(modelInput);
             if (readableSrc != null && readableSrc != src)
                 Destroy(readableSrc);
             if (_repro != null)
@@ -474,7 +480,7 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
     {
         if (src == null)
             return null;
-        var rt = GetTemporaryRt(width, height, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Default, false);
+        var rt = GetTemporaryRt(width, height, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear, false);
         Graphics.Blit(src, rt);
         return rt;
     }
@@ -1296,6 +1302,19 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
             }
         }
         return result;
+    }
+
+    private static Texture2D CopyTexture(Texture2D source, bool linear)
+    {
+        if (source == null)
+            return null;
+
+        var copy = new Texture2D(source.width, source.height, TextureFormat.RGBA32, false, linear);
+        copy.SetPixels32(source.GetPixels32());
+        copy.Apply(false, false);
+        copy.wrapMode = TextureWrapMode.Clamp;
+        copy.filterMode = FilterMode.Bilinear;
+        return copy;
     }
 
     private static bool[] MorphErode(bool[] mask, int width, int height, int radius)
