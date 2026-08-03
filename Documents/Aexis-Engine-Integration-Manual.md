@@ -32,7 +32,7 @@ From an Aexis project, choose:
 Aexis/Release/Export Complete UnityPackage
 ```
 
-Import the exported archive into the target Unity project. Its editor bootstrap restores `Packages/com.aexis` and registers the package with Package Manager.
+Import the exported archive into the target Unity project with the Aexis entries selected. Its import list is the original `Packages/com.aexis/...` file tree rather than a large ZIP payload. Unity writes the package directly to `Packages/com.aexis`; the small bootstrap only confirms Package Manager registration and removes itself. The package is ready in the current editor session, without closing and reopening the project.
 
 ### 2.3 AIImage Main2 Application Example
 
