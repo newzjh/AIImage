@@ -5,6 +5,7 @@ using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Security.Cryptography;
+using Aexis.Editor;
 using UnityEditor;
 using UnityEngine;
 
@@ -74,65 +75,23 @@ public static class AIImageModelReleasePackager
         }
     }
 
-    [MenuItem("Aexis/Release/Build Reduced/Export Reduced Main2 UnityPackage")]
+    [MenuItem("Aexis/Release/Build Reduced/Export Complete UnityPackage")]
+    public static void ExportCompleteUnityPackage()
+    {
+        var output = Path.Combine(GetOutputDirectory(), "Aexis-Complete.unitypackage");
+        AexisUnityPackageExporter.ExportCompleteUnityPackage(output);
+    }
+
     public static void ExportReducedMain2UnityPackage()
     {
-        var output = Path.Combine(GetOutputDirectory(), "Aexis-ReducedMain2.unitypackage");
-        Directory.CreateDirectory(Path.GetDirectoryName(output));
-
-        var packageRoot = "Packages/com.aexis";
-        var sampleRoot = packageRoot + "/Samples/AIImageApplicationExample";
-        var paths = new List<string>
-        {
-            packageRoot + "/package.json",
-            packageRoot + "/README.md",
-            packageRoot + "/Runtime",
-            packageRoot + "/Editor",
-            packageRoot + "/Documentation~",
-            packageRoot + "/Samples/CoreContracts",
-            packageRoot + "/Samples/RunnerIntegration",
-            sampleRoot + "/Aexis.Sample.Application.asmdef",
-            sampleRoot + "/Editor",
-            sampleRoot + "/ReferenceRunners",
-            sampleRoot + "/Resources",
-            sampleRoot + "/Runtime",
-            sampleRoot + "/Scenes",
-            sampleRoot + "/Settings",
-            sampleRoot + "/Textures",
-            sampleRoot + "/ThirdParty",
-            sampleRoot + "/UI Toolkit",
-            sampleRoot + "/README.md",
-            sampleRoot + "/export-manifest.json"
-        };
-
-        foreach (var group in AIImageModelDelivery.DefaultGroups)
-        {
-            // Package release policy excludes GFPGAN and Qwen payloads. They remain
-            // available through the model delivery archives and editor downloader.
-            if (group.Id == AIImageModelGroupId.GfpganDefault
-                || group.Id == AIImageModelGroupId.Qwen35MobileQ4
-                || group.Id == AIImageModelGroupId.Qwen35MobileQ8)
-                continue;
-            foreach (var relative in group.Files)
-            {
-                var path = sampleRoot + "/StreamingAssets/" + relative;
-                if (File.Exists(Path.GetFullPath(Path.Combine(ProjectRoot, path))))
-                    paths.Add(path);
-            }
-        }
-
-        var existing = paths.Where(AssetExists).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-        if (existing.Length == 0)
-            throw new InvalidOperationException("No package assets were found for reduced Main2 export.");
-        AssetDatabase.ExportPackage(existing, output, ExportPackageOptions.Recurse);
-        Debug.Log("Exported reduced Main2 UnityPackage: " + output);
+        ExportCompleteUnityPackage();
     }
 
     public static void ExportReducedMain2UnityPackageBatch()
     {
         try
         {
-            ExportReducedMain2UnityPackage();
+            ExportCompleteUnityPackage();
             EditorApplication.Exit(0);
         }
         catch (Exception exception)
@@ -202,12 +161,6 @@ public static class AIImageModelReleasePackager
                     System.IO.Compression.CompressionLevel.Optimal);
             }
         }
-    }
-
-    private static bool AssetExists(string assetPath)
-    {
-        var fullPath = Path.GetFullPath(Path.Combine(ProjectRoot, assetPath));
-        return File.Exists(fullPath) || Directory.Exists(fullPath);
     }
 
     private static string GetOutputDirectory()

@@ -28,9 +28,26 @@ namespace Aexis.Editor
         {
             var root = ResolveAexisRoot();
             var version = ReadPackageVersion(root);
-            var outputPath = ResolveOutputPath(version);
-            Directory.CreateDirectory(Path.GetDirectoryName(outputPath));
+            ExportCompleteUnityPackage(root, ResolveOutputPath(version));
+        }
 
+        /// <summary>Exports the complete package to an explicit UnityPackage path.</summary>
+        public static void ExportCompleteUnityPackage(string outputPath)
+        {
+            ExportCompleteUnityPackage(ResolveAexisRoot(), outputPath);
+        }
+
+        private static void ExportCompleteUnityPackage(string root, string outputPath)
+        {
+            if (string.IsNullOrWhiteSpace(outputPath))
+                throw new ArgumentException("An output path is required.", nameof(outputPath));
+
+            outputPath = Path.GetFullPath(outputPath);
+            var outputDirectory = Path.GetDirectoryName(outputPath);
+            if (string.IsNullOrWhiteSpace(outputDirectory))
+                throw new ArgumentException("The output path must include a directory.", nameof(outputPath));
+
+            Directory.CreateDirectory(outputDirectory);
             ExportPackageFileList(root, outputPath);
             Debug.Log("Aexis UnityPackage exported: " + outputPath);
         }

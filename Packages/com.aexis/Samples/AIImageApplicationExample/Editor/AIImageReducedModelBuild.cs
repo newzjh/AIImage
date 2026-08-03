@@ -518,7 +518,7 @@ public sealed class AIImageReducedModelBuild : IPostprocessBuildWithReport, IPos
         if (errors.Count > 0)
             throw new InvalidOperationException("One or more reduced Main2 builds failed:\n" + string.Join("\n", errors));
 
-        AIImageModelReleasePackager.ExportReducedMain2UnityPackage();
+        AIImageModelReleasePackager.ExportCompleteUnityPackage();
     }
 
     private static void RewriteOutputStreamingAssets(string directory)
