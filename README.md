@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://github.com/newzjh/AIImage">
+  <a href="https://github.com/newzjh/Aexis">
     <img src="Documents/AssetStore/MarketingImages/aexis-icon.png" width="112" alt="Aexis on-device inference engine"/>
   </a>
 </p>
@@ -9,7 +9,7 @@
 <p align="center">A self-contained, on-device inference engine for Unity.</p>
 
 <p align="center">
-  <a href="https://github.com/newzjh/AIImage"><img src="https://img.shields.io/badge/GitHub-AIImage-181717?style=flat&logo=github" alt="GitHub"/></a>
+  <a href="https://github.com/newzjh/Aexis"><img src="https://img.shields.io/badge/GitHub-AIImage-181717?style=flat&logo=github" alt="GitHub"/></a>
   <a href="https://assetstore.unity.com/preview/397636/1435586"><img src="https://img.shields.io/badge/Unity%20Asset%20Store-Aexis-222C37?style=flat&logo=unity" alt="Unity Asset Store"/></a>
   <a href="#community-links"><img src="https://img.shields.io/badge/LinkedIn-Coming%20soon-0A66C2?style=flat&logo=linkedin" alt="LinkedIn coming soon"/></a>
   <a href="#community-links"><img src="https://img.shields.io/badge/Discord-Coming%20soon-5865F2?style=flat&logo=discord" alt="Discord coming soon"/></a>
@@ -40,7 +40,7 @@ For commercial, integration, or partnership discussions, contact [newzjh@126.com
 
 ## How to help
 
-- [Star the repository](https://github.com/newzjh/AIImage), report reproducible issues, and contribute focused pull requests.
+- [Star the repository](https://github.com/newzjh/Aexis), report reproducible issues, and contribute focused pull requests.
 - Review Aexis on the [Unity Asset Store](https://assetstore.unity.com/preview/397636/1435586).
 - [Sponsor development on GitHub](https://github.com/sponsors/newzjh) or [buy me a Ko-fi](https://ko-fi.com/newzjh).
 - Read [SUPPORT.md](SUPPORT.md) for the current support channels and contact route.
@@ -121,20 +121,20 @@ On `ref/deepfillv2/DeepFillv2-main/test_data/3.png`, YOLO found seven people (ma
 
 ## Model Releases
 
-The application resolves model assets from [newzjh/AIImage releases](https://github.com/newzjh/AIImage/releases). The release pages below are the corresponding download locations; select the current asset listed on the page or use the application's model-download UI. Generated archive names are taken from `AIImageModelReleaseManifest.json` produced by `Aexis/Release/Build Reduced/Prepare Model Release Assets` rather than guessed in documentation.
+The application resolves model assets from [newzjh/AIImage releases](https://github.com/newzjh/Aexis/releases). The release pages below are the corresponding download locations; select the current asset listed on the page or use the application's model-download UI. Generated archive names are taken from `AIImageModelReleaseManifest.json` produced by `Aexis/Release/Build Reduced/Prepare Model Release Assets` rather than guessed in documentation.
 
 | Runner or model group | GitHub Release download page | Package payload |
 | --- | --- | --- |
-| Qwen3.5 mobile Q4 | [`qwen3.5_0.8b_mobile_q4`](https://github.com/newzjh/AIImage/releases/tag/qwen3.5_0.8b_mobile_q4) | External download. |
-| Qwen3.5 mobile Q8 | [`qwen3.5_0.8b_mobile_q8`](https://github.com/newzjh/AIImage/releases/tag/qwen3.5_0.8b_mobile_q8) | External download. |
-| CLIP, CodeFormer, Matting, and YOLO configuration | [`model`](https://github.com/newzjh/AIImage/releases/tag/model) | Group-dependent package/sample payload. |
-| Real-ESRGAN | [`realesr`](https://github.com/newzjh/AIImage/releases/tag/realesr) | Default Real-ESRGAN NCNN pair is allowed only after provenance review. |
-| GFPGAN | [`gfpgan`](https://github.com/newzjh/AIImage/releases/tag/gfpgan) | External download; not in the package sample. |
-| DeepFillV2 | [`DeepFileV2`](https://github.com/newzjh/AIImage/releases/tag/DeepFileV2) | Default NCNN case is sample-dependent; verify its release record. |
-| Stable Diffusion inpainting | [`sdinpainting`](https://github.com/newzjh/AIImage/releases/tag/sdinpainting) | External download; not in the package sample. |
-| MONAI WholeBrain | [`MONAI_WholeBrain`](https://github.com/newzjh/AIImage/releases/tag/MONAI_WholeBrain) | External model; medical input and data remain excluded. |
-| VISTA3D skull | [`vista3d_skull`](https://github.com/newzjh/AIImage/releases/tag/vista3d_skull) | External model; medical input and data remain excluded. |
-| VISTA3D spine | [`vista3d_spine`](https://github.com/newzjh/AIImage/releases/tag/vista3d_spine) | External model; medical input and data remain excluded. |
+| Qwen3.5 mobile Q4 | [`qwen3.5_0.8b_mobile_q4`](https://github.com/newzjh/Aexis/releases/tag/qwen3.5_0.8b_mobile_q4) | External download. |
+| Qwen3.5 mobile Q8 | [`qwen3.5_0.8b_mobile_q8`](https://github.com/newzjh/Aexis/releases/tag/qwen3.5_0.8b_mobile_q8) | External download. |
+| CLIP, CodeFormer, Matting, and YOLO configuration | [`model`](https://github.com/newzjh/Aexis/releases/tag/model) | Group-dependent package/sample payload. |
+| Real-ESRGAN | [`realesr`](https://github.com/newzjh/Aexis/releases/tag/realesr) | Default Real-ESRGAN NCNN pair is allowed only after provenance review. |
+| GFPGAN | [`gfpgan`](https://github.com/newzjh/Aexis/releases/tag/gfpgan) | External download; not in the package sample. |
+| DeepFillV2 | [`DeepFileV2`](https://github.com/newzjh/Aexis/releases/tag/DeepFileV2) | Default NCNN case is sample-dependent; verify its release record. |
+| Stable Diffusion inpainting | [`sdinpainting`](https://github.com/newzjh/Aexis/releases/tag/sdinpainting) | External download; not in the package sample. |
+| MONAI WholeBrain | [`MONAI_WholeBrain`](https://github.com/newzjh/Aexis/releases/tag/MONAI_WholeBrain) | External model; medical input and data remain excluded. |
+| VISTA3D skull | [`vista3d_skull`](https://github.com/newzjh/Aexis/releases/tag/vista3d_skull) | External model; medical input and data remain excluded. |
+| VISTA3D spine | [`vista3d_spine`](https://github.com/newzjh/Aexis/releases/tag/vista3d_spine) | External model; medical input and data remain excluded. |
 
 Release tags are part of the application delivery configuration. A successful download does not grant a model license; see [model distribution](Packages/com.aexis/Documentation~/model-distribution.md) before redistributing a model artifact.
 
@@ -210,7 +210,7 @@ This pre-release repository still contains a release-audit gate in [Packages/com
 
 ## Community links
 
-- [GitHub repository](https://github.com/newzjh/AIImage)
+- [GitHub repository](https://github.com/newzjh/Aexis)
 - [Unity Asset Store](https://assetstore.unity.com/preview/397636/1435586)
 - LinkedIn: coming soon
 - Discord: coming soon

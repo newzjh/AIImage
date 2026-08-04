@@ -1,13 +1,13 @@
 <p align="center">
-  <a href="https://github.com/newzjh/AIImage">
-    <img src="https://raw.githubusercontent.com/newzjh/AIImage/main/Documents/AssetStore/MarketingImages/aexis-icon.png" width="80" alt="Aexis on-device inference engine"/>
+  <a href="https://github.com/newzjh/Aexis">
+    <img src="https://raw.githubusercontent.com/newzjh/Aexis/main/Documents/AssetStore/MarketingImages/aexis-icon.png" width="80" alt="Aexis on-device inference engine"/>
   </a>
 </p>
 
 <h1 align="center">AIImage Main2 Application Example</h1>
 
 <p align="center">
-  <a href="https://github.com/newzjh/AIImage"><img src="https://img.shields.io/badge/GitHub-AIImage-181717?style=flat&logo=github" alt="GitHub"/></a>
+  <a href="https://github.com/newzjh/Aexis"><img src="https://img.shields.io/badge/GitHub-AIImage-181717?style=flat&logo=github" alt="GitHub"/></a>
   <a href="https://assetstore.unity.com/preview/397636/1435586"><img src="https://img.shields.io/badge/Unity%20Asset%20Store-Aexis-222C37?style=flat&logo=unity" alt="Unity Asset Store"/></a>
   <a href="#community-links"><img src="https://img.shields.io/badge/LinkedIn-Coming%20soon-0A66C2?style=flat&logo=linkedin" alt="LinkedIn coming soon"/></a>
   <a href="#community-links"><img src="https://img.shields.io/badge/Discord-Coming%20soon-5865F2?style=flat&logo=discord" alt="Discord coming soon"/></a>
@@ -31,7 +31,7 @@ For commercial, integration, or partnership discussions, contact [newzjh@126.com
 
 ## How to help
 
-- [Star the repository](https://github.com/newzjh/AIImage), report reproducible runner issues, and contribute focused fixes.
+- [Star the repository](https://github.com/newzjh/Aexis), report reproducible runner issues, and contribute focused fixes.
 - Review Aexis on the [Unity Asset Store](https://assetstore.unity.com/preview/397636/1435586).
 - [Sponsor on GitHub](https://github.com/sponsors/newzjh) or [buy me a Ko-fi](https://ko-fi.com/newzjh).
 - Read the repository [support guide](../../../../SUPPORT.md).
@@ -57,13 +57,13 @@ Use the current asset list on the relevant GitHub Release page or the model-down
 
 | Model group | Release download page |
 | --- | --- |
-| Qwen3.5 mobile Q4 | [`qwen3.5_0.8b_mobile_q4`](https://github.com/newzjh/AIImage/releases/tag/qwen3.5_0.8b_mobile_q4) |
-| Qwen3.5 mobile Q8 | [`qwen3.5_0.8b_mobile_q8`](https://github.com/newzjh/AIImage/releases/tag/qwen3.5_0.8b_mobile_q8) |
-| GFPGAN | [`gfpgan`](https://github.com/newzjh/AIImage/releases/tag/gfpgan) |
-| Stable Diffusion inpainting | [`sdinpainting`](https://github.com/newzjh/AIImage/releases/tag/sdinpainting) |
-| MONAI WholeBrain | [`MONAI_WholeBrain`](https://github.com/newzjh/AIImage/releases/tag/MONAI_WholeBrain) |
-| VISTA3D skull | [`vista3d_skull`](https://github.com/newzjh/AIImage/releases/tag/vista3d_skull) |
-| VISTA3D spine | [`vista3d_spine`](https://github.com/newzjh/AIImage/releases/tag/vista3d_spine) |
+| Qwen3.5 mobile Q4 | [`qwen3.5_0.8b_mobile_q4`](https://github.com/newzjh/Aexis/releases/tag/qwen3.5_0.8b_mobile_q4) |
+| Qwen3.5 mobile Q8 | [`qwen3.5_0.8b_mobile_q8`](https://github.com/newzjh/Aexis/releases/tag/qwen3.5_0.8b_mobile_q8) |
+| GFPGAN | [`gfpgan`](https://github.com/newzjh/Aexis/releases/tag/gfpgan) |
+| Stable Diffusion inpainting | [`sdinpainting`](https://github.com/newzjh/Aexis/releases/tag/sdinpainting) |
+| MONAI WholeBrain | [`MONAI_WholeBrain`](https://github.com/newzjh/Aexis/releases/tag/MONAI_WholeBrain) |
+| VISTA3D skull | [`vista3d_skull`](https://github.com/newzjh/Aexis/releases/tag/vista3d_skull) |
+| VISTA3D spine | [`vista3d_spine`](https://github.com/newzjh/Aexis/releases/tag/vista3d_spine) |
 
 These are external model downloads, not package payloads or license grants. Medical input, data, and checkpoints remain excluded from `com.aexis`; obtain and use them only under their applicable terms.
 
@@ -118,7 +118,7 @@ The application example follows the Aexis package's intended MIT source license,
 
 ## Community links
 
-- [GitHub repository](https://github.com/newzjh/AIImage)
+- [GitHub repository](https://github.com/newzjh/Aexis)
 - [Unity Asset Store](https://assetstore.unity.com/preview/397636/1435586)
 - LinkedIn: coming soon
 - Discord: coming soon

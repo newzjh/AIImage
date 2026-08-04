@@ -1,13 +1,13 @@
 <p align="center">
-  <a href="https://github.com/newzjh/AIImage">
-    <img src="https://raw.githubusercontent.com/newzjh/AIImage/main/Documents/AssetStore/MarketingImages/aexis-icon.png" width="88" alt="Aexis on-device inference engine"/>
+  <a href="https://github.com/newzjh/Aexis">
+    <img src="https://raw.githubusercontent.com/newzjh/Aexis/main/Documents/AssetStore/MarketingImages/aexis-icon.png" width="88" alt="Aexis on-device inference engine"/>
   </a>
 </p>
 
 <h1 align="center">Aexis Unity Package</h1>
 
 <p align="center">
-  <a href="https://github.com/newzjh/AIImage"><img src="https://img.shields.io/badge/GitHub-AIImage-181717?style=flat&logo=github" alt="GitHub"/></a>
+  <a href="https://github.com/newzjh/Aexis"><img src="https://img.shields.io/badge/GitHub-AIImage-181717?style=flat&logo=github" alt="GitHub"/></a>
   <a href="https://assetstore.unity.com/preview/397636/1435586"><img src="https://img.shields.io/badge/Unity%20Asset%20Store-Aexis-222C37?style=flat&logo=unity" alt="Unity Asset Store"/></a>
   <a href="#community-links"><img src="https://img.shields.io/badge/LinkedIn-Coming%20soon-0A66C2?style=flat&logo=linkedin" alt="LinkedIn coming soon"/></a>
   <a href="#community-links"><img src="https://img.shields.io/badge/Discord-Coming%20soon-5865F2?style=flat&logo=discord" alt="Discord coming soon"/></a>
@@ -31,7 +31,7 @@ For commercial, integration, or partnership discussions, contact [newzjh@126.com
 
 ## How to help
 
-- [Star Aexis on GitHub](https://github.com/newzjh/AIImage) and report reproducible package issues.
+- [Star Aexis on GitHub](https://github.com/newzjh/Aexis) and report reproducible package issues.
 - Review the package on the [Unity Asset Store](https://assetstore.unity.com/preview/397636/1435586).
 - [Sponsor on GitHub](https://github.com/sponsors/newzjh) or [buy me a Ko-fi](https://ko-fi.com/newzjh).
 - See the repository [support guide](../../SUPPORT.md) for current channels.
@@ -100,20 +100,20 @@ For `ref/deepfillv2/DeepFillv2-main/test_data/3.png`, YOLO found seven people wi
 
 ## Release downloads
 
-The Main2 model-delivery configuration resolves its assets from [newzjh/AIImage releases](https://github.com/newzjh/AIImage/releases). Download the current generated asset named in `AIImageModelReleaseManifest.json`, or use the application's model-download UI. Do not infer an archive name from a runner name.
+The Main2 model-delivery configuration resolves its assets from [newzjh/AIImage releases](https://github.com/newzjh/Aexis/releases). Download the current generated asset named in `AIImageModelReleaseManifest.json`, or use the application's model-download UI. Do not infer an archive name from a runner name.
 
 | Model group | Release download page |
 | --- | --- |
-| Qwen3.5 Q4 | [`qwen3.5_0.8b_mobile_q4`](https://github.com/newzjh/AIImage/releases/tag/qwen3.5_0.8b_mobile_q4) |
-| Qwen3.5 Q8 | [`qwen3.5_0.8b_mobile_q8`](https://github.com/newzjh/AIImage/releases/tag/qwen3.5_0.8b_mobile_q8) |
-| CLIP, CodeFormer, Matting, and YOLO configuration | [`model`](https://github.com/newzjh/AIImage/releases/tag/model) |
-| Real-ESRGAN | [`realesr`](https://github.com/newzjh/AIImage/releases/tag/realesr) |
-| GFPGAN | [`gfpgan`](https://github.com/newzjh/AIImage/releases/tag/gfpgan) |
-| DeepFillV2 | [`DeepFileV2`](https://github.com/newzjh/AIImage/releases/tag/DeepFileV2) |
-| Stable Diffusion inpainting | [`sdinpainting`](https://github.com/newzjh/AIImage/releases/tag/sdinpainting) |
-| MONAI WholeBrain | [`MONAI_WholeBrain`](https://github.com/newzjh/AIImage/releases/tag/MONAI_WholeBrain) (external model and medical data only) |
-| VISTA3D skull | [`vista3d_skull`](https://github.com/newzjh/AIImage/releases/tag/vista3d_skull) (external model and medical data only) |
-| VISTA3D spine | [`vista3d_spine`](https://github.com/newzjh/AIImage/releases/tag/vista3d_spine) (external model and medical data only) |
+| Qwen3.5 Q4 | [`qwen3.5_0.8b_mobile_q4`](https://github.com/newzjh/Aexis/releases/tag/qwen3.5_0.8b_mobile_q4) |
+| Qwen3.5 Q8 | [`qwen3.5_0.8b_mobile_q8`](https://github.com/newzjh/Aexis/releases/tag/qwen3.5_0.8b_mobile_q8) |
+| CLIP, CodeFormer, Matting, and YOLO configuration | [`model`](https://github.com/newzjh/Aexis/releases/tag/model) |
+| Real-ESRGAN | [`realesr`](https://github.com/newzjh/Aexis/releases/tag/realesr) |
+| GFPGAN | [`gfpgan`](https://github.com/newzjh/Aexis/releases/tag/gfpgan) |
+| DeepFillV2 | [`DeepFileV2`](https://github.com/newzjh/Aexis/releases/tag/DeepFileV2) |
+| Stable Diffusion inpainting | [`sdinpainting`](https://github.com/newzjh/Aexis/releases/tag/sdinpainting) |
+| MONAI WholeBrain | [`MONAI_WholeBrain`](https://github.com/newzjh/Aexis/releases/tag/MONAI_WholeBrain) (external model and medical data only) |
+| VISTA3D skull | [`vista3d_skull`](https://github.com/newzjh/Aexis/releases/tag/vista3d_skull) (external model and medical data only) |
+| VISTA3D spine | [`vista3d_spine`](https://github.com/newzjh/Aexis/releases/tag/vista3d_spine) (external model and medical data only) |
 
 Model weights have their own licenses and redistribution conditions. The listed release pages are download locations, not license grants.
 
@@ -225,7 +225,7 @@ Models are separate artifacts with their own licenses and redistribution conditi
 
 ## Community links
 
-- [GitHub repository](https://github.com/newzjh/AIImage)
+- [GitHub repository](https://github.com/newzjh/Aexis)
 - [Unity Asset Store](https://assetstore.unity.com/preview/397636/1435586)
 - LinkedIn: coming soon
 - Discord: coming soon
