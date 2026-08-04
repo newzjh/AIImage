@@ -1,6 +1,40 @@
-# AIImage Main2 Application Example
+<p align="center">
+  <a href="https://github.com/newzjh/AIImage">
+    <img src="https://raw.githubusercontent.com/newzjh/AIImage/main/Documents/AssetStore/MarketingImages/aexis-icon.png" width="80" alt="Aexis on-device inference engine"/>
+  </a>
+</p>
+
+<h1 align="center">AIImage Main2 Application Example</h1>
+
+<p align="center">
+  <a href="https://github.com/newzjh/AIImage"><img src="https://img.shields.io/badge/GitHub-AIImage-181717?style=flat&logo=github" alt="GitHub"/></a>
+  <a href="https://assetstore.unity.com/preview/397636/1435586"><img src="https://img.shields.io/badge/Unity%20Asset%20Store-Aexis-222C37?style=flat&logo=unity" alt="Unity Asset Store"/></a>
+  <a href="#community-links"><img src="https://img.shields.io/badge/LinkedIn-Coming%20soon-0A66C2?style=flat&logo=linkedin" alt="LinkedIn coming soon"/></a>
+  <a href="#community-links"><img src="https://img.shields.io/badge/Discord-Coming%20soon-5865F2?style=flat&logo=discord" alt="Discord coming soon"/></a>
+  <a href="#license"><img src="https://img.shields.io/badge/License-MIT%20planned-3C8C6A?style=flat" alt="MIT planned pending release audit"/></a>
+</p>
+
+<p align="center"><sub><a href="#at-a-glance">At a glance</a> &bull; <a href="#import">Import</a> &bull; <a href="#tested-environments">Tested environments</a> &bull; <a href="#how-to-help">How to help</a> &bull; <a href="#license">License</a></sub></p>
 
 This is the single complete application example for `com.aexis`. It combines the former reusable runner sample with the full AIImage Main2 application: `Main2`, MainView2, DesignView, LibraryView, UI Toolkit assets, all runners, QWEN sessions, MONAI/VISTA code, editor tests, debug tools, batch helpers, and sample-local dependency isolation.
+
+## At a glance
+
+- A complete UI Toolkit application that exercises Aexis through image restoration, segmentation, matting, inpainting, Qwen, and medical-model integration paths.
+- MainView2 includes a Development Build-only one-click Test command that writes a single incremental runner report from the current image.
+- Default permitted model payloads are isolated from external Qwen, GFPGAN, Stable Diffusion, MONAI, and VISTA releases.
+- Importable through Unity Package Manager without adding runtime dependencies to `com.aexis`.
+
+### Business inquiries
+
+For commercial, integration, or partnership discussions, contact [newzjh@126.com](mailto:newzjh@126.com).
+
+## How to help
+
+- [Star the repository](https://github.com/newzjh/AIImage), report reproducible runner issues, and contribute focused fixes.
+- Review Aexis on the [Unity Asset Store](https://assetstore.unity.com/preview/397636/1435586).
+- [Sponsor on GitHub](https://github.com/sponsors/newzjh) or [buy me a Ko-fi](https://ko-fi.com/newzjh).
+- Read the repository [support guide](../../../../SUPPORT.md).
 
 ## Import
 
@@ -77,3 +111,14 @@ All three reports completed with seven passed runners. The skipped groups were n
 MainView2 adds a **Test** button immediately before the Chinese and English language controls only in the Editor and Development Players. It uses the current history image for CLIP, CodeFormer, GFPGAN, Real-ESRGAN, Matting, Qwen3.5, YOLO segmentation, YOLO + DeepFillV2, and YOLO + SD inpainting. No model download is requested: missing local or bundled payloads are skipped. Each runner has a 600-second cancellation budget.
 
 The command keeps one `AexisDevelopmentRunnerTest_*.json` report in `Application.persistentDataPath`, updating it after each runner. The report stores source/device metadata, status, elapsed time, output dimensions, person count, mask coverage, and diagnostic detail. Windows uses the native Shell to open the folder and select the report, macOS reveals it in Finder, Android requests a compatible JSON viewer, and iOS opens the native document preview.
+
+## License
+
+The application example follows the Aexis package's intended MIT source license, subject to the pre-release audit in [LICENSE.md](../../LICENSE.md). External model weights, medical data, third-party sample artifacts, and generated outputs are not covered by that intended source license.
+
+## Community links
+
+- [GitHub repository](https://github.com/newzjh/AIImage)
+- [Unity Asset Store](https://assetstore.unity.com/preview/397636/1435586)
+- LinkedIn: coming soon
+- Discord: coming soon
