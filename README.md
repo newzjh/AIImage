@@ -1,12 +1,49 @@
-# Aexis
+<p align="center">
+  <a href="https://github.com/newzjh/AIImage">
+    <img src="Documents/AssetStore/MarketingImages/aexis-icon.png" width="112" alt="Aexis on-device inference engine"/>
+  </a>
+</p>
 
-Aexis is a self-contained, on-device inference engine for Unity. It imports and executes selected ONNX and NCNN model graphs on a texture-native GPU path, with compute shaders and Pack4 RenderTexture storage designed for real-time applications on edge devices.
+<h1 align="center">Aexis</h1>
+
+<p align="center">A self-contained, on-device inference engine for Unity.</p>
+
+<p align="center">
+  <a href="https://github.com/newzjh/AIImage"><img src="https://img.shields.io/badge/GitHub-AIImage-181717?style=flat&logo=github" alt="GitHub"/></a>
+  <a href="https://assetstore.unity.com/preview/397636/1435586"><img src="https://img.shields.io/badge/Unity%20Asset%20Store-Aexis-222C37?style=flat&logo=unity" alt="Unity Asset Store"/></a>
+  <a href="#community-links"><img src="https://img.shields.io/badge/LinkedIn-Coming%20soon-0A66C2?style=flat&logo=linkedin" alt="LinkedIn coming soon"/></a>
+  <a href="#community-links"><img src="https://img.shields.io/badge/Discord-Coming%20soon-5865F2?style=flat&logo=discord" alt="Discord coming soon"/></a>
+  <a href="#license"><img src="https://img.shields.io/badge/License-MIT%20planned-3C8C6A?style=flat" alt="MIT planned pending release audit"/></a>
+</p>
+
+<p align="center"><sub><a href="#at-a-glance">At a glance</a> &bull; <a href="#examples">Examples</a> &bull; <a href="#how-to-install">Install</a> &bull; <a href="#tested-environment">Tested environment</a> &bull; <a href="#how-to-help">How to help</a> &bull; <a href="#license">License</a></sub></p>
+
+Aexis imports and executes selected ONNX and NCNN model graphs on a texture-native GPU path, with compute shaders and Pack4 RenderTexture storage designed for real-time applications on edge devices.
 
 `com.aexis` is the engine package. AIImage is the complete application example built on top of it; it is not a runtime namespace or package dependency. The runtime does not wrap or require Unity Sentis, Tencent ncnn, ONNX Runtime, MNN, UniTask, or a native inference plug-in.
 
 - **Current package:** `com.aexis` `0.1.0-pre.1`
 - **Unity range:** 2022.3 through 6000.3
 - **Primary production path:** Pack4 RenderTexture plus CommandBuffer-compatible compute dispatch
+
+## At a glance
+
+- Runs on Unity 2022.3 LTS through Unity 6000.3 with texture-native GPU execution.
+- Owns the NCNN and ONNX graph readers, lowering, planning, and execution paths rather than wrapping a runtime backend.
+- Keeps production NCNN activations in Pack4 RenderTextures and rejects unsupported strict plans instead of silently materializing transient ComputeBuffers.
+- Ships an importable Main2 example with CLIP, restoration, matting, segmentation, inpainting, Qwen, and MONAI/VISTA integration paths.
+- Includes Windows, macOS Editor, macOS Player, Android emulator, and iPadOS Simulator runner evidence; physical iOS remains a separate validation target.
+
+### Business inquiries
+
+For commercial, integration, or partnership discussions, contact [newzjh@126.com](mailto:newzjh@126.com).
+
+## How to help
+
+- [Star the repository](https://github.com/newzjh/AIImage), report reproducible issues, and contribute focused pull requests.
+- Review Aexis on the [Unity Asset Store](https://assetstore.unity.com/preview/397636/1435586).
+- [Sponsor development on GitHub](https://github.com/sponsors/newzjh) or [buy me a Ko-fi](https://ko-fi.com/newzjh).
+- Read [SUPPORT.md](SUPPORT.md) for the current support channels and contact route.
 
 ## What Aexis Provides
 
@@ -155,7 +192,7 @@ For a published registry or Git package, install `com.aexis` through Unity Packa
 
 ### `.unitypackage`
 
-From an Aexis project, run `Aexis/Release/Export Complete UnityPackage`, then import the resulting archive into the target Unity project. The editor bootstrap restores `Packages/com.aexis` and registers it with Package Manager.
+From an Aexis project, run `Aexis/Release/Export Complete UnityPackage`, then import the resulting archive into the target Unity project with the Aexis entries selected. The import list contains the original `Packages/com.aexis/...` files, not an opaque ZIP payload. Unity writes them directly to `Packages/com.aexis`; the small bootstrap only confirms Package Manager registration and removes itself. The package is ready in the same editor session, with no project restart.
 
 To import the full application example, select **AIImage Main2 Application Example** in Package Manager, then run:
 
@@ -170,6 +207,13 @@ Open `Scenes/Main2.unity`, or choose `Aexis/Examples/Open Main2 Application Scen
 The package manifest declares **MIT** for Aexis source. Model weights, medical data, and third-party sample artifacts are not covered by that source license and retain their own terms.
 
 This pre-release repository still contains a release-audit gate in [Packages/com.aexis/LICENSE.md](Packages/com.aexis/LICENSE.md). Complete the source, shader, sample, and model provenance audit before publishing or representing a package archive as an MIT release. See [Third Party Notices](Packages/com.aexis/Third%20Party%20Notices.md) and [model distribution](Packages/com.aexis/Documentation~/model-distribution.md).
+
+## Community links
+
+- [GitHub repository](https://github.com/newzjh/AIImage)
+- [Unity Asset Store](https://assetstore.unity.com/preview/397636/1435586)
+- LinkedIn: coming soon
+- Discord: coming soon
 
 ## Documentation
 
