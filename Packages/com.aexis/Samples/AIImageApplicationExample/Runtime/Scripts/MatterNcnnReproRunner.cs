@@ -16,6 +16,7 @@ public struct MattingResult
 {
     public Texture2D texture;
     public Texture2D matte;
+    public float[] alpha;
     public string error;
     public long elapsedMs;
 }
@@ -84,7 +85,10 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
         Release();
     }
 
-    public async UniTask<MattingResult> ProcessAsync(Texture2D src, CancellationToken ct)
+    public async UniTask<MattingResult> ProcessAsync(
+        Texture2D src,
+        CancellationToken ct,
+        bool includeDisplayTextures = true)
     {
         if (src == null)
             return default;
@@ -259,7 +263,9 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
             if (alpha == null || alpha.Length != originalW * originalH)
                 return Finish(new MattingResult { error = "Read alpha failed" });
 
-            if (enableForegroundCleanup)
+            // The alpha-only caller composites immediately and must not allocate
+            // several full-resolution cleanup masks beside its own output texture.
+            if (includeDisplayTextures && enableForegroundCleanup)
             {
                 ReportProgress(0.88f, "Clean alpha");
                 await UniTask.Yield();
@@ -269,6 +275,9 @@ public sealed class MatterNcnnReproRunner : MonoBehaviour
 
             ReportProgress(0.94f, "Build output");
             await UniTask.Yield();
+            if (!includeDisplayTextures)
+                return Finish(new MattingResult { alpha = alpha });
+
             var matte = BuildMatteTexture(alpha, originalW, originalH);
             var composite = BuildCompositeTexture(readableSrc, alpha, compositeBackgroundColor);
             return Finish(new MattingResult { texture = composite, matte = matte });

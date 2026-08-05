@@ -383,11 +383,17 @@ public sealed class MainView2 : BasePageView
         row.style.height = 56;
         _toolbarScroll.Add(row);
 
-        Button AddTool(string title, string icon, Action onClick, Color? tint = null)
+        Button AddTool(
+            string title,
+            string icon,
+            Action onClick,
+            Color? tint = null,
+            float width = 50f,
+            bool visibleInTopBar = false)
         {
             var button = new Button(onClick);
             button.tooltip = title;
-            button.style.width = 50;
+            button.style.width = width;
             button.style.height = 50;
             button.style.marginRight = 2;
             button.style.paddingLeft = 0;
@@ -412,21 +418,32 @@ public sealed class MainView2 : BasePageView
 
             var textLabel = new Label(title);
             textLabel.style.top = -7;
-            textLabel.style.fontSize = 16;
+            textLabel.style.fontSize = title.Length > 10 ? 12 : 16;
             textLabel.style.color = new Color(0.83f, 0.86f, 0.92f, 1f);
             textLabel.style.unityTextAlign = TextAnchor.MiddleCenter;
             button.Add(textLabel);
-            row.Add(button);
+            if (visibleInTopBar)
+                row.Add(button);
             return button;
         }
 
-        AddTool("Fit", "♻️", () => CompareView?.FitToView());
+        AddTool(L("Fit", "适应"), "♻️", () => CompareView?.FitToView(), null, 50f, true);
         //AddTool("重置", "↺", () => CompareView?.ResetView());
-        AddTool("保存", "💾", OnSaveCurrentImage, new Color(0.37f, 0.78f, 1f));
+        AddTool(L("Save", "保存"), "💾", OnSaveCurrentImage, new Color(0.37f, 0.78f, 1f), 50f, true);
+        AddTool(L("Enhance", "清晰化"), "✨", OnOneClickSharpen, new Color(0.37f, 0.78f, 1f), 66f, true);
+        AddTool(L("Face Repair", "修复人脸"), "🤦‍", OnOneClickFaceRepair, new Color(0.99f, 0.74f, 0.35f),66f, true);
+        AddTool(L("Remove People", "去路人"), "🚶", OnOneClickRemovePassers, new Color(0.88f, 0.54f, 0.48f), 66f, true);
+        AddTool(L("Background", "优化背景"), "🖼", OnOneClickOptimizeBackground, new Color(0.42f, 0.72f, 1f), 66f, true);
+        _qwenAnalysisButton = AddTool(
+            L("Analyze", "识别内容"),
+            "◉",
+            OnQwenAnalyze,
+            new Color(0.33f, 0.86f, 0.72f),
+            66f,
+            true);
+        _qwenAnalysisButton.tooltip = L("Analyze the current history image with Qwen3.5", "使用 Qwen3.5 分析当前历史图像");
         //AddTool("浏览", "▣", OnBrowseOriginalImage);
         AddTool("CLIP", "✨", OnClipClassify, new Color(0.73f, 0.56f, 1f));
-        _qwenAnalysisButton = AddTool("Qwen", "◉", OnQwenAnalyze, new Color(0.33f, 0.86f, 0.72f));
-        _qwenAnalysisButton.tooltip = L("Analyze the current history image with Qwen3.5", "使用 Qwen3.5 分析当前历史图像");
         //AddTool("换脸", "☺", OnFaceSwap, new Color(0.99f, 0.74f, 0.35f));
         //AddTool("清晰", "✦", OnSharpen);
         //AddTool("美白", "◌", OnWhiten);
@@ -445,7 +462,7 @@ public sealed class MainView2 : BasePageView
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
         _developmentRunnerTestButton = new Button(OnDevelopmentRunnerTest)
         {
-            text = "Test"
+            text = L("Test", "测试")
         };
         _developmentRunnerTestButton.tooltip = L(
             "Run all local development runner tests with the current image",
@@ -2091,6 +2108,10 @@ public sealed class MainView2 : BasePageView
     private void OnMattingRepro() => ApplyMattingReproAsync().Forget();
     private void OnGfpganRepro() => ApplyGfpganReproAsync().Forget();
     private void OnCodeFormerRepro() => ApplyCodeFormerReproAsync().Forget();
+    private void OnOneClickSharpen() => ApplyRealEsrganReproAsync().Forget();
+    private void OnOneClickFaceRepair() => ApplyOneClickFaceRepairAsync().Forget();
+    private void OnOneClickRemovePassers() => ApplyOneClickRemovePassersAsync().Forget();
+    private void OnOneClickOptimizeBackground() => ApplyOneClickOptimizeBackgroundAsync().Forget();
 
     private enum PeopleRemovalInpaintBackend
     {
@@ -2196,6 +2217,674 @@ public sealed class MainView2 : BasePageView
             _adjustRunning = false;
             HideProgress();
         }
+    }
+
+    private async UniTaskVoid ApplyOneClickFaceRepairAsync()
+    {
+        var codeFormerRunner = Host?.CodeFormerReproRunner;
+        var esrganRunner = Host?.RealEsrganReproRunner;
+        if (_aiRunning || _adjustRunning || _lifetimeCts == null || codeFormerRunner == null || esrganRunner == null)
+            return;
+
+        var source = GetCurrentHistoryTexture() ?? GetOriginalHistoryTexture();
+        if (source == null)
+            return;
+
+        var esrganGroup = (string.IsNullOrWhiteSpace(esrganRunner.modelName)
+            || string.Equals(esrganRunner.modelName, "realesr-animevideov3-x4", StringComparison.OrdinalIgnoreCase))
+            ? AIImageModelGroupId.RealEsrganX4PlusAnime
+            : AIImageModelGroupId.RealEsrganOptionalModels;
+        if (!await Host.EnsureModelGroupsAvailableAsync(
+                "Face repair model download",
+                _lifetimeCts.Token,
+                AIImageModelGroupId.CodeFormerDefault,
+                esrganGroup))
+            return;
+
+        _adjustRunning = true;
+        ShowProgress("一键修复人脸");
+        Texture2D codeFormerTexture = null;
+        Texture2D finalTexture = null;
+        Action<float, string> onCodeFormerProgress = (p, t) =>
+            SetProgress(p * 0.55f, string.IsNullOrWhiteSpace(t) ? "CodeFormer" : t);
+        Action<float, string> onEsrganProgress = (p, t) =>
+            SetProgress(0.55f + p * 0.45f, string.IsNullOrWhiteSpace(t) ? "ESRGAN" : t);
+        try
+        {
+            codeFormerRunner.ProgressChanged -= onCodeFormerProgress;
+            codeFormerRunner.ProgressChanged += onCodeFormerProgress;
+            var codeFormerResult = await codeFormerRunner.ProcessAsync(source, _lifetimeCts.Token);
+            if (!string.IsNullOrWhiteSpace(codeFormerResult.error))
+            {
+                ShowToast(codeFormerResult.error, 3400);
+                return;
+            }
+
+            codeFormerTexture = codeFormerResult.texture;
+            if (codeFormerTexture == null)
+            {
+                ShowToast("CodeFormer 未返回修复结果", 3000);
+                return;
+            }
+
+            codeFormerRunner.ProgressChanged -= onCodeFormerProgress;
+            codeFormerRunner.ReleaseRuntimeResources();
+            esrganRunner.ProgressChanged -= onEsrganProgress;
+            esrganRunner.ProgressChanged += onEsrganProgress;
+            var esrganResult = await esrganRunner.ProcessAsync(codeFormerTexture, _lifetimeCts.Token);
+            if (!string.IsNullOrWhiteSpace(esrganResult.error))
+            {
+                ShowToast(esrganResult.error, 3400);
+                return;
+            }
+
+            finalTexture = esrganResult.texture;
+            if (finalTexture != null)
+                AddHistory(finalTexture, "一键修复人脸");
+            else
+                ShowToast("ESRGAN 未返回清晰化结果", 3000);
+        }
+        finally
+        {
+            codeFormerRunner.ProgressChanged -= onCodeFormerProgress;
+            codeFormerRunner.ReleaseRuntimeResources();
+            esrganRunner.ProgressChanged -= onEsrganProgress;
+            esrganRunner.ReleaseRuntimeResources();
+            if (codeFormerTexture != null
+                && !ReferenceEquals(codeFormerTexture, source)
+                && !ReferenceEquals(codeFormerTexture, finalTexture))
+            {
+                Destroy(codeFormerTexture);
+            }
+            _adjustRunning = false;
+            HideProgress();
+        }
+    }
+
+    private async UniTaskVoid ApplyOneClickRemovePassersAsync()
+    {
+        var yoloRunner = Host?.YoloSegRunner;
+        var deepFillRunner = Host?.DeepFillV2Runner;
+        if (_aiRunning || _adjustRunning || _lifetimeCts == null || yoloRunner == null || deepFillRunner == null)
+            return;
+
+        var source = GetCurrentHistoryTexture() ?? GetOriginalHistoryTexture();
+        if (source == null)
+            return;
+
+        var yoloGroup = yoloRunner.modelVariant == YoloSegNcnnReproRunner.YoloSegModelVariant.Yolo11nSeg
+            ? AIImageModelGroupId.Yolo11PersonSegmentation
+            : AIImageModelGroupId.YoloV8PersonSegmentation;
+        var deepFillGroup = await ResolveDeepFillV2ModelGroupAsync(
+            deepFillRunner,
+            PeopleRemovalInpaintBackend.DeepFillV2Ncnn);
+        if (!await Host.EnsureModelGroupsAvailableAsync(
+                "Passer-by removal model download",
+                _lifetimeCts.Token,
+                yoloGroup,
+                deepFillGroup))
+            return;
+
+        _adjustRunning = true;
+        ShowProgress("一键去路人");
+        var yoloResult = default(YoloSegResult);
+        Texture2D passerbyMask = null;
+        Action<float, string> onYoloProgress = (p, t) =>
+            SetProgress(p * 0.38f, string.IsNullOrWhiteSpace(t) ? "YOLO" : t);
+        Action<float, string> onInpaintProgress = (p, t) =>
+            SetProgress(0.38f + p * 0.62f, string.IsNullOrWhiteSpace(t) ? "DeepFillV2" : t);
+        try
+        {
+            var previousTargetPersonOnly = yoloRunner.targetPersonOnly;
+            yoloRunner.disallowBufferAccess = true;
+            yoloRunner.disallowBufferOutputs = true;
+            yoloRunner.disallowBufferToTextureMaterialization = true;
+            yoloRunner.targetPersonOnly = true;
+            try
+            {
+                yoloRunner.ProgressChanged -= onYoloProgress;
+                yoloRunner.ProgressChanged += onYoloProgress;
+                yoloResult = await yoloRunner.ProcessAsync(source, _lifetimeCts.Token);
+            }
+            finally
+            {
+                yoloRunner.ProgressChanged -= onYoloProgress;
+                yoloRunner.targetPersonOnly = previousTargetPersonOnly;
+            }
+
+            if (!string.IsNullOrWhiteSpace(yoloResult.error))
+            {
+                ShowToast(yoloResult.error, 3400);
+                return;
+            }
+
+            if (!TryBuildPasserbyMask(yoloResult, out passerbyMask, out var passerbyCount))
+            {
+                ShowToast("未找到可去除的非主体路人", 2800);
+                return;
+            }
+
+            DisposeYoloSegOutputTextures(ref yoloResult);
+            yoloRunner.ReleaseRuntimeResources();
+            await ReleaseGpuPressureBeforeInpaintAsync(_lifetimeCts.Token);
+
+            // This one-click workflow never switches to SD inpainting. DeepFillV2
+            // will use its NCNN payload first and its existing ONNX fallback only
+            // when that is the representation installed for the current sample.
+            deepFillRunner.backend = DeepFillV2Backend.NcnnBin;
+            deepFillRunner.enableDebugDump = false;
+            deepFillRunner.precisionMode = AexisPrecisionMode.Auto;
+            deepFillRunner.useArgbFloatTensor = false;
+            deepFillRunner.enableGeneralTextureConvolution = true;
+            deepFillRunner.enableDepthWiseTextureConvolution = true;
+            deepFillRunner.enableConv1x1TextureConvolution = true;
+            deepFillRunner.ProgressChanged -= onInpaintProgress;
+            deepFillRunner.ProgressChanged += onInpaintProgress;
+            var deepFillResult = await deepFillRunner.ProcessAsync(source, passerbyMask, _lifetimeCts.Token);
+            if (!string.IsNullOrWhiteSpace(deepFillResult.error))
+            {
+                ShowToast(deepFillResult.error, 3600);
+                return;
+            }
+
+            if (deepFillResult.texture != null)
+                AddHistory(deepFillResult.texture, $"一键去路人（{passerbyCount} 人）");
+            else
+                ShowToast("DeepFillV2 未返回修复结果", 3000);
+        }
+        finally
+        {
+            yoloRunner.ProgressChanged -= onYoloProgress;
+            yoloRunner.ReleaseRuntimeResources();
+            deepFillRunner.ProgressChanged -= onInpaintProgress;
+            deepFillRunner.Release();
+            DisposeYoloSegOutputTextures(ref yoloResult);
+            if (passerbyMask != null)
+                Destroy(passerbyMask);
+            _adjustRunning = false;
+            HideProgress();
+        }
+    }
+
+    private static bool TryBuildPasserbyMask(
+        YoloSegResult result,
+        out Texture2D passerbyMask,
+        out int passerbyCount)
+    {
+        passerbyMask = null;
+        passerbyCount = 0;
+        var detections = result.detections;
+        if (result.mask == null || detections == null || detections.Length < 2)
+            return false;
+
+        var width = result.mask.width;
+        var height = result.mask.height;
+        if (width <= 0 || height <= 0)
+            return false;
+
+        var mainSubjectIndex = SelectMainSubjectIndex(detections, width, height);
+        if (mainSubjectIndex < 0)
+            return false;
+
+        var foregroundSubjects = BuildForegroundSubjectGroup(detections, mainSubjectIndex, width, height);
+
+        var sourcePixels = result.mask.GetPixels32();
+        if (sourcePixels == null || sourcePixels.Length != width * height)
+            return false;
+
+        var protectedPrimaryRects = new Rect[detections.Length];
+        var passerRects = new Rect[detections.Length];
+        for (var i = 0; i < detections.Length; i++)
+        {
+            var textureRect = GetTextureSpaceDetectionRect(detections[i].rect, width, height);
+            if (foregroundSubjects[i])
+            {
+                protectedPrimaryRects[i] = ExpandRect(
+                    textureRect,
+                    Mathf.Max(8f, Mathf.Min(width, height) * 0.025f),
+                    width,
+                    height);
+            }
+            else
+            {
+                passerRects[i] = textureRect;
+            }
+        }
+
+        var outputPixels = new Color32[sourcePixels.Length];
+        var selectedPassers = new bool[detections.Length];
+        var selectedPixelCount = 0;
+        var instanceLabels = result.instanceMaskLabels;
+        var hasInstanceLabels = instanceLabels != null && instanceLabels.Length == sourcePixels.Length;
+        for (var y = 0; y < height; y++)
+        {
+            var rowOffset = y * width;
+            for (var x = 0; x < width; x++)
+            {
+                var index = rowOffset + x;
+                var personPixel = sourcePixels[index];
+                if (Mathf.Max(personPixel.r, Mathf.Max(personPixel.g, personPixel.b)) == 0)
+                    continue;
+
+                var point = new Vector2(x + 0.5f, y + 0.5f);
+                var instanceIndex = hasInstanceLabels ? instanceLabels[index] - 1 : -1;
+                if (instanceIndex >= 0 && instanceIndex < detections.Length)
+                {
+                    if (foregroundSubjects[instanceIndex])
+                        continue;
+
+                    outputPixels[index] = new Color32(255, 255, 255, 255);
+                    selectedPassers[instanceIndex] = true;
+                    selectedPixelCount++;
+                    continue;
+                }
+
+                var insidePrimaryProtection = false;
+                for (var primaryIndex = 0; primaryIndex < protectedPrimaryRects.Length; primaryIndex++)
+                {
+                    if (foregroundSubjects[primaryIndex] && protectedPrimaryRects[primaryIndex].Contains(point))
+                    {
+                        insidePrimaryProtection = true;
+                        break;
+                    }
+                }
+                if (insidePrimaryProtection)
+                    continue;
+
+                for (var detectionIndex = 0; detectionIndex < passerRects.Length; detectionIndex++)
+                {
+                    if (foregroundSubjects[detectionIndex] || !passerRects[detectionIndex].Contains(point))
+                        continue;
+
+                    outputPixels[index] = new Color32(255, 255, 255, 255);
+                    selectedPassers[detectionIndex] = true;
+                    selectedPixelCount++;
+                    break;
+                }
+            }
+        }
+
+        if (selectedPixelCount == 0)
+            return false;
+
+        for (var i = 0; i < selectedPassers.Length; i++)
+        {
+            if (selectedPassers[i])
+                passerbyCount++;
+        }
+
+        if (passerbyCount == 0)
+            return false;
+
+        passerbyMask = new Texture2D(width, height, TextureFormat.RGBA32, false, true)
+        {
+            name = "YOLO_Passerby_Mask",
+            filterMode = FilterMode.Bilinear,
+            wrapMode = TextureWrapMode.Clamp
+        };
+        passerbyMask.SetPixels32(outputPixels);
+        passerbyMask.Apply(false, false);
+        return true;
+    }
+
+    private static bool[] BuildForegroundSubjectGroup(
+        IReadOnlyList<YoloSegDetection> detections,
+        int mainSubjectIndex,
+        int width,
+        int height)
+    {
+        var foregroundSubjects = new bool[detections.Count];
+        var dominantArea = GetDetectionArea(detections[mainSubjectIndex]);
+        var dominantHeight = Mathf.Max(1f, detections[mainSubjectIndex].rect.height);
+        var hasClearlyForegroundPerson = false;
+        for (var i = 0; i < detections.Count; i++)
+        {
+            if (!IsClearlyForegroundPerson(detections[i], dominantArea, dominantHeight, width, height))
+                continue;
+
+            foregroundSubjects[i] = true;
+            hasClearlyForegroundPerson = true;
+        }
+
+        // A sparse or unusually framed photo can have no box that meets the global
+        // foreground thresholds. Keep the best candidate rather than removing it.
+        if (!hasClearlyForegroundPerson)
+            foregroundSubjects[mainSubjectIndex] = true;
+
+        var changed = true;
+        while (changed)
+        {
+            changed = false;
+            for (var candidateIndex = 0; candidateIndex < detections.Count; candidateIndex++)
+            {
+                if (foregroundSubjects[candidateIndex])
+                    continue;
+
+                for (var anchorIndex = 0; anchorIndex < detections.Count; anchorIndex++)
+                {
+                    if (!foregroundSubjects[anchorIndex]
+                        || !IsForegroundCompanion(
+                            detections[candidateIndex],
+                            detections[anchorIndex],
+                            dominantArea,
+                            dominantHeight,
+                            width,
+                            height))
+                    {
+                        continue;
+                    }
+
+                    foregroundSubjects[candidateIndex] = true;
+                    changed = true;
+                    break;
+                }
+            }
+        }
+
+        return foregroundSubjects;
+    }
+
+    private static bool IsClearlyForegroundPerson(
+        YoloSegDetection candidate,
+        float dominantArea,
+        float dominantHeight,
+        int width,
+        int height)
+    {
+        var candidateArea = GetDetectionArea(candidate);
+        var imageArea = Mathf.Max(1f, width * (float)height);
+        return candidateArea >= Mathf.Max(dominantArea * 0.07f, imageArea * 0.003f)
+               && candidate.rect.height >= Mathf.Max(dominantHeight * 0.28f, height * 0.20f)
+               && candidate.rect.yMax >= height * 0.58f;
+    }
+
+    private static bool IsForegroundCompanion(
+        YoloSegDetection candidate,
+        YoloSegDetection anchor,
+        float dominantArea,
+        float dominantHeight,
+        int width,
+        int height)
+    {
+        var candidateArea = GetDetectionArea(candidate);
+        if (candidateArea < Mathf.Max(dominantArea * 0.05f, width * (float)height * 0.002f)
+            || candidate.rect.height < Mathf.Max(dominantHeight * 0.24f, height * 0.17f)
+            || candidate.rect.yMax < Mathf.Max(height * 0.52f, anchor.rect.yMax - height * 0.18f))
+        {
+            return false;
+        }
+
+        var verticalOverlap = Mathf.Max(0f, Mathf.Min(candidate.rect.yMax, anchor.rect.yMax)
+                                            - Mathf.Max(candidate.rect.yMin, anchor.rect.yMin));
+        verticalOverlap /= Mathf.Max(1f, Mathf.Min(candidate.rect.height, anchor.rect.height));
+        var horizontalGap = Mathf.Max(0f, Mathf.Max(candidate.rect.xMin - anchor.rect.xMax, anchor.rect.xMin - candidate.rect.xMax));
+        var overlap = GetRectIntersectionArea(candidate.rect, anchor.rect);
+        return overlap > 0f
+               || (verticalOverlap >= 0.35f && horizontalGap <= Mathf.Max(width * 0.10f, Mathf.Min(candidate.rect.width, anchor.rect.width) * 0.45f));
+    }
+
+    private static int SelectMainSubjectIndex(IReadOnlyList<YoloSegDetection> detections, int width, int height)
+    {
+        if (detections == null || detections.Count == 0)
+            return -1;
+
+        var maxArea = 1f;
+        for (var i = 0; i < detections.Count; i++)
+            maxArea = Mathf.Max(maxArea, GetDetectionArea(detections[i]));
+
+        var mainSubjectIndex = -1;
+        var bestScore = float.NegativeInfinity;
+        for (var i = 0; i < detections.Count; i++)
+        {
+            var detection = detections[i];
+            var area = GetDetectionArea(detection);
+            var centerX01 = Mathf.Clamp01(detection.rect.center.x / Mathf.Max(1f, width));
+            var centrality = 1f - Mathf.Clamp01(Mathf.Abs(centerX01 - 0.5f) * 2f);
+            // YOLO image coordinates start at the top. A lower box together with a
+            // larger box is a practical foreground cue, not a depth-model result.
+            var foregroundPlacement = Mathf.Clamp01(detection.rect.yMax / Mathf.Max(1f, height));
+            var score = area / maxArea * 0.55f
+                        + centrality * 0.20f
+                        + Mathf.Clamp01(detection.probability) * 0.15f
+                        + foregroundPlacement * 0.10f;
+
+            for (var otherIndex = 0; otherIndex < detections.Count; otherIndex++)
+            {
+                if (otherIndex == i)
+                    continue;
+
+                var other = detections[otherIndex];
+                var overlap = GetRectIntersectionArea(detection.rect, other.rect)
+                              / Mathf.Max(1f, Mathf.Min(detection.rect.width * detection.rect.height, other.rect.width * other.rect.height));
+                if (overlap < 0.15f)
+                    continue;
+
+                var otherArea = GetDetectionArea(other);
+                var isLarger = area > otherArea * 1.08f;
+                var isLower = detection.rect.yMax > other.rect.yMax + height * 0.025f;
+                var otherIsLarger = otherArea > area * 1.08f;
+                var otherIsLower = other.rect.yMax > detection.rect.yMax + height * 0.025f;
+                if ((isLarger || isLower) && !(otherIsLarger || otherIsLower))
+                    score += 0.12f;
+                else if ((otherIsLarger || otherIsLower) && !(isLarger || isLower))
+                    score -= 0.12f;
+            }
+
+            if (score > bestScore)
+            {
+                bestScore = score;
+                mainSubjectIndex = i;
+            }
+        }
+
+        return mainSubjectIndex;
+    }
+
+    private static float GetDetectionArea(YoloSegDetection detection)
+    {
+        var rectArea = Mathf.Max(1f, detection.rect.width * detection.rect.height);
+        return Mathf.Max(detection.maskPixelCount, rectArea * 0.25f);
+    }
+
+    private static float GetRectIntersectionArea(Rect a, Rect b)
+    {
+        var minX = Mathf.Max(a.xMin, b.xMin);
+        var minY = Mathf.Max(a.yMin, b.yMin);
+        var maxX = Mathf.Min(a.xMax, b.xMax);
+        var maxY = Mathf.Min(a.yMax, b.yMax);
+        return maxX > minX && maxY > minY ? (maxX - minX) * (maxY - minY) : 0f;
+    }
+
+    private static Rect GetTextureSpaceDetectionRect(Rect detectionRect, int width, int height)
+    {
+        return Rect.MinMaxRect(
+            Mathf.Clamp(detectionRect.xMin, 0f, width),
+            Mathf.Clamp(height - detectionRect.yMax, 0f, height),
+            Mathf.Clamp(detectionRect.xMax, 0f, width),
+            Mathf.Clamp(height - detectionRect.yMin, 0f, height));
+    }
+
+    private static Rect ExpandRect(Rect rect, float padding, int width, int height)
+    {
+        return Rect.MinMaxRect(
+            Mathf.Clamp(rect.xMin - padding, 0f, width),
+            Mathf.Clamp(rect.yMin - padding, 0f, height),
+            Mathf.Clamp(rect.xMax + padding, 0f, width),
+            Mathf.Clamp(rect.yMax + padding, 0f, height));
+    }
+
+    private static void DisposeYoloSegOutputTextures(ref YoloSegResult result)
+    {
+        var texture = result.texture;
+        var mask = result.mask;
+        var overlay = result.overlay;
+        if (texture != null)
+            UnityEngine.Object.Destroy(texture);
+        if (mask != null && !ReferenceEquals(mask, texture))
+            UnityEngine.Object.Destroy(mask);
+        if (overlay != null && !ReferenceEquals(overlay, texture) && !ReferenceEquals(overlay, mask))
+            UnityEngine.Object.Destroy(overlay);
+        result = default;
+    }
+
+    private async UniTaskVoid ApplyOneClickOptimizeBackgroundAsync()
+    {
+        var mattingRunner = Host?.MattingReproRunner;
+        if (_aiRunning || _adjustRunning || _lifetimeCts == null || mattingRunner == null)
+            return;
+
+        var source = GetCurrentHistoryTexture() ?? GetOriginalHistoryTexture();
+        if (source == null)
+            return;
+
+        if (!await Host.EnsureModelGroupsAvailableAsync(
+                "Matting model download",
+                _lifetimeCts.Token,
+                AIImageModelGroupId.Matting))
+            return;
+
+        _adjustRunning = true;
+        ShowProgress("一键优化背景");
+        var mattingResult = default(MattingResult);
+        Action<float, string> onMattingProgress = (p, t) => SetProgress(p, string.IsNullOrWhiteSpace(t) ? "Matting" : t);
+        try
+        {
+            mattingRunner.ProgressChanged -= onMattingProgress;
+            mattingRunner.ProgressChanged += onMattingProgress;
+            mattingResult = await mattingRunner.ProcessAsync(source, _lifetimeCts.Token, false);
+            if (!string.IsNullOrWhiteSpace(mattingResult.error))
+            {
+                ShowToast(mattingResult.error, 3400);
+                return;
+            }
+
+            if (mattingResult.alpha == null || mattingResult.alpha.Length != source.width * source.height)
+            {
+                ShowToast("Matting 未返回有效 alpha", 3000);
+                return;
+            }
+
+            mattingRunner.ProgressChanged -= onMattingProgress;
+            mattingRunner.ReleaseRuntimeResources();
+            var composited = await ComposeNaturalSkyBackgroundAsync(source, mattingResult.alpha, _lifetimeCts.Token);
+            if (composited == null)
+            {
+                ShowToast("无法生成天空优化结果", 3000);
+                return;
+            }
+
+            AddHistory(composited, "一键优化背景");
+        }
+        finally
+        {
+            mattingRunner.ProgressChanged -= onMattingProgress;
+            mattingRunner.ReleaseRuntimeResources();
+            if (mattingResult.texture != null)
+                Destroy(mattingResult.texture);
+            if (mattingResult.matte != null)
+                Destroy(mattingResult.matte);
+            mattingResult.alpha = null;
+            _adjustRunning = false;
+            HideProgress();
+        }
+    }
+
+    private static async UniTask<Texture2D> ComposeNaturalSkyBackgroundAsync(
+        Texture2D source,
+        float[] foregroundAlpha,
+        CancellationToken ct)
+    {
+        if (source == null || foregroundAlpha == null || foregroundAlpha.Length != source.width * source.height)
+            return null;
+
+        var useRawSourcePixels = source.format == TextureFormat.RGBA32;
+        var rawSourcePixels = useRawSourcePixels
+            ? source.GetRawTextureData<Color32>()
+            : default;
+        var copiedSourcePixels = useRawSourcePixels ? null : source.GetPixels32();
+        var sourcePixelCount = useRawSourcePixels ? rawSourcePixels.Length : copiedSourcePixels?.Length ?? 0;
+        if (sourcePixelCount != foregroundAlpha.Length)
+            return null;
+
+        var width = source.width;
+        var height = source.height;
+        Texture2D output = null;
+        try
+        {
+            output = new Texture2D(width, height, TextureFormat.RGBA32, false, false)
+            {
+                name = "Matting_NaturalSky_Composite",
+                filterMode = source.filterMode,
+                wrapMode = TextureWrapMode.Clamp
+            };
+            var outputPixels = output.GetRawTextureData<Color32>();
+            if (outputPixels.Length != sourcePixelCount)
+            {
+                Destroy(output);
+                return null;
+            }
+
+            const int rowsPerFrame = 64;
+            for (var y = 0; y < height; y++)
+            {
+                ct.ThrowIfCancellationRequested();
+                var vertical01 = height > 1 ? (float)y / (height - 1) : 0.5f;
+                var fromTop01 = 1f - vertical01;
+                var upperSkyWeight = 1f - Mathf.SmoothStep(0.18f, 0.82f, fromTop01);
+                var rowOffset = y * width;
+                for (var x = 0; x < width; x++)
+                {
+                    var index = rowOffset + x;
+                    var original = useRawSourcePixels ? rawSourcePixels[index] : copiedSourcePixels[index];
+                    var foreground = Mathf.Clamp01(foregroundAlpha[index]);
+                    var r = original.r / 255f;
+                    var g = original.g / 255f;
+                    var b = original.b / 255f;
+                    var maxChannel = Mathf.Max(r, Mathf.Max(g, b));
+                    var minChannel = Mathf.Min(r, Mathf.Min(g, b));
+                    var graySkyWeight = 1f - Mathf.SmoothStep(0.055f, 0.24f, maxChannel - minChannel);
+                    var luminance = r * 0.2126f + g * 0.7152f + b * 0.0722f;
+                    var luminanceWeight = Mathf.Lerp(0.35f, 1f, Mathf.SmoothStep(0.06f, 0.85f, luminance));
+                    var replacementWeight = Mathf.Clamp01(
+                        (1f - foreground) * upperSkyWeight * graySkyWeight * luminanceWeight);
+
+                    var sky = EvaluateNaturalSkyColor(
+                        width > 1 ? (float)x / (width - 1) : 0.5f,
+                        vertical01);
+                    outputPixels[index] = new Color32(
+                        (byte)Mathf.RoundToInt(Mathf.Lerp(original.r, sky.r * 255f, replacementWeight)),
+                        (byte)Mathf.RoundToInt(Mathf.Lerp(original.g, sky.g * 255f, replacementWeight)),
+                        (byte)Mathf.RoundToInt(Mathf.Lerp(original.b, sky.b * 255f, replacementWeight)),
+                        255);
+                }
+
+                if ((y + 1) % rowsPerFrame == 0)
+                    await UniTask.Yield(PlayerLoopTiming.Update, ct);
+            }
+
+            output.Apply(false, false);
+            return output;
+        }
+        catch
+        {
+            if (output != null)
+                Destroy(output);
+            throw;
+        }
+    }
+
+    private static Color EvaluateNaturalSkyColor(float horizontal01, float vertical01)
+    {
+        var skyBlend = Mathf.SmoothStep(0.04f, 0.86f, vertical01);
+        var horizon = new Color(0.72f, 0.84f, 0.96f);
+        var zenith = new Color(0.16f, 0.48f, 0.88f);
+        var sky = Color.Lerp(horizon, zenith, skyBlend);
+        var broadCloud = Mathf.PerlinNoise(horizontal01 * 2.15f + 31.7f, vertical01 * 1.65f + 8.4f);
+        var cloudDetail = Mathf.PerlinNoise(horizontal01 * 5.6f + 6.2f, vertical01 * 4.1f + 19.8f);
+        var cloudField = broadCloud * 0.72f + cloudDetail * 0.28f;
+        var cloudWeight = Mathf.SmoothStep(0.59f, 0.76f, cloudField)
+                          * Mathf.SmoothStep(0.08f, 0.70f, vertical01);
+        return Color.Lerp(sky, new Color(0.98f, 0.99f, 1f), cloudWeight * 0.82f);
     }
 
     private async UniTaskVoid ApplyYoloAndInpaintingReproAsync()

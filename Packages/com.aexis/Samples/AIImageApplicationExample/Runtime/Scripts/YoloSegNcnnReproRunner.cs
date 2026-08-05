@@ -26,6 +26,10 @@ public struct YoloSegResult
     public Texture2D mask;
     public Texture2D overlay;
     public YoloSegDetection[] detections;
+    // One-based detection index for each source pixel after the same Y flip as mask.
+    // This stays CPU-side so the runner can expose instance ownership without adding
+    // another texture or a model-execution buffer path.
+    public byte[] instanceMaskLabels;
     public int personCount;
     public float maskCoverage01;
     public string error;
@@ -387,6 +391,7 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
 
             var detections = new List<YoloSegDetection>(picked.Count);
             var unionMask = new bool[readableSrc.width * readableSrc.height];
+            var instanceMaskLabels = new byte[unionMask.Length];
             var resizedMaskWidth = Mathf.Max(1, (int)(letterbox.inputWidth / Mathf.Max(letterbox.scale, 1e-6f)));
             var resizedMaskHeight = Mathf.Max(1, (int)(letterbox.inputHeight / Mathf.Max(letterbox.scale, 1e-6f)));
             var protoWidth = protoBlob.w;
@@ -415,6 +420,7 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
 
                 var paddedStartX = (int)(letterbox.padLeft / Mathf.Max(letterbox.scale, 1e-6f) + clippedRect.x);
                 var paddedStartY = (int)(letterbox.padTop / Mathf.Max(letterbox.scale, 1e-6f) + clippedRect.y);
+                var detectionIndex = detections.Count;
                 var maskPixels = 0;
                 for (var y = 0; y < maskHeight; y++)
                 {
@@ -437,6 +443,7 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
                         if (!unionMask[index])
                         {
                             unionMask[index] = true;
+                            instanceMaskLabels[index] = (byte)Mathf.Min(255, detectionIndex + 1);
                             maskPixels++;
                         }
                     }
@@ -471,6 +478,7 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
             ct.ThrowIfCancellationRequested();
 
             unionMask = outputTextureData?.flippedMask ?? unionMask;
+            instanceMaskLabels = FlipLabelRows(instanceMaskLabels, readableSrc.width, readableSrc.height);
             var outputMask = outputTextureData?.maskTexture;
             var transparent = outputTextureData?.transparentTexture;
             var overlay = outputTextureData?.overlayTexture;
@@ -503,6 +511,7 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
                 mask = outputMask,
                 overlay = overlay,
                 detections = detections.ToArray(),
+                instanceMaskLabels = instanceMaskLabels,
                 personCount = detections.Count,
                 maskCoverage01 = coverage
             });
@@ -1092,6 +1101,21 @@ public sealed class YoloSegNcnnReproRunner : MonoBehaviour
             Array.Copy(mask, srcRow, flipped, dstRow, width);
         }
 
+        return flipped;
+    }
+
+    private static byte[] FlipLabelRows(byte[] labels, int width, int height)
+    {
+        if (labels == null || labels.Length != width * height || width <= 0 || height <= 0)
+            return labels ?? Array.Empty<byte>();
+
+        var flipped = new byte[labels.Length];
+        for (var y = 0; y < height; y++)
+        {
+            var srcRow = (height - 1 - y) * width;
+            var dstRow = y * width;
+            Array.Copy(labels, srcRow, flipped, dstRow, width);
+        }
         return flipped;
     }
 
