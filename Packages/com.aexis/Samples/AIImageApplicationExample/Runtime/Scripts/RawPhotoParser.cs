@@ -1,6 +1,8 @@
 using System;
 using System.Globalization;
 using System.IO;
+using System.Collections.Generic;
+using UnityEngine;
 
 public static class RawPhotoParser
 {
@@ -9,6 +11,7 @@ public static class RawPhotoParser
     public sealed class RawPhotoData
     {
         public byte[] previewBytes;
+        public bool isSensorDecoded;
         public DateTime? captureTime;
         public string locationText;
         public string cameraText;
@@ -62,7 +65,13 @@ public static class RawPhotoParser
         if (bytes == null || bytes.Length < 4)
             return false;
 
-        if (TryExtractPreviewImage(bytes, out var previewBytes))
+        if (string.Equals(Path.GetExtension(filePath), ".dng", StringComparison.OrdinalIgnoreCase) &&
+            TryDecodeUncompressedDng(bytes, out var decodedDngPreview))
+        {
+            result.previewBytes = decodedDngPreview;
+            result.isSensorDecoded = true;
+        }
+        else if (TryExtractPreviewImage(bytes, out var previewBytes))
         {
             result.previewBytes = previewBytes;
             if (TryParseJpegExif(previewBytes, out var jpegExif))
@@ -106,6 +115,366 @@ public static class RawPhotoParser
         }
 
         return StandardImageIO.TryLoadDisplayBytes(filePath, out imageBytes, out rawPhoto);
+    }
+
+    private struct TiffImageEntry
+    {
+        public ushort tag;
+        public ushort type;
+        public uint count;
+        public uint valueOffset;
+        public int entryOffset;
+    }
+
+    private sealed class UncompressedDng
+    {
+        public int width;
+        public int height;
+        public bool littleEndian;
+        public ushort[] samples;
+        public int[] cfaPattern = { 0, 1, 1, 2 };
+        public float blackLevel;
+        public float whiteLevel = 65535f;
+    }
+
+    private static bool TryDecodeUncompressedDng(byte[] bytes, out byte[] pngBytes)
+    {
+        pngBytes = null;
+        if (!TryReadUncompressedDng(bytes, out var dng))
+            return false;
+
+        Texture2D texture = null;
+        try
+        {
+            var pixels = new Color32[dng.width * dng.height];
+            var whiteBalance = EstimateDngWhiteBalance(dng);
+            for (var y = 0; y < dng.height; y++)
+            {
+                for (var x = 0; x < dng.width; x++)
+                {
+                    var rgb = new Vector3(
+                        SampleDngChannel(dng, x, y, 0),
+                        SampleDngChannel(dng, x, y, 1),
+                        SampleDngChannel(dng, x, y, 2));
+                    rgb = new Vector3(rgb.x * whiteBalance.x, rgb.y * whiteBalance.y, rgb.z * whiteBalance.z);
+                    var max = Mathf.Max(rgb.x, Mathf.Max(rgb.y, rgb.z));
+                    if (max > 1f)
+                        rgb /= max;
+                    rgb = new Vector3(
+                        Mathf.Pow(Mathf.Clamp01(rgb.x), 1f / 2.2f),
+                        Mathf.Pow(Mathf.Clamp01(rgb.y), 1f / 2.2f),
+                        Mathf.Pow(Mathf.Clamp01(rgb.z), 1f / 2.2f));
+                    pixels[y * dng.width + x] = new Color(rgb.x, rgb.y, rgb.z, 1f);
+                }
+            }
+
+            texture = new Texture2D(dng.width, dng.height, TextureFormat.RGBA32, false, true);
+            texture.SetPixels32(pixels);
+            texture.Apply(false, false);
+            pngBytes = texture.EncodeToPNG();
+            return pngBytes != null && pngBytes.Length > 0;
+        }
+        catch
+        {
+            pngBytes = null;
+            return false;
+        }
+        finally
+        {
+            if (texture != null)
+                UnityEngine.Object.Destroy(texture);
+        }
+    }
+
+    private static Vector3 EstimateDngWhiteBalance(UncompressedDng dng)
+    {
+        var sums = Vector3.zero;
+        var counts = Vector3.zero;
+        var sampleStride = Mathf.Max(1, Mathf.Min(dng.width, dng.height) / 256);
+        for (var y = 0; y < dng.height; y += sampleStride)
+        {
+            for (var x = 0; x < dng.width; x += sampleStride)
+            {
+                var channel = GetDngCfaChannel(dng, x, y);
+                var value = ReadDngSample(dng, x, y);
+                if (channel == 0)
+                {
+                    sums.x += value;
+                    counts.x++;
+                }
+                else if (channel == 1)
+                {
+                    sums.y += value;
+                    counts.y++;
+                }
+                else if (channel == 2)
+                {
+                    sums.z += value;
+                    counts.z++;
+                }
+            }
+        }
+
+        var averages = new Vector3(
+            sums.x / Mathf.Max(1f, counts.x),
+            sums.y / Mathf.Max(1f, counts.y),
+            sums.z / Mathf.Max(1f, counts.z));
+        var target = Mathf.Max(0.05f, averages.y);
+        return new Vector3(
+            Mathf.Clamp(target / Mathf.Max(0.02f, averages.x), 0.5f, 2.5f),
+            1f,
+            Mathf.Clamp(target / Mathf.Max(0.02f, averages.z), 0.5f, 2.5f));
+    }
+
+    private static float SampleDngChannel(UncompressedDng dng, int x, int y, int channel)
+    {
+        if (GetDngCfaChannel(dng, x, y) == channel)
+            return ReadDngSample(dng, x, y);
+
+        var sum = 0f;
+        var weight = 0f;
+        for (var dy = -2; dy <= 2; dy++)
+        {
+            for (var dx = -2; dx <= 2; dx++)
+            {
+                if (dx == 0 && dy == 0)
+                    continue;
+                var sampleX = Mathf.Clamp(x + dx, 0, dng.width - 1);
+                var sampleY = Mathf.Clamp(y + dy, 0, dng.height - 1);
+                if (GetDngCfaChannel(dng, sampleX, sampleY) != channel)
+                    continue;
+                var distanceSquared = dx * dx + dy * dy;
+                var sampleWeight = 1f / Mathf.Max(1f, distanceSquared);
+                sum += ReadDngSample(dng, sampleX, sampleY) * sampleWeight;
+                weight += sampleWeight;
+            }
+        }
+
+        return weight > 0f ? sum / weight : ReadDngSample(dng, x, y);
+    }
+
+    private static int GetDngCfaChannel(UncompressedDng dng, int x, int y)
+    {
+        return dng.cfaPattern[(y & 1) * 2 + (x & 1)];
+    }
+
+    private static float ReadDngSample(UncompressedDng dng, int x, int y)
+    {
+        var sample = dng.samples[y * dng.width + x];
+        return Mathf.Clamp01((sample - dng.blackLevel) / Mathf.Max(1f, dng.whiteLevel - dng.blackLevel));
+    }
+
+    private static bool TryReadUncompressedDng(byte[] bytes, out UncompressedDng result)
+    {
+        result = null;
+        if (!LooksLikeTiffHeader(bytes, 0))
+            return false;
+
+        var littleEndian = bytes[0] == (byte)'I';
+        var firstIfd = ReadUInt32(bytes, 4, littleEndian);
+        if (firstIfd == 0 || firstIfd > int.MaxValue)
+            return false;
+
+        var pendingIfdOffsets = new Queue<uint>();
+        pendingIfdOffsets.Enqueue(firstIfd);
+        var visitedIfdOffsets = new HashSet<uint>();
+        while (pendingIfdOffsets.Count > 0)
+        {
+            var ifdOffset = pendingIfdOffsets.Dequeue();
+            if (!visitedIfdOffsets.Add(ifdOffset) || ifdOffset > int.MaxValue)
+                continue;
+            if (!TryReadTiffImageEntries(bytes, (int)ifdOffset, littleEndian, out var entries, out var nextIfdOffset))
+                continue;
+
+            if (TryGetTiffEntry(entries, 330, out var subIfdEntry) &&
+                TryGetTiffUnsignedValues(bytes, subIfdEntry, littleEndian, out var subIfdOffsets))
+            {
+                foreach (var subIfdOffset in subIfdOffsets)
+                    pendingIfdOffsets.Enqueue(subIfdOffset);
+            }
+            if (nextIfdOffset != 0)
+                pendingIfdOffsets.Enqueue(nextIfdOffset);
+
+            if (TryBuildUncompressedDng(bytes, entries, littleEndian, out result))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryReadTiffImageEntries(byte[] bytes, int ifdOffset, bool littleEndian, out List<TiffImageEntry> entries, out uint nextIfdOffset)
+    {
+        entries = new List<TiffImageEntry>();
+        nextIfdOffset = 0;
+        if (ifdOffset < 0 || ifdOffset + 2 > bytes.Length)
+            return false;
+
+        var entryCount = ReadUInt16(bytes, ifdOffset, littleEndian);
+        var entriesEnd = ifdOffset + 2 + entryCount * 12;
+        if (entriesEnd + 4 > bytes.Length)
+            return false;
+
+        for (var i = 0; i < entryCount; i++)
+        {
+            var entryOffset = ifdOffset + 2 + i * 12;
+            entries.Add(new TiffImageEntry
+            {
+                tag = ReadUInt16(bytes, entryOffset, littleEndian),
+                type = ReadUInt16(bytes, entryOffset + 2, littleEndian),
+                count = ReadUInt32(bytes, entryOffset + 4, littleEndian),
+                valueOffset = ReadUInt32(bytes, entryOffset + 8, littleEndian),
+                entryOffset = entryOffset
+            });
+        }
+
+        nextIfdOffset = ReadUInt32(bytes, entriesEnd, littleEndian);
+        return true;
+    }
+
+    private static bool TryBuildUncompressedDng(byte[] bytes, List<TiffImageEntry> entries, bool littleEndian, out UncompressedDng result)
+    {
+        result = null;
+        if (!TryGetTiffUnsignedValue(bytes, entries, 256, littleEndian, out var width) ||
+            !TryGetTiffUnsignedValue(bytes, entries, 257, littleEndian, out var height) ||
+            !TryGetTiffUnsignedValue(bytes, entries, 259, littleEndian, out var compression) ||
+            !TryGetTiffUnsignedValue(bytes, entries, 262, littleEndian, out var photometric) ||
+            !TryGetTiffUnsignedValue(bytes, entries, 277, littleEndian, out var samplesPerPixel) ||
+            !TryGetTiffUnsignedValue(bytes, entries, 278, littleEndian, out var rowsPerStrip) ||
+            !TryGetTiffEntry(entries, 273, out var stripOffsetsEntry) ||
+            !TryGetTiffEntry(entries, 279, out var stripByteCountsEntry) ||
+            !TryGetTiffEntry(entries, 258, out var bitsPerSampleEntry) ||
+            width == 0 || height == 0 || width > 16000 || height > 16000 ||
+            compression != 1 || photometric != 32803 || samplesPerPixel != 1 || rowsPerStrip == 0)
+        {
+            return false;
+        }
+
+        if (!TryGetTiffUnsignedValues(bytes, bitsPerSampleEntry, littleEndian, out var bitsPerSample) ||
+            bitsPerSample.Length != 1 || bitsPerSample[0] != 16 ||
+            !TryGetTiffUnsignedValues(bytes, stripOffsetsEntry, littleEndian, out var stripOffsets) ||
+            !TryGetTiffUnsignedValues(bytes, stripByteCountsEntry, littleEndian, out var stripByteCounts) ||
+            stripOffsets.Length == 0 || stripOffsets.Length != stripByteCounts.Length)
+        {
+            return false;
+        }
+
+        if (TryGetTiffEntry(entries, 33421, out var cfaDimensionsEntry) &&
+            (!TryGetTiffUnsignedValues(bytes, cfaDimensionsEntry, littleEndian, out var cfaDimensions) ||
+             cfaDimensions.Length < 2 ||
+             cfaDimensions[0] != 2 ||
+             cfaDimensions[1] != 2))
+        {
+            return false;
+        }
+
+        var cfaPattern = new[] { 0, 1, 1, 2 };
+        if (TryGetTiffEntry(entries, 33422, out var cfaPatternEntry) &&
+            TryGetTiffUnsignedValues(bytes, cfaPatternEntry, littleEndian, out var sourceCfaPattern) &&
+            sourceCfaPattern.Length >= 4)
+        {
+            for (var i = 0; i < 4; i++)
+            {
+                if (sourceCfaPattern[i] > 2)
+                    return false;
+                cfaPattern[i] = (int)sourceCfaPattern[i];
+            }
+        }
+
+        var pixelCount = (long)width * height;
+        if (pixelCount > 128L * 1024L * 1024L)
+            return false;
+
+        var samples = new ushort[(int)pixelCount];
+        var currentRow = 0;
+        for (var stripIndex = 0; stripIndex < stripOffsets.Length && currentRow < height; stripIndex++)
+        {
+            var stripRows = (int)Math.Min(rowsPerStrip, height - currentRow);
+            var expectedByteCount = (long)stripRows * width * 2;
+            if (stripOffsets[stripIndex] > int.MaxValue ||
+                stripByteCounts[stripIndex] < expectedByteCount ||
+                stripOffsets[stripIndex] + expectedByteCount > bytes.Length)
+            {
+                return false;
+            }
+
+            var dataOffset = (int)stripOffsets[stripIndex];
+            for (var row = 0; row < stripRows; row++)
+            {
+                for (var column = 0; column < width; column++)
+                    samples[(currentRow + row) * (int)width + column] = ReadUInt16(bytes, dataOffset + (row * (int)width + column) * 2, littleEndian);
+            }
+            currentRow += stripRows;
+        }
+        if (currentRow != height)
+            return false;
+
+        result = new UncompressedDng
+        {
+            width = (int)width,
+            height = (int)height,
+            littleEndian = littleEndian,
+            samples = samples,
+            cfaPattern = cfaPattern
+        };
+        if (TryGetTiffUnsignedValue(bytes, entries, 50714, littleEndian, out var blackLevel))
+            result.blackLevel = blackLevel;
+        if (TryGetTiffUnsignedValue(bytes, entries, 50717, littleEndian, out var whiteLevel))
+            result.whiteLevel = whiteLevel;
+        return result.whiteLevel > result.blackLevel;
+    }
+
+    private static bool TryGetTiffEntry(List<TiffImageEntry> entries, ushort tag, out TiffImageEntry entry)
+    {
+        for (var i = 0; i < entries.Count; i++)
+        {
+            if (entries[i].tag == tag)
+            {
+                entry = entries[i];
+                return true;
+            }
+        }
+
+        entry = default;
+        return false;
+    }
+
+    private static bool TryGetTiffUnsignedValue(byte[] bytes, List<TiffImageEntry> entries, ushort tag, bool littleEndian, out uint value)
+    {
+        value = 0;
+        if (!TryGetTiffEntry(entries, tag, out var entry) ||
+            !TryGetTiffUnsignedValues(bytes, entry, littleEndian, out var values) ||
+            values.Length == 0)
+        {
+            return false;
+        }
+
+        value = values[0];
+        return true;
+    }
+
+    private static bool TryGetTiffUnsignedValues(byte[] bytes, TiffImageEntry entry, bool littleEndian, out uint[] values)
+    {
+        values = null;
+        var elementSize = entry.type == 1 ? 1 : entry.type == 3 ? 2 : entry.type == 4 ? 4 : 0;
+        if (elementSize == 0 || entry.count == 0 || entry.count > 1024)
+            return false;
+
+        var byteCount = (long)elementSize * entry.count;
+        var dataOffset = byteCount <= 4 ? entry.entryOffset + 8 : (long)entry.valueOffset;
+        if (dataOffset < 0 || dataOffset + byteCount > bytes.Length)
+            return false;
+
+        values = new uint[entry.count];
+        for (var i = 0; i < values.Length; i++)
+        {
+            var offset = (int)dataOffset + i * elementSize;
+            values[i] = elementSize == 1
+                ? bytes[offset]
+                : elementSize == 2
+                    ? ReadUInt16(bytes, offset, littleEndian)
+                    : ReadUInt32(bytes, offset, littleEndian);
+        }
+        return true;
     }
 
     public static bool TryReadMetadata(string filePath, out RawPhotoData result)

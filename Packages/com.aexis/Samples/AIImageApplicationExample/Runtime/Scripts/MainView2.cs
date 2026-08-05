@@ -94,6 +94,18 @@ public sealed class MainView2 : BasePageView
     private Button _qwenAnalysisCancelButton;
     private Button _qwenAnalysisCloseButton;
     private Button _qwenAnalysisCopyButton;
+    private Texture3D _identityLut;
+    private Texture3D _selectedLut;
+    private int _selectedLutSize;
+    private Vector3 _selectedLutDomainMin = Vector3.zero;
+    private Vector3 _selectedLutDomainMax = Vector3.one;
+    private Button _lutPickerButton;
+    private Texture2D _localAdjustmentMask;
+    private Color32[] _localAdjustmentMaskPixels;
+    private bool _localMaskPainting;
+    private Vector2 _lastLocalMaskPoint;
+    private bool _hasLastLocalMaskPoint;
+    private Button _localMaskPaintButton;
     private static readonly List<string> YoloInpaintResourceSnapshotLines = new List<string>(256);
 
     private System.Threading.CancellationTokenSource _lifetimeCts;
@@ -141,6 +153,16 @@ public sealed class MainView2 : BasePageView
     protected override void OnBeforeDetach()
     {
         UnbindAiEvents();
+        if (CompareView != null)
+        {
+            CompareView.LocalMaskStroke -= OnLocalMaskStroke;
+            CompareView.LocalMaskPaintingEnabled = false;
+            CompareView.LocalMaskOverlay = null;
+        }
+        DestroyTexture(ref _identityLut);
+        DestroyTexture(ref _selectedLut);
+        DestroyTexture(ref _localAdjustmentMask);
+        _localAdjustmentMaskPixels = null;
 #if UNITY_EDITOR || DEVELOPMENT_BUILD
         CancelAndDisposeCts(ref _developmentRunnerTestCts);
 #endif
@@ -215,7 +237,7 @@ public sealed class MainView2 : BasePageView
             _adjustPanel.style.maxWidth = 420;
             _adjustPanel.style.right = 5;
             _adjustPanel.style.left = 5;
-            _adjustPanel.style.bottom = 18;
+            _adjustPanel.style.bottom = 158;
             _adjustPanel.style.top = new StyleLength(StyleKeyword.Auto);
             _adjustHost.style.paddingRight = 12;
             SetAdjustPanelCollapsed(_adjustPanelCollapsed || _adjustBody.style.display == DisplayStyle.None, false);
@@ -226,7 +248,7 @@ public sealed class MainView2 : BasePageView
             _adjustPanel.style.left = new StyleLength(StyleKeyword.Auto);
             _adjustPanel.style.right = 16;
             _adjustPanel.style.top = 18;
-            _adjustPanel.style.bottom = 18;
+            _adjustPanel.style.bottom = 158;
             _adjustHost.style.paddingRight = 12;
             if (_adjustBody.style.display == DisplayStyle.None)
                 SetAdjustPanelCollapsed(false, false);
@@ -327,6 +349,7 @@ public sealed class MainView2 : BasePageView
         ResetHistoryWithOriginal(texture, fileName, filePath);
         CompareView?.SetSources(texture, texture, fileName);
         CompareView?.FitToView();
+        ClearLocalMask();
         CancelAndDisposeCts(ref _faceMaskCts);
         Host?.FaceMaskGenerator?.ClearCurrentMask();
         return true;
@@ -1138,7 +1161,542 @@ public sealed class MainView2 : BasePageView
         scroll.Add(CreateAdjustRow("冷色滤镜", 0f, 1f, 0f, "CoolFilter", (cs, v) => cs.SetFloat("_Cool", v), v => $"冷色 {v:0.00}"));
         scroll.Add(CreateAdjustRow("锐化", 0f, 4f, 0f, "Sharpen", (cs, v) => cs.SetFloat("_Sharpen", v), v => $"锐化 {v:0.00}"));
         scroll.Add(CreateAdjustRow("模糊", 0f, 4f, 0f, "Blur", (cs, v) => cs.SetFloat("_Blur", v), v => $"模糊 {v:0.00}"));
+        scroll.Add(CreateAdjustActionCard("自动增强", "应用", ApplyAutoEnhance));
+        scroll.Add(CreateAdjustRow("白平衡 色温", -100f, 100f, 0f, "WhiteBalance", (cs, v) =>
+        {
+            cs.SetFloat("_WhiteBalanceTemperature", v);
+            cs.SetFloat("_WhiteBalanceTint", 0f);
+        }, v => $"色温 {v:+0;-0;0}"));
+        scroll.Add(CreateAdjustRow("白平衡 色调", -100f, 100f, 0f, "WhiteBalance", (cs, v) =>
+        {
+            cs.SetFloat("_WhiteBalanceTemperature", 0f);
+            cs.SetFloat("_WhiteBalanceTint", v);
+        }, v => $"色调 {v:+0;-0;0}"));
+        scroll.Add(CreateAdjustRow("曝光", -4f, 4f, 0f, "AdjustExposure", (cs, v) => cs.SetFloat("_Exposure", v), v => $"曝光 {v:+0.00;-0.00;0.00} EV"));
+        scroll.Add(CreateAdjustRow("曲线", -1f, 1f, 0f, "ToneCurve", (cs, v) => cs.SetFloat("_CurveAmount", v), v => $"曲线 {v:+0.00;-0.00;0.00}"));
+        scroll.Add(CreateAdjustRow("颗粒", 0f, 1f, 0f, "AddGrain", (cs, v) => cs.SetFloat("_GrainAmount", v), v => $"颗粒 {v:0.00}"));
+        scroll.Add(CreateAdjustRow("暗角", -1f, 1f, 0f, "Vignette", (cs, v) => cs.SetFloat("_VignetteAmount", v), v => $"暗角 {v:+0.00;-0.00;0.00}"));
+
+        var advancedAdjustments = new VisualElement();
+        advancedAdjustments.style.display = DisplayStyle.None;
+        scroll.Add(BuildToggleRow("高级调色", value =>
+        {
+            advancedAdjustments.style.display = value ? DisplayStyle.Flex : DisplayStyle.None;
+        }, false));
+        scroll.Add(advancedAdjustments);
+
+        advancedAdjustments.Add(CreateAdjustRow("色阶 黑场", 0f, 0.50f, 0f, "LevelsBlack", (cs, v) => cs.SetFloat("_LevelBlack", v), v => $"黑场 {v:0.00}"));
+        advancedAdjustments.Add(CreateAdjustRow("色阶 白场", 0.50f, 1f, 1f, "LevelsWhite", (cs, v) => cs.SetFloat("_LevelWhite", v), v => $"白场 {v:0.00}"));
+        AddHslAdjustmentRows(advancedAdjustments, "红色", 0f);
+        AddHslAdjustmentRows(advancedAdjustments, "橙色", 30f / 360f);
+        AddHslAdjustmentRows(advancedAdjustments, "黄色", 60f / 360f);
+        AddHslAdjustmentRows(advancedAdjustments, "绿色", 120f / 360f);
+        AddHslAdjustmentRows(advancedAdjustments, "青色", 180f / 360f);
+        AddHslAdjustmentRows(advancedAdjustments, "蓝色", 240f / 360f);
+        AddHslAdjustmentRows(advancedAdjustments, "紫色", 280f / 360f);
+        AddHslAdjustmentRows(advancedAdjustments, "洋红", 330f / 360f);
+        advancedAdjustments.Add(BuildLutCard());
+        advancedAdjustments.Add(CreateAdjustRow("LUT 强度", 0f, 1f, 0f, "ApplyLut", ConfigureLut, v => $"LUT {v:0.00}"));
+        advancedAdjustments.Add(BuildLocalMaskPanel());
+        advancedAdjustments.Add(CreateAdjustRow("局部蒙版 曝光", -4f, 4f, 0f, "LocalMaskExposure", ConfigureLocalMaskExposure, v => $"局部曝光 {v:+0.00;-0.00;0.00} EV"));
         return panel;
+    }
+
+    private VisualElement CreateAdjustActionCard(string titleText, string buttonText, Action onClick)
+    {
+        var card = new VisualElement();
+        card.style.flexDirection = FlexDirection.Row;
+        card.style.alignItems = Align.Center;
+        card.style.backgroundColor = new StyleColor(new Color(0.17f, 0.18f, 0.22f, 0.96f));
+        card.style.borderTopLeftRadius = 14;
+        card.style.borderTopRightRadius = 14;
+        card.style.borderBottomLeftRadius = 14;
+        card.style.borderBottomRightRadius = 14;
+        card.style.paddingLeft = 12;
+        card.style.paddingRight = 12;
+        card.style.paddingTop = 10;
+        card.style.paddingBottom = 10;
+        card.style.marginBottom = 8;
+
+        var title = new Label(titleText);
+        title.style.flexGrow = 1;
+        title.style.color = Color.white;
+        title.style.unityFontStyleAndWeight = FontStyle.Bold;
+        card.Add(title);
+
+        var button = new Button(onClick) { text = buttonText };
+        button.style.height = 30;
+        button.style.paddingLeft = 12;
+        button.style.paddingRight = 12;
+        card.Add(button);
+        return card;
+    }
+
+    private void AddHslAdjustmentRows(VisualElement host, string colorName, float hueCenter)
+    {
+        host.Add(CreateAdjustRow(
+            $"HSL {colorName} 色相",
+            -180f,
+            180f,
+            0f,
+            "HslHue",
+            (cs, value) =>
+            {
+                cs.SetFloat("_HslCenter", hueCenter);
+                cs.SetFloat("_HslAmount", value);
+            },
+            value => $"{colorName} 色相 {value:+0;-0;0}"));
+        host.Add(CreateAdjustRow(
+            $"HSL {colorName} 饱和度",
+            -1f,
+            1f,
+            0f,
+            "HslSaturation",
+            (cs, value) =>
+            {
+                cs.SetFloat("_HslCenter", hueCenter);
+                cs.SetFloat("_HslAmount", value);
+            },
+            value => $"{colorName} 饱和度 {value:+0.00;-0.00;0.00}"));
+        host.Add(CreateAdjustRow(
+            $"HSL {colorName} 明亮度",
+            -1f,
+            1f,
+            0f,
+            "HslLuminance",
+            (cs, value) =>
+            {
+                cs.SetFloat("_HslCenter", hueCenter);
+                cs.SetFloat("_HslAmount", value);
+            },
+            value => $"{colorName} 明亮度 {value:+0.00;-0.00;0.00}"));
+    }
+
+    private void ApplyAutoEnhance()
+    {
+        var source = GetCurrentHistoryTexture() ?? GetOriginalHistoryTexture();
+        if (source == null)
+            return;
+
+        Color32[] pixels;
+        try
+        {
+            pixels = source.GetPixels32();
+        }
+        catch
+        {
+            ShowToast("当前图像无法读取自动增强所需的亮度数据", 2400);
+            return;
+        }
+
+        if (pixels == null || pixels.Length == 0)
+            return;
+
+        var stride = Mathf.Max(1, pixels.Length / 65536);
+        var sum = 0f;
+        var sumSquares = 0f;
+        var count = 0;
+        for (var i = 0; i < pixels.Length; i += stride)
+        {
+            var pixel = pixels[i];
+            var luminance = (pixel.r * 0.2126f + pixel.g * 0.7152f + pixel.b * 0.0722f) / 255f;
+            sum += luminance;
+            sumSquares += luminance * luminance;
+            count++;
+        }
+
+        if (count == 0)
+            return;
+
+        var mean = sum / count;
+        var standardDeviation = Mathf.Sqrt(Mathf.Max(0f, sumSquares / count - mean * mean));
+        var exposure = Mathf.Clamp(Mathf.Log(0.45f / Mathf.Max(0.03f, mean), 2f), -1.25f, 1.25f);
+        var contrast = Mathf.Clamp((0.18f - standardDeviation) * 1.2f, -0.10f, 0.22f);
+        var vibrance = Mathf.Clamp((0.22f - standardDeviation) * 0.55f, 0f, 0.15f);
+        ApplyComputeAdjustmentAsync(
+            "AutoEnhance",
+            cs =>
+            {
+                cs.SetFloat("_AutoExposure", exposure);
+                cs.SetFloat("_AutoContrast", contrast);
+                cs.SetFloat("_AutoVibrance", vibrance);
+            },
+            "自动增强").Forget();
+    }
+
+    private VisualElement BuildLutCard()
+    {
+        var card = CreateAdjustActionCard("LUT", "选择 .cube", () => SelectLutAsync().Forget());
+        _lutPickerButton = card.Q<Button>();
+        return card;
+    }
+
+    private async UniTaskVoid SelectLutAsync()
+    {
+        if (Host?.FileDialog == null)
+            return;
+
+        var path = await Host.FileDialog.ShowOpenLutAsync();
+        if (string.IsNullOrWhiteSpace(path))
+            return;
+
+        if (!TryLoadCubeLut(path, out var texture, out var size, out var domainMin, out var domainMax, out var error))
+        {
+            ShowToast(string.IsNullOrWhiteSpace(error) ? "无法读取 LUT 文件" : error, 2800);
+            return;
+        }
+
+        DestroyTexture(ref _selectedLut);
+        _selectedLut = texture;
+        _selectedLutSize = size;
+        _selectedLutDomainMin = domainMin;
+        _selectedLutDomainMax = domainMax;
+        if (_lutPickerButton != null)
+            _lutPickerButton.text = Path.GetFileName(path);
+        ShowToast("已加载 LUT", 1600);
+    }
+
+    private void ConfigureLut(ComputeShader shader, int kernel, float intensity)
+    {
+        var lut = _selectedLut ?? EnsureIdentityLut();
+        shader.SetTexture(kernel, "_Lut3D", lut);
+        shader.SetInt("_LutSize", _selectedLut != null ? _selectedLutSize : 16);
+        var domainMin = _selectedLut != null ? _selectedLutDomainMin : Vector3.zero;
+        var domainMax = _selectedLut != null ? _selectedLutDomainMax : Vector3.one;
+        shader.SetVector("_LutDomainMin", new Vector4(domainMin.x, domainMin.y, domainMin.z, 0f));
+        shader.SetVector("_LutDomainMax", new Vector4(domainMax.x, domainMax.y, domainMax.z, 0f));
+        shader.SetFloat("_LutIntensity", intensity);
+    }
+
+    private Texture3D EnsureIdentityLut()
+    {
+        if (_identityLut != null)
+            return _identityLut;
+
+        const int size = 16;
+        var colors = new Color[size * size * size];
+        for (var blue = 0; blue < size; blue++)
+        {
+            for (var green = 0; green < size; green++)
+            {
+                for (var red = 0; red < size; red++)
+                {
+                    var index = red + size * (green + size * blue);
+                    colors[index] = new Color(
+                        red / (float)(size - 1),
+                        green / (float)(size - 1),
+                        blue / (float)(size - 1),
+                        1f);
+                }
+            }
+        }
+
+        _identityLut = new Texture3D(size, size, size, TextureFormat.RGBA32, false)
+        {
+            name = "IdentityLut",
+            filterMode = FilterMode.Bilinear,
+            wrapMode = TextureWrapMode.Clamp
+        };
+        _identityLut.SetPixels(colors);
+        _identityLut.Apply(false, true);
+        return _identityLut;
+    }
+
+    private static bool TryLoadCubeLut(
+        string path,
+        out Texture3D texture,
+        out int size,
+        out Vector3 domainMin,
+        out Vector3 domainMax,
+        out string error)
+    {
+        texture = null;
+        size = 0;
+        domainMin = Vector3.zero;
+        domainMax = Vector3.one;
+        error = null;
+
+        try
+        {
+            var colors = new List<Color>();
+            foreach (var sourceLine in File.ReadLines(path))
+            {
+                var line = sourceLine;
+                var commentIndex = line.IndexOf('#');
+                if (commentIndex >= 0)
+                    line = line.Substring(0, commentIndex);
+                line = line.Trim();
+                if (line.Length == 0)
+                    continue;
+
+                var tokens = line.Split((char[])null, StringSplitOptions.RemoveEmptyEntries);
+                if (tokens.Length == 0)
+                    continue;
+
+                if (string.Equals(tokens[0], "TITLE", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if (string.Equals(tokens[0], "LUT_3D_SIZE", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (tokens.Length != 2 || !int.TryParse(tokens[1], out size) || size < 2 || size > 64)
+                    {
+                        error = "LUT_3D_SIZE 必须在 2 到 64 之间";
+                        return false;
+                    }
+                    continue;
+                }
+
+                if (string.Equals(tokens[0], "DOMAIN_MIN", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (!TryParseCubeVector(tokens, out domainMin))
+                    {
+                        error = "DOMAIN_MIN 格式无效";
+                        return false;
+                    }
+                    continue;
+                }
+
+                if (string.Equals(tokens[0], "DOMAIN_MAX", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (!TryParseCubeVector(tokens, out domainMax))
+                    {
+                        error = "DOMAIN_MAX 格式无效";
+                        return false;
+                    }
+                    continue;
+                }
+
+                if (!TryParseCubeColor(tokens, out var color))
+                {
+                    error = "LUT 颜色数据格式无效";
+                    return false;
+                }
+                colors.Add(color);
+            }
+
+            if (size < 2 || colors.Count != size * size * size)
+            {
+                error = "LUT 颜色数据数量与 LUT_3D_SIZE 不匹配";
+                return false;
+            }
+
+            if (domainMax.x <= domainMin.x || domainMax.y <= domainMin.y || domainMax.z <= domainMin.z)
+            {
+                error = "LUT DOMAIN 范围无效";
+                return false;
+            }
+
+            texture = new Texture3D(size, size, size, TextureFormat.RGBA32, false)
+            {
+                name = Path.GetFileNameWithoutExtension(path),
+                filterMode = FilterMode.Bilinear,
+                wrapMode = TextureWrapMode.Clamp
+            };
+            texture.SetPixels(colors.ToArray());
+            texture.Apply(false, true);
+            return true;
+        }
+        catch (Exception exception)
+        {
+            if (texture != null)
+                Destroy(texture);
+            texture = null;
+            error = exception.Message;
+            return false;
+        }
+    }
+
+    private static bool TryParseCubeVector(string[] tokens, out Vector3 value)
+    {
+        value = Vector3.zero;
+        if (tokens.Length != 4)
+            return false;
+
+        return float.TryParse(tokens[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out value.x) &&
+               float.TryParse(tokens[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out value.y) &&
+               float.TryParse(tokens[3], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out value.z);
+    }
+
+    private static bool TryParseCubeColor(string[] tokens, out Color color)
+    {
+        color = Color.black;
+        if (tokens.Length != 3)
+            return false;
+
+        if (!float.TryParse(tokens[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var red) ||
+            !float.TryParse(tokens[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var green) ||
+            !float.TryParse(tokens[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var blue))
+            return false;
+
+        color = new Color(red, green, blue, 1f);
+        return true;
+    }
+
+    private VisualElement BuildLocalMaskPanel()
+    {
+        var card = new VisualElement();
+        card.style.backgroundColor = new StyleColor(new Color(0.17f, 0.18f, 0.22f, 0.96f));
+        card.style.borderTopLeftRadius = 14;
+        card.style.borderTopRightRadius = 14;
+        card.style.borderBottomLeftRadius = 14;
+        card.style.borderBottomRightRadius = 14;
+        card.style.paddingLeft = 12;
+        card.style.paddingRight = 12;
+        card.style.paddingTop = 10;
+        card.style.paddingBottom = 10;
+        card.style.marginBottom = 8;
+
+        var header = new VisualElement();
+        header.style.flexDirection = FlexDirection.Row;
+        header.style.alignItems = Align.Center;
+        card.Add(header);
+
+        var label = new Label("局部蒙版");
+        label.style.flexGrow = 1;
+        label.style.color = Color.white;
+        label.style.unityFontStyleAndWeight = FontStyle.Bold;
+        header.Add(label);
+
+        _localMaskPaintButton = new Button(ToggleLocalMaskPainting) { text = "绘制" };
+        _localMaskPaintButton.style.height = 30;
+        _localMaskPaintButton.style.paddingLeft = 12;
+        _localMaskPaintButton.style.paddingRight = 12;
+        header.Add(_localMaskPaintButton);
+
+        var clearButton = new Button(ClearLocalMask) { text = "清除" };
+        clearButton.style.height = 30;
+        clearButton.style.marginLeft = 6;
+        clearButton.style.paddingLeft = 12;
+        clearButton.style.paddingRight = 12;
+        header.Add(clearButton);
+
+        var brushLabel = new Label("画笔大小");
+        brushLabel.style.marginTop = 8;
+        brushLabel.style.color = new Color(0.78f, 0.88f, 1f, 1f);
+        card.Add(brushLabel);
+
+        var brushSlider = new Slider(0.01f, 0.35f) { value = 0.08f };
+        brushSlider.RegisterValueChangedCallback(evt =>
+        {
+            if (CompareView != null)
+                CompareView.LocalMaskBrushSize = evt.newValue;
+        });
+        card.Add(brushSlider);
+
+        if (CompareView != null)
+        {
+            CompareView.LocalMaskStroke -= OnLocalMaskStroke;
+            CompareView.LocalMaskStroke += OnLocalMaskStroke;
+            CompareView.LocalMaskBrushSize = brushSlider.value;
+        }
+
+        return card;
+    }
+
+    private void ToggleLocalMaskPainting()
+    {
+        if (CompareView == null || !EnsureLocalMask())
+            return;
+
+        _localMaskPainting = !_localMaskPainting;
+        _hasLastLocalMaskPoint = false;
+        CompareView.LocalMaskPaintingEnabled = _localMaskPainting;
+        CompareView.LocalMaskOverlay = _localMaskPainting ? _localAdjustmentMask : null;
+        CompareView.MarkDirtyRepaint();
+        if (_localMaskPaintButton != null)
+            _localMaskPaintButton.text = _localMaskPainting ? "完成" : "绘制";
+    }
+
+    private bool EnsureLocalMask()
+    {
+        var source = GetCurrentHistoryTexture() ?? GetOriginalHistoryTexture();
+        if (source == null)
+            return false;
+
+        if (_localAdjustmentMask != null &&
+            _localAdjustmentMask.width == source.width &&
+            _localAdjustmentMask.height == source.height)
+        {
+            return true;
+        }
+
+        DestroyTexture(ref _localAdjustmentMask);
+        _localAdjustmentMaskPixels = new Color32[source.width * source.height];
+        _localAdjustmentMask = new Texture2D(source.width, source.height, TextureFormat.RGBA32, false, true)
+        {
+            name = "LocalAdjustmentMask",
+            filterMode = FilterMode.Bilinear,
+            wrapMode = TextureWrapMode.Clamp
+        };
+        _localAdjustmentMask.SetPixels32(_localAdjustmentMaskPixels);
+        _localAdjustmentMask.Apply(false, false);
+        return true;
+    }
+
+    private void OnLocalMaskStroke(Vector2 uv, float brushSize, bool strokeStart)
+    {
+        if (!_localMaskPainting || !EnsureLocalMask())
+            return;
+
+        var previous = strokeStart || !_hasLastLocalMaskPoint ? uv : _lastLocalMaskPoint;
+        var radius = Mathf.Max(1, Mathf.RoundToInt(brushSize * Mathf.Max(_localAdjustmentMask.width, _localAdjustmentMask.height) * 0.5f));
+        var steps = Mathf.Max(1, Mathf.CeilToInt(Vector2.Distance(previous, uv) * Mathf.Max(_localAdjustmentMask.width, _localAdjustmentMask.height) / Mathf.Max(1f, radius * 0.5f)));
+        for (var step = 0; step <= steps; step++)
+            PaintLocalMaskCircle(Vector2.Lerp(previous, uv, step / (float)steps), radius);
+
+        _localAdjustmentMask.SetPixels32(_localAdjustmentMaskPixels);
+        _localAdjustmentMask.Apply(false, false);
+        _lastLocalMaskPoint = uv;
+        _hasLastLocalMaskPoint = true;
+        CompareView?.MarkDirtyRepaint();
+    }
+
+    private void PaintLocalMaskCircle(Vector2 uv, int radius)
+    {
+        var width = _localAdjustmentMask.width;
+        var height = _localAdjustmentMask.height;
+        var centerX = Mathf.RoundToInt(uv.x * (width - 1));
+        var centerY = Mathf.RoundToInt(uv.y * (height - 1));
+        var radiusSquared = radius * radius;
+        var minX = Mathf.Max(0, centerX - radius);
+        var maxX = Mathf.Min(width - 1, centerX + radius);
+        var minY = Mathf.Max(0, centerY - radius);
+        var maxY = Mathf.Min(height - 1, centerY + radius);
+        for (var y = minY; y <= maxY; y++)
+        {
+            var dy = y - centerY;
+            for (var x = minX; x <= maxX; x++)
+            {
+                var dx = x - centerX;
+                if (dx * dx + dy * dy <= radiusSquared)
+                    _localAdjustmentMaskPixels[y * width + x] = new Color32(255, 255, 255, 255);
+            }
+        }
+    }
+
+    private void ConfigureLocalMaskExposure(ComputeShader shader, int kernel, float exposure)
+    {
+        if (!EnsureLocalMask())
+            return;
+
+        shader.SetTexture(kernel, "_LocalMask", _localAdjustmentMask);
+        shader.SetFloat("_LocalExposure", exposure);
+    }
+
+    private void ClearLocalMask()
+    {
+        _localMaskPainting = false;
+        _hasLastLocalMaskPoint = false;
+        DestroyTexture(ref _localAdjustmentMask);
+        _localAdjustmentMaskPixels = null;
+        if (CompareView != null)
+        {
+            CompareView.LocalMaskPaintingEnabled = false;
+            CompareView.LocalMaskOverlay = null;
+            CompareView.MarkDirtyRepaint();
+        }
+        if (_localMaskPaintButton != null)
+            _localMaskPaintButton.text = "绘制";
     }
 
     private VisualElement BuildReferenceButtons()
@@ -2346,6 +2904,13 @@ public sealed class MainView2 : BasePageView
             return;
         Host.Image2ImageAI.SelectResultIndex -= OnSelectAIResultIndex;
         Host.Image2ImageAI.RequestError -= OnAiRequestError;
+    }
+
+    private static void DestroyTexture<T>(ref T texture) where T : Texture
+    {
+        if (texture != null)
+            Destroy(texture);
+        texture = null;
     }
 
     private static void CancelAndDisposeCts(ref System.Threading.CancellationTokenSource cts)

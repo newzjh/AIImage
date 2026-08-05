@@ -10,6 +10,12 @@
 
 This is the only application/runner sample. Its installer copies the sample's complete `StreamingAssets` tree to `Assets/StreamingAssets`. This keeps UPM package contents immutable and makes player-included assets explicit. Every Player build also stages any missing sample payload files before Unity collects Player data, so package-default `.param`, `.bin`, ONNX, tokenizer, and inference-manifest files are included even when the installer was not run manually. Existing project files are preserved.
 
+## Photo adjustment and RAW
+
+`MainView2` keeps adjustment editing immediate: slider drag previews on the GPU and release commits the result to history. Its panel includes white balance, auto enhance, exposure, tone curve, levels, eight-range HSL, `.cube` LUT, grain, vignette, and a painted local exposure mask.
+
+The portable RAW path sensor-decodes uncompressed 16-bit Bayer DNG input, applies black/white levels plus basic white balance and demosaic, and then passes the rendered image into the same adjustment path. Other RAW containers continue to use only their embedded preview; they are not represented as sensor-decoded images. Supporting proprietary or compressed RAW formats requires a separately licensed decoder such as LibRaw.
+
 ## Documented runner results
 
 The package README and repository README carry the current evidence-backed runner gallery. These images are copied artifacts, not promotional mockups.

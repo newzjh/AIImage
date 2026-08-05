@@ -35,7 +35,13 @@ public sealed class BeforeAfterCompareView : VisualElement
     private static readonly Color LineColor = new Color(1f, 1f, 1f, 0.95f);
 
     public bool InteractionEnabled { get; set; } = true;
+    public bool LocalMaskPaintingEnabled { get; set; }
+    public float LocalMaskBrushSize { get; set; } = 0.08f;
+    public Texture LocalMaskOverlay { get; set; }
     public float AngleRad { get; private set; }
+    public event Action<Vector2, float, bool> LocalMaskStroke;
+    private bool _paintingLocalMask;
+    private int _localMaskPointerId = -1;
 
     public BeforeAfterCompareView()
     {
@@ -153,7 +159,7 @@ public sealed class BeforeAfterCompareView : VisualElement
 
     private void OnWheel(WheelEvent evt)
     {
-        if (!InteractionEnabled)
+        if (!InteractionEnabled && !LocalMaskPaintingEnabled)
             return;
         var refTex = _texA ?? _texB;
         var viewRect = GetViewRect();
@@ -190,7 +196,7 @@ public sealed class BeforeAfterCompareView : VisualElement
         if (refTex == null)
             return;
 
-        if (evt.clickCount == 2)
+        if (evt.clickCount == 2 && !LocalMaskPaintingEnabled)
         {
             FitToView();
             evt.StopPropagation();
@@ -205,6 +211,16 @@ public sealed class BeforeAfterCompareView : VisualElement
         var drawRect = IntersectRect(viewRect, imageRect);
         if (!drawRect.Contains(evt.localPosition))
             return;
+
+        if (LocalMaskPaintingEnabled && evt.button == 0)
+        {
+            _paintingLocalMask = true;
+            _localMaskPointerId = evt.pointerId;
+            EmitLocalMaskPoint(evt.localPosition, imageRect, true);
+            this.CapturePointer(_localMaskPointerId);
+            evt.StopPropagation();
+            return;
+        }
 
         if (evt.button == 0)
         {
@@ -236,6 +252,16 @@ public sealed class BeforeAfterCompareView : VisualElement
         var refTex = _texA ?? _texB;
         if (refTex == null)
             return;
+
+        if (_paintingLocalMask && _localMaskPointerId == evt.pointerId && this.HasPointerCapture(_localMaskPointerId))
+        {
+            var viewRect = GetViewRect();
+            var imageRect = GetImageRect(refTex, _zoom, viewRect.position + _pan);
+            if (IntersectRect(viewRect, imageRect).Contains(evt.localPosition))
+                EmitLocalMaskPoint(evt.localPosition, imageRect, false);
+            evt.StopPropagation();
+            return;
+        }
 
         if (_dragSplit && _splitPointerId == evt.pointerId && this.HasPointerCapture(_splitPointerId))
         {
@@ -278,6 +304,16 @@ public sealed class BeforeAfterCompareView : VisualElement
 
     private void OnPointerUp(PointerUpEvent evt)
     {
+        if (_paintingLocalMask && _localMaskPointerId == evt.pointerId)
+        {
+            _paintingLocalMask = false;
+            if (this.HasPointerCapture(_localMaskPointerId))
+                this.ReleasePointer(_localMaskPointerId);
+            _localMaskPointerId = -1;
+            evt.StopPropagation();
+            return;
+        }
+
         if (_dragSplit && _splitPointerId == evt.pointerId)
         {
             _dragSplit = false;
@@ -297,6 +333,16 @@ public sealed class BeforeAfterCompareView : VisualElement
 
     private void OnPointerCancel(PointerCancelEvent evt)
     {
+        if (_paintingLocalMask && _localMaskPointerId == evt.pointerId)
+        {
+            _paintingLocalMask = false;
+            if (this.HasPointerCapture(_localMaskPointerId))
+                this.ReleasePointer(_localMaskPointerId);
+            _localMaskPointerId = -1;
+            evt.StopPropagation();
+            return;
+        }
+
         if (_dragSplit && _splitPointerId == evt.pointerId)
         {
             _dragSplit = false;
@@ -323,6 +369,14 @@ public sealed class BeforeAfterCompareView : VisualElement
     private static Rect GetImageRect(Texture refTex, float zoom, Vector2 pan)
     {
         return new Rect(pan.x, pan.y, refTex.width * zoom, refTex.height * zoom);
+    }
+
+    private void EmitLocalMaskPoint(Vector2 localPosition, Rect imageRect, bool strokeStart)
+    {
+        var uv = new Vector2(
+            Mathf.Clamp01((localPosition.x - imageRect.xMin) / Mathf.Max(1f, imageRect.width)),
+            Mathf.Clamp01(1f - (localPosition.y - imageRect.yMin) / Mathf.Max(1f, imageRect.height)));
+        LocalMaskStroke?.Invoke(uv, Mathf.Clamp(LocalMaskBrushSize, 0.005f, 1f), strokeStart);
     }
 
     private float SignedDistUv(Vector2 pointLocal, Rect imageRect)
@@ -402,6 +456,7 @@ public sealed class BeforeAfterCompareView : VisualElement
         if (_previewTex != null)
         {
             DrawFullRect(mgc, _previewTex, drawRect, imageRect);
+            DrawLocalMaskOverlay(mgc, drawRect, imageRect);
             ScheduleDecorationLayout();
             return;
         }
@@ -412,6 +467,7 @@ public sealed class BeforeAfterCompareView : VisualElement
         if (_texB != null)
             DrawHalfPlane(mgc, _texB, drawRect, imageRect, SignedDistance, false);
         DrawSplitLine(mgc, drawRect, imageRect);
+        DrawLocalMaskOverlay(mgc, drawRect, imageRect);
         ScheduleDecorationLayout();
     }
 
@@ -534,7 +590,15 @@ public sealed class BeforeAfterCompareView : VisualElement
         ViewTransformChanged?.Invoke();
     }
 
-    private static void DrawFullRect(MeshGenerationContext mgc, Texture tex, Rect drawRect, Rect imageRect)
+    private void DrawLocalMaskOverlay(MeshGenerationContext mgc, Rect drawRect, Rect imageRect)
+    {
+        if (!LocalMaskPaintingEnabled || LocalMaskOverlay == null)
+            return;
+
+        DrawFullRect(mgc, LocalMaskOverlay, drawRect, imageRect, new Color(0.10f, 0.70f, 1.00f, 0.32f));
+    }
+
+    private static void DrawFullRect(MeshGenerationContext mgc, Texture tex, Rect drawRect, Rect imageRect, Color? tintOverride = null)
     {
         var mesh = mgc.Allocate(4, 6, tex);
         var p0 = new Vector2(drawRect.xMin, drawRect.yMin);
@@ -542,10 +606,11 @@ public sealed class BeforeAfterCompareView : VisualElement
         var p2 = new Vector2(drawRect.xMax, drawRect.yMax);
         var p3 = new Vector2(drawRect.xMin, drawRect.yMax);
 
-        mesh.SetNextVertex(new Vertex { position = p0, uv = Uv(p0, imageRect), tint = Color.white });
-        mesh.SetNextVertex(new Vertex { position = p1, uv = Uv(p1, imageRect), tint = Color.white });
-        mesh.SetNextVertex(new Vertex { position = p2, uv = Uv(p2, imageRect), tint = Color.white });
-        mesh.SetNextVertex(new Vertex { position = p3, uv = Uv(p3, imageRect), tint = Color.white });
+        var tint = tintOverride ?? Color.white;
+        mesh.SetNextVertex(new Vertex { position = p0, uv = Uv(p0, imageRect), tint = tint });
+        mesh.SetNextVertex(new Vertex { position = p1, uv = Uv(p1, imageRect), tint = tint });
+        mesh.SetNextVertex(new Vertex { position = p2, uv = Uv(p2, imageRect), tint = tint });
+        mesh.SetNextVertex(new Vertex { position = p3, uv = Uv(p3, imageRect), tint = tint });
         mesh.SetNextIndex(0);
         mesh.SetNextIndex(1);
         mesh.SetNextIndex(2);

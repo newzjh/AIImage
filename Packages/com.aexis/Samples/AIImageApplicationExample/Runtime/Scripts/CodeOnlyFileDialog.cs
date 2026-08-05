@@ -49,6 +49,7 @@ public class CodeOnlyFileDialog : MonoBehaviour
         { "All Files", new[] { "*" } },
         { "Text Files", new[] { "txt" } },
         { "JSON Files", new[] { "json" } },
+        { "LUT Files", new[] { "cube" } },
         { "Image Files", new[] { "png", "jpg", "jpeg", "bmp", "tga", "tif", "tiff", "exr", "gif", "raw", "cr2", "cr3", "nef", "arw", "dng", "raf", "rw2", "orf", "srw", "pef" } }
     };
 
@@ -113,6 +114,16 @@ public class CodeOnlyFileDialog : MonoBehaviour
 
     public UniTask<string> ShowOpenImageAsync()
     {
+        return ShowOpenFileAsync("Image Files");
+    }
+
+    public UniTask<string> ShowOpenLutAsync()
+    {
+        return ShowOpenFileAsync("LUT Files");
+    }
+
+    private UniTask<string> ShowOpenFileAsync(string filterKey)
+    {
         EnsureInitialized();
         if (_root == null)
             return UniTask.FromResult(string.Empty);
@@ -143,7 +154,7 @@ public class CodeOnlyFileDialog : MonoBehaviour
             _openTcs = null;
         };
 
-        _currentFilterKey = "Image Files";
+        _currentFilterKey = filterKey;
         if (_filterButton != null)
             _filterButton.text = _currentFilterKey;
 

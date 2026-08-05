@@ -10,6 +10,19 @@
 #pragma kernel CoolFilter
 #pragma kernel Sharpen
 #pragma kernel Blur
+#pragma kernel WhiteBalance
+#pragma kernel AutoEnhance
+#pragma kernel AdjustExposure
+#pragma kernel ToneCurve
+#pragma kernel LevelsBlack
+#pragma kernel LevelsWhite
+#pragma kernel HslHue
+#pragma kernel HslSaturation
+#pragma kernel HslLuminance
+#pragma kernel ApplyLut
+#pragma kernel AddGrain
+#pragma kernel Vignette
+#pragma kernel LocalMaskExposure
 #pragma kernel PasteRectWithMask
 #pragma kernel BuildMaskFromBinary
 #pragma kernel BuildTransparentFromBinary
@@ -27,6 +40,8 @@
 #pragma kernel DesignViewApplyRemainingMask
 
 Texture2D<float4> _Source;
+Texture2D<float> _LocalMask;
+Texture3D<float4> _Lut3D;
 Texture2D<float4> _BackgroundRef;
 Texture2D<float4> _Overlay;
 Texture2D<float4> _DesignViewClosedMask;
@@ -287,6 +302,24 @@ float _Warm;       // [0..1]
 float _Cool;       // [0..1]
 float _Sharpen;    // [0..1]
 float _Blur;       // [0..1]
+float _WhiteBalanceTemperature;
+float _WhiteBalanceTint;
+float _AutoExposure;
+float _AutoContrast;
+float _AutoVibrance;
+float _Exposure;
+float _CurveAmount;
+float _LevelBlack;
+float _LevelWhite;
+float _HslCenter;
+float _HslAmount;
+int _LutSize;
+float _LutIntensity;
+float3 _LutDomainMin;
+float3 _LutDomainMax;
+float _GrainAmount;
+float _VignetteAmount;
+float _LocalExposure;
 int2 _DesignViewLayerSize;
 int2 _DesignViewCanvasSize;
 int _DesignViewCloseRadius;
@@ -359,6 +392,83 @@ float3 ApplyCool(float3 c, float amount)
     t.g -= amount * 0.02;
     t.b += amount * 0.10;
     return t;
+}
+
+float3 RgbToHsv(float3 c)
+{
+    float4 k = float4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+    float4 p = lerp(float4(c.bg, k.wz), float4(c.gb, k.xy), step(c.b, c.g));
+    float4 q = lerp(float4(p.xyw, c.r), float4(c.r, p.yzx), step(p.x, c.r));
+    float d = q.x - min(q.w, q.y);
+    return float3(abs(q.z + (q.w - q.y) / (6.0 * d + 1e-10)), d / (q.x + 1e-10), q.x);
+}
+
+float3 HsvToRgb(float3 c)
+{
+    float3 p = abs(frac(c.xxx + float3(0.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0);
+    return c.z * lerp(1.0.xxx, saturate(p - 1.0.xxx), c.y);
+}
+
+float HslRangeWeight(float hue, float center)
+{
+    float distance = abs(frac(hue - center + 0.5) - 0.5);
+    return 1.0 - smoothstep(0.045, 0.16, distance);
+}
+
+float3 ApplyHsl(float3 rgb, int mode)
+{
+    float3 hsv = RgbToHsv(saturate(rgb));
+    float weight = HslRangeWeight(hsv.x, _HslCenter);
+    if (mode == 0)
+        hsv.x = frac(hsv.x + _HslAmount * weight / 360.0);
+    else if (mode == 1)
+        hsv.y = saturate(hsv.y * (1.0 + _HslAmount * weight));
+    else
+        hsv.z = saturate(hsv.z + _HslAmount * weight);
+    return HsvToRgb(hsv);
+}
+
+float3 ApplyWhiteBalance(float3 c)
+{
+    float temperature = _WhiteBalanceTemperature * 0.01;
+    float tint = _WhiteBalanceTint * 0.01;
+    c.r *= 1.0 + temperature * 0.20 + tint * 0.06;
+    c.g *= 1.0 - abs(tint) * 0.05;
+    c.b *= 1.0 - temperature * 0.20 - tint * 0.06;
+    return c;
+}
+
+float3 ApplyToneCurve(float3 c)
+{
+    float3 curve = c + _CurveAmount * (c - 0.5) * 4.0 * c * (1.0 - c);
+    return saturate(curve);
+}
+
+float Random01(float2 p)
+{
+    return frac(sin(dot(p, float2(12.9898, 78.233))) * 43758.5453);
+}
+
+float3 SampleLut(float3 color)
+{
+    int size = max(2, _LutSize);
+    float3 scaled = saturate((color - _LutDomainMin) / max(float3(1e-6, 1e-6, 1e-6), _LutDomainMax - _LutDomainMin)) * (size - 1);
+    int3 lo = int3(floor(scaled));
+    int3 hi = min(lo + 1, size - 1);
+    float3 f = frac(scaled);
+    float3 c000 = _Lut3D.Load(int4(lo.x, lo.y, lo.z, 0)).rgb;
+    float3 c100 = _Lut3D.Load(int4(hi.x, lo.y, lo.z, 0)).rgb;
+    float3 c010 = _Lut3D.Load(int4(lo.x, hi.y, lo.z, 0)).rgb;
+    float3 c110 = _Lut3D.Load(int4(hi.x, hi.y, lo.z, 0)).rgb;
+    float3 c001 = _Lut3D.Load(int4(lo.x, lo.y, hi.z, 0)).rgb;
+    float3 c101 = _Lut3D.Load(int4(hi.x, lo.y, hi.z, 0)).rgb;
+    float3 c011 = _Lut3D.Load(int4(lo.x, hi.y, hi.z, 0)).rgb;
+    float3 c111 = _Lut3D.Load(int4(hi.x, hi.y, hi.z, 0)).rgb;
+    float3 c00 = lerp(c000, c100, f.x);
+    float3 c10 = lerp(c010, c110, f.x);
+    float3 c01 = lerp(c001, c101, f.x);
+    float3 c11 = lerp(c011, c111, f.x);
+    return lerp(lerp(c00, c10, f.y), lerp(c01, c11, f.y), f.z);
 }
 
 uint BinaryMaskAt(int2 p)
@@ -788,6 +898,157 @@ void Blur(uint3 id : SV_DispatchThreadID)
     float3 blurred = sum / max(1e-6, wsum);
     center.rgb = Clamp01(lerp(center.rgb, blurred, amount));
     _Result[p] = center;
+}
+
+[numthreads(8,8,1)]
+void WhiteBalance(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _Result.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+    float4 sample = _Source[int2(id.xy)];
+    sample.rgb = saturate(ApplyWhiteBalance(sample.rgb));
+    _Result[int2(id.xy)] = sample;
+}
+
+[numthreads(8,8,1)]
+void AutoEnhance(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _Result.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+    float4 sample = _Source[int2(id.xy)];
+    float3 rgb = sample.rgb * exp2(_AutoExposure);
+    rgb = ApplyContrast(rgb, _AutoContrast);
+    sample.rgb = saturate(ApplyVibrance(rgb, _AutoVibrance));
+    _Result[int2(id.xy)] = sample;
+}
+
+[numthreads(8,8,1)]
+void AdjustExposure(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _Result.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+    float4 sample = _Source[int2(id.xy)];
+    sample.rgb = saturate(sample.rgb * exp2(_Exposure));
+    _Result[int2(id.xy)] = sample;
+}
+
+[numthreads(8,8,1)]
+void ToneCurve(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _Result.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+    float4 sample = _Source[int2(id.xy)];
+    sample.rgb = ApplyToneCurve(sample.rgb);
+    _Result[int2(id.xy)] = sample;
+}
+
+[numthreads(8,8,1)]
+void LevelsBlack(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _Result.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+    float4 sample = _Source[int2(id.xy)];
+    sample.rgb = saturate((sample.rgb - _LevelBlack) / max(0.001, 1.0 - _LevelBlack));
+    _Result[int2(id.xy)] = sample;
+}
+
+[numthreads(8,8,1)]
+void LevelsWhite(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _Result.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+    float4 sample = _Source[int2(id.xy)];
+    sample.rgb = saturate(sample.rgb / max(0.001, _LevelWhite));
+    _Result[int2(id.xy)] = sample;
+}
+
+[numthreads(8,8,1)]
+void HslHue(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _Result.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+    float4 sample = _Source[int2(id.xy)];
+    sample.rgb = ApplyHsl(sample.rgb, 0);
+    _Result[int2(id.xy)] = sample;
+}
+
+[numthreads(8,8,1)]
+void HslSaturation(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _Result.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+    float4 sample = _Source[int2(id.xy)];
+    sample.rgb = ApplyHsl(sample.rgb, 1);
+    _Result[int2(id.xy)] = sample;
+}
+
+[numthreads(8,8,1)]
+void HslLuminance(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _Result.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+    float4 sample = _Source[int2(id.xy)];
+    sample.rgb = ApplyHsl(sample.rgb, 2);
+    _Result[int2(id.xy)] = sample;
+}
+
+[numthreads(8,8,1)]
+void ApplyLut(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _Result.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+    float4 sample = _Source[int2(id.xy)];
+    sample.rgb = saturate(lerp(sample.rgb, SampleLut(sample.rgb), saturate(_LutIntensity)));
+    _Result[int2(id.xy)] = sample;
+}
+
+[numthreads(8,8,1)]
+void AddGrain(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _Result.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+    float4 sample = _Source[int2(id.xy)];
+    float grain = (Random01(float2(id.xy)) - 0.5) * _GrainAmount * 0.12;
+    sample.rgb = saturate(sample.rgb + grain.xxx);
+    _Result[int2(id.xy)] = sample;
+}
+
+[numthreads(8,8,1)]
+void Vignette(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _Result.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+    float4 sample = _Source[int2(id.xy)];
+    float2 uv = (float2(id.xy) + 0.5) / float2(w, h);
+    float2 centered = uv * 2.0 - 1.0;
+    float edge = smoothstep(0.25, 1.0, dot(centered, centered));
+    sample.rgb = saturate(sample.rgb * (1.0 - edge * _VignetteAmount * 0.70));
+    _Result[int2(id.xy)] = sample;
+}
+
+[numthreads(8,8,1)]
+void LocalMaskExposure(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _Result.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+    int2 p = int2(id.xy);
+    float4 sample = _Source[p];
+    float3 adjusted = saturate(sample.rgb * exp2(_LocalExposure));
+    sample.rgb = lerp(sample.rgb, adjusted, saturate(_LocalMask[p]));
+    _Result[p] = sample;
 }
 
 float OverlayAlphaAt(int2 p)

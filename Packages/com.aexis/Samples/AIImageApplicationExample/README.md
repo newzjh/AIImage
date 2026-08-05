@@ -21,6 +21,8 @@ This is the single complete application example for `com.aexis`. It combines the
 ## At a glance
 
 - A complete UI Toolkit application that exercises Aexis through image restoration, segmentation, matting, inpainting, Qwen, and medical-model integration paths.
+- The adjustment panel provides live-preview white balance, auto enhance, exposure, tone curve, levels, eight-range HSL, .cube LUTs, grain, vignette, and painted local exposure masks. Each completed adjustment becomes a history entry.
+- Uncompressed 16-bit Bayer DNG files are sensor-decoded and demosaiced in the portable sample. Other RAW formats retain the existing embedded-preview fallback until a separately licensed camera RAW decoder is supplied.
 - MainView2 includes a Development Build-only one-click Test command that writes a single incremental runner report from the current image.
 - Default permitted model payloads are isolated from external Qwen, GFPGAN, Stable Diffusion, MONAI, and VISTA releases.
 - Importable through Unity Package Manager without adding runtime dependencies to `com.aexis`.

@@ -205,7 +205,7 @@ public abstract class BasePageView : MonoBehaviour
     private RenderTexture _previewRt;
     private Texture2D _previewSource;
     private string _previewKernelName;
-    private Action<ComputeShader, float> _previewParamSetter;
+    private Action<ComputeShader, int, float> _previewParamSetter;
     private float _previewValue;
     private int _previewPointerId = -1;
     private VisualElement _previewCaptureElement;
@@ -709,7 +709,12 @@ public abstract class BasePageView : MonoBehaviour
         SelectHistoryIndex(Mathf.Clamp(index, 0, _historyEntries.Count - 1));
     }
 
-    protected async UniTask ApplyComputeAdjustmentAsync(string kernelName, Action<ComputeShader> setParams, string historyLabel)
+    protected UniTask ApplyComputeAdjustmentAsync(string kernelName, Action<ComputeShader> setParams, string historyLabel)
+    {
+        return ApplyComputeAdjustmentAsync(kernelName, (cs, _) => setParams?.Invoke(cs), historyLabel);
+    }
+
+    protected async UniTask ApplyComputeAdjustmentAsync(string kernelName, Action<ComputeShader, int> setParams, string historyLabel)
     {
         var src = GetCurrentHistoryTexture();
         if (src == null)
@@ -743,7 +748,7 @@ public abstract class BasePageView : MonoBehaviour
 
             cs.SetTexture(kernel, "_Source", src);
             cs.SetTexture(kernel, "_Result", rt);
-            setParams?.Invoke(cs);
+            setParams?.Invoke(cs, kernel);
 
             var gx = Mathf.CeilToInt(src.width / 8f);
             var gy = Mathf.CeilToInt(src.height / 8f);
@@ -765,6 +770,18 @@ public abstract class BasePageView : MonoBehaviour
     }
 
     protected VisualElement CreateAdjustRow(string name, float min, float max, float defaultValue, string kernelName, Action<ComputeShader, float> paramSetter, Func<float, string> historyLabelFactory)
+    {
+        return CreateAdjustRow(
+            name,
+            min,
+            max,
+            defaultValue,
+            kernelName,
+            (cs, _, value) => paramSetter?.Invoke(cs, value),
+            historyLabelFactory);
+    }
+
+    protected VisualElement CreateAdjustRow(string name, float min, float max, float defaultValue, string kernelName, Action<ComputeShader, int, float> paramSetter, Func<float, string> historyLabelFactory)
     {
         var card = new VisualElement();
         card.style.flexDirection = FlexDirection.Column;
@@ -848,7 +865,7 @@ public abstract class BasePageView : MonoBehaviour
 
             ApplyComputeAdjustmentAsync(
                 kernelName,
-                cs => paramSetter?.Invoke(cs, value),
+                (cs, kernel) => paramSetter?.Invoke(cs, kernel, value),
                 historyLabelFactory != null ? historyLabelFactory(value) : name).Forget();
         }
 
@@ -1495,7 +1512,7 @@ public abstract class BasePageView : MonoBehaviour
         root.Add(_toastOverlay);
     }
 
-    private void StartPreview(VisualElement captureElement, int pointerId, string kernelName, Action<ComputeShader, float> paramSetter, float initialValue)
+    private void StartPreview(VisualElement captureElement, int pointerId, string kernelName, Action<ComputeShader, int, float> paramSetter, float initialValue)
     {
         var src = GetCurrentHistoryTexture();
         if (src == null)
@@ -1651,7 +1668,7 @@ public abstract class BasePageView : MonoBehaviour
 
         cs.SetTexture(kernel, "_Source", _previewSource);
         cs.SetTexture(kernel, "_Result", _previewRt);
-        _previewParamSetter?.Invoke(cs, _previewValue);
+        _previewParamSetter?.Invoke(cs, kernel, _previewValue);
         var gx = Mathf.CeilToInt(_previewSource.width / 8f);
         var gy = Mathf.CeilToInt(_previewSource.height / 8f);
         cs.Dispatch(kernel, gx, gy, 1);
