@@ -2099,6 +2099,15 @@ public sealed class LibraryView : BasePageView
         if (_visibleEntries.Count == 0)
             return;
 
+        // A decoder or texture-generation fix should take effect without
+        // requiring the user to restart the page or reselect the directory.
+        for (var i = 0; i < _visibleEntries.Count; i++)
+        {
+            var entry = _visibleEntries[i];
+            if (entry != null && entry.thumbnail == null)
+                entry.thumbnailFailed = false;
+        }
+
         _thumbnailLoadGeneration++;
         _thumbnailLoadCts = new CancellationTokenSource();
         var generation = _thumbnailLoadGeneration;
@@ -3008,7 +3017,10 @@ public sealed class LibraryView : BasePageView
             return null;
 
         var texture = new Texture2D(2, 2, TextureFormat.RGBA32, false);
-        if (!texture.LoadImage(imageBytes, true))
+        // The CLIP downscale path reads the decoded pixels to preserve encoded
+        // RGB values. Keep this short-lived source texture readable until the
+        // display and CLIP textures have both been generated.
+        if (!texture.LoadImage(imageBytes, false))
         {
             UnityEngine.Object.Destroy(texture);
             return null;
