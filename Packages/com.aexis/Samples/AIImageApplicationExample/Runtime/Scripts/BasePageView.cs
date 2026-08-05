@@ -291,8 +291,12 @@ public abstract class BasePageView : MonoBehaviour
     protected virtual void OnLayoutChanged(bool isPortrait, Rect layoutRect) { }
     protected virtual AppPageId? ResolveSwipeTarget(SwipeDirection direction) => null;
     protected virtual bool HandleDirectionalImageNavigation(int direction) => false;
+    protected virtual bool ShowSwitchZone => true;
     protected virtual bool UseOverlaySwitchZone => false;
+    protected virtual bool ShowDirectionalSwitchButtons => false;
+    protected virtual bool SwitchZoneControlsImageNavigation => false;
     protected virtual float GetSwitchPillAlignment01() => 0.5f;
+    protected virtual void BuildPageNavigationControls(VisualElement root) { }
     protected abstract void BuildPage(VisualElement contentRoot);
 
     protected static string L(string english, string simplifiedChinese)
@@ -1221,7 +1225,9 @@ public abstract class BasePageView : MonoBehaviour
         _pageRoot.Add(_contentRoot);
 
         BuildPage(_contentRoot);
-        BuildSwitchZone(_pageRoot);
+        if (ShowSwitchZone)
+            BuildSwitchZone(_pageRoot);
+        BuildPageNavigationControls(_pageRoot);
         AppLocalization.LocalizeVisualTree(_pageRoot);
     }
 
@@ -1260,6 +1266,15 @@ public abstract class BasePageView : MonoBehaviour
             _switchZone.style.flexShrink = 0;
         }
 
+        var switchControls = new VisualElement();
+        switchControls.style.flexDirection = FlexDirection.Row;
+        switchControls.style.alignItems = Align.Center;
+        switchControls.style.justifyContent = Justify.Center;
+        _switchZone.Add(switchControls);
+
+        if (ShowDirectionalSwitchButtons)
+            switchControls.Add(CreateSwitchDirectionButton(SwipeDirection.Left));
+
         _switchTrack = new VisualElement();
         _switchTrack.style.position = Position.Relative;
         _switchTrack.style.width = 160;
@@ -1271,7 +1286,10 @@ public abstract class BasePageView : MonoBehaviour
         _switchTrack.style.borderBottomLeftRadius = 14;
         _switchTrack.style.borderBottomRightRadius = 14;
         _switchTrack.style.backgroundColor = new StyleColor(new Color(1f, 1f, 1f, 0.08f));
-        _switchZone.Add(_switchTrack);
+        switchControls.Add(_switchTrack);
+
+        if (ShowDirectionalSwitchButtons)
+            switchControls.Add(CreateSwitchDirectionButton(SwipeDirection.Right));
 
         _switchPill = new VisualElement();
         _switchPill.style.position = Position.Absolute;
@@ -1692,9 +1710,94 @@ public abstract class BasePageView : MonoBehaviour
         if (!direction.HasValue)
             return;
 
-        var target = ResolveSwipeTarget(direction.Value);
+        ActivateSwitchDirection(direction.Value);
+    }
+
+    private void ActivateSwitchDirection(SwipeDirection direction)
+    {
+        if (SwitchZoneControlsImageNavigation)
+        {
+            HandleDirectionalImageNavigation(direction == SwipeDirection.Left ? -1 : 1);
+            return;
+        }
+
+        RequestPageSwitch(direction);
+    }
+
+    private void RequestPageSwitch(SwipeDirection direction)
+    {
+        var target = ResolveSwipeTarget(direction);
         if (target.HasValue)
-            Host?.RequestPageSwitch(this, target.Value, direction.Value);
+            Host?.RequestPageSwitch(this, target.Value, direction);
+    }
+
+    private Button CreateSwitchDirectionButton(SwipeDirection direction)
+    {
+        var isLeft = direction == SwipeDirection.Left;
+        var imageNavigation = SwitchZoneControlsImageNavigation;
+        var button = new Button(() => ActivateSwitchDirection(direction))
+        {
+            text = isLeft ? "\u25c0" : "\u25b6",
+            tooltip = imageNavigation
+                ? (isLeft ? L("Previous image", "上一张图片") : L("Next image", "下一张图片"))
+                : (isLeft ? L("Switch to the page on the left", "切换到左侧页面") : L("Switch to the page on the right", "切换到右侧页面"))
+        };
+        button.style.width = 30;
+        button.style.height = 30;
+        button.style.marginLeft = isLeft ? 0 : 4;
+        button.style.marginRight = isLeft ? 4 : 0;
+        button.style.paddingLeft = 0;
+        button.style.paddingRight = 0;
+        button.style.paddingTop = 0;
+        button.style.paddingBottom = 0;
+        button.style.backgroundColor = Color.clear;
+        button.style.borderLeftWidth = 0;
+        button.style.borderRightWidth = 0;
+        button.style.borderTopWidth = 0;
+        button.style.borderBottomWidth = 0;
+        button.style.color = new Color(1f, 1f, 1f, 0.72f);
+        button.style.fontSize = 16;
+        button.style.unityTextAlign = TextAnchor.MiddleCenter;
+        button.style.flexShrink = 0;
+        button.RegisterCallback<PointerDownEvent>(evt => evt.StopPropagation());
+        button.RegisterCallback<PointerMoveEvent>(evt => evt.StopPropagation());
+        button.RegisterCallback<PointerUpEvent>(evt => evt.StopPropagation());
+        button.RegisterCallback<PointerCancelEvent>(evt => evt.StopPropagation());
+        return button;
+    }
+
+    protected Button CreateCornerNavigationButton(string text, Action onClick, bool alignLeft, string tooltip)
+    {
+        var button = new Button(onClick)
+        {
+            text = text,
+            tooltip = tooltip
+        };
+        button.style.position = Position.Absolute;
+        button.style.bottom = 3;
+        if (alignLeft)
+            button.style.left = 16;
+        else
+            button.style.right = 16;
+        button.style.height = 36;
+        button.style.minWidth = 76;
+        button.style.paddingLeft = 12;
+        button.style.paddingRight = 12;
+        button.style.backgroundColor = new StyleColor(new Color(0.08f, 0.10f, 0.14f, 0.78f));
+        button.style.color = Color.white;
+        button.style.borderLeftWidth = 1;
+        button.style.borderRightWidth = 1;
+        button.style.borderTopWidth = 1;
+        button.style.borderBottomWidth = 1;
+        button.style.borderLeftColor = new StyleColor(new Color(1f, 1f, 1f, 0.24f));
+        button.style.borderRightColor = new StyleColor(new Color(1f, 1f, 1f, 0.24f));
+        button.style.borderTopColor = new StyleColor(new Color(1f, 1f, 1f, 0.24f));
+        button.style.borderBottomColor = new StyleColor(new Color(1f, 1f, 1f, 0.24f));
+        button.style.borderTopLeftRadius = 8;
+        button.style.borderTopRightRadius = 8;
+        button.style.borderBottomLeftRadius = 8;
+        button.style.borderBottomRightRadius = 8;
+        return button;
     }
 
     private void ReleaseSwitchPointer()

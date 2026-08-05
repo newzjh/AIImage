@@ -163,6 +163,10 @@ public sealed class MainView2 : BasePageView
 
     protected override bool UseOverlaySwitchZone => true;
 
+    protected override bool ShowDirectionalSwitchButtons => true;
+
+    protected override bool SwitchZoneControlsImageNavigation => true;
+
     protected override float GetSwitchPillAlignment01() => 0.5f;
 
     protected override bool HandleDirectionalImageNavigation(int direction)
@@ -174,6 +178,20 @@ public sealed class MainView2 : BasePageView
     {
         PageRoot.RegisterCallback<KeyDownEvent>(OnPageKeyDown, TrickleDown.TrickleDown);
         BuildPageContent(contentRoot);
+    }
+
+    protected override void BuildPageNavigationControls(VisualElement root)
+    {
+        root.Add(CreateCornerNavigationButton(
+            L("Library", "图库"),
+            () => Host?.RequestPageSwitch(this, AppPageId.LibraryView, SwipeDirection.Left),
+            true,
+            L("Open the library", "打开图库")));
+        root.Add(CreateCornerNavigationButton(
+            L("Design", "设计"),
+            () => Host?.RequestPageSwitch(this, AppPageId.DesignView, SwipeDirection.Right),
+            false,
+            L("Open design tools", "打开设计工具")));
     }
 
     private void OnPageKeyDown(KeyDownEvent evt)

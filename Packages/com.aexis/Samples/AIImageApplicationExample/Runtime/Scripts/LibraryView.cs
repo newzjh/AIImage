@@ -155,6 +155,8 @@ public sealed class LibraryView : BasePageView
 
     public override AppPageId PageId => AppPageId.LibraryView;
 
+    protected override bool ShowSwitchZone => false;
+
     private PopupField<string> _drivePopup;
     private TreeView _directoryTree;
     private ScrollView _thumbnailScroll;
@@ -174,6 +176,7 @@ public sealed class LibraryView : BasePageView
     private VisualElement _selectionTipsMeta;
     private VisualElement _leftPane;
     private VisualElement _rightPane;
+    private Foldout _directoryBrowserFoldout;
     private Button _selectionTipsToggleButton;
     private Button _mappedOriginalLinkButton;
 
@@ -213,6 +216,7 @@ public sealed class LibraryView : BasePageView
     private float _lastThumbnailInteractionTime = float.NegativeInfinity;
     private bool _storagePermissionRequestInFlight;
     private bool _selectionTipsCollapsed;
+    private bool _directoryBrowserCollapsed;
     private bool _hasAppliedLayout;
     private bool _lastLayoutWasPortrait;
     private bool _faceSortRefreshPending;
@@ -438,10 +442,27 @@ public sealed class LibraryView : BasePageView
         pane.style.flexShrink = 0;
         pane.style.marginRight = 12;
 
+        _directoryBrowserFoldout = new Foldout
+        {
+            text = L("Browse folders", "浏览目录"),
+            value = !IsPortraitLayout
+        };
+        _directoryBrowserFoldout.style.flexGrow = 1;
+        _directoryBrowserFoldout.style.minHeight = 0;
+        _directoryBrowserFoldout.style.color = Color.white;
+        _directoryBrowserFoldout.style.unityFontStyleAndWeight = FontStyle.Bold;
+        _directoryBrowserFoldout.RegisterValueChangedCallback(evt => SetDirectoryBrowserCollapsed(!evt.newValue));
+        pane.Add(_directoryBrowserFoldout);
+
+        var directoryBrowserContent = _directoryBrowserFoldout.contentContainer;
+        directoryBrowserContent.style.flexGrow = 1;
+        directoryBrowserContent.style.minHeight = 0;
+        directoryBrowserContent.style.flexDirection = FlexDirection.Column;
+
         var driveRow = new VisualElement();
         driveRow.style.flexDirection = FlexDirection.Row;
         driveRow.style.alignItems = Align.Center;
-        pane.Add(driveRow);
+        directoryBrowserContent.Add(driveRow);
 
         var driveLabel = new Label(GetStorageRootLabel());
         driveLabel.style.color = Color.white;
@@ -457,7 +478,7 @@ public sealed class LibraryView : BasePageView
         pathRow.style.flexDirection = FlexDirection.Row;
         pathRow.style.alignItems = Align.Center;
         pathRow.style.marginTop = 8;
-        pane.Add(pathRow);
+        directoryBrowserContent.Add(pathRow);
 
         _directoryPathField = new TextField();
         _directoryPathField.isDelayed = false;
@@ -491,7 +512,7 @@ public sealed class LibraryView : BasePageView
         _directorySummary.style.marginTop = 10;
         _directorySummary.style.marginBottom = 8;
         _directorySummary.style.color = new Color(0.78f, 0.84f, 0.92f, 1f);
-        pane.Add(_directorySummary);
+        directoryBrowserContent.Add(_directorySummary);
 
         _directoryTree = new TreeView();
         _directoryTree.style.flexGrow = 1;
@@ -511,7 +532,7 @@ public sealed class LibraryView : BasePageView
         _directoryTree.itemExpandedChanged += OnDirectoryExpandedChanged;
 #endif
         _directoryTree.selectionChanged += OnDirectorySelectionChanged;
-        pane.Add(_directoryTree);
+        directoryBrowserContent.Add(_directoryTree);
 
         return pane;
     }
@@ -695,12 +716,19 @@ public sealed class LibraryView : BasePageView
         body.style.flexDirection = isPortrait ? FlexDirection.Column : FlexDirection.Row;
         ApplyFilterToggleLayout(isPortrait);
 
+        var orientationChanged = !_hasAppliedLayout || _lastLayoutWasPortrait != isPortrait;
+        if (orientationChanged)
+        {
+            SetSelectionTipsCollapsed(isPortrait);
+            SetDirectoryBrowserCollapsed(isPortrait, false);
+        }
+
         if (isPortrait)
         {
             _leftPane.style.width = Length.Percent(100);
             _leftPane.style.minWidth = new StyleLength(StyleKeyword.Auto);
             _leftPane.style.maxWidth = new StyleLength(StyleKeyword.Auto);
-            _leftPane.style.height = Length.Percent(50);
+            _leftPane.style.height = _directoryBrowserCollapsed ? 54 : Length.Percent(50);
             _leftPane.style.flexGrow = 0;
             _leftPane.style.flexShrink = 0;
             _leftPane.style.marginRight = 0;
@@ -708,9 +736,9 @@ public sealed class LibraryView : BasePageView
         }
         else
         {
-            _leftPane.style.width = 310;
-            _leftPane.style.minWidth = 260;
-            _leftPane.style.maxWidth = 360;
+            _leftPane.style.width = _directoryBrowserCollapsed ? 196 : 310;
+            _leftPane.style.minWidth = _directoryBrowserCollapsed ? 170 : 260;
+            _leftPane.style.maxWidth = _directoryBrowserCollapsed ? 220 : 360;
             _leftPane.style.height = new StyleLength(StyleKeyword.Auto);
             _leftPane.style.flexGrow = 0;
             _leftPane.style.flexShrink = 0;
@@ -721,12 +749,18 @@ public sealed class LibraryView : BasePageView
         _rightPane.style.flexGrow = 1;
         _rightPane.style.minHeight = 0;
 
-        var orientationChanged = !_hasAppliedLayout || _lastLayoutWasPortrait != isPortrait;
-        if (orientationChanged)
-            SetSelectionTipsCollapsed(isPortrait);
-
         _lastLayoutWasPortrait = isPortrait;
         _hasAppliedLayout = true;
+    }
+
+    private void SetDirectoryBrowserCollapsed(bool collapsed, bool applyLayout = true)
+    {
+        _directoryBrowserCollapsed = collapsed;
+        if (_directoryBrowserFoldout != null && _directoryBrowserFoldout.value != !collapsed)
+            _directoryBrowserFoldout.SetValueWithoutNotify(!collapsed);
+
+        if (applyLayout && _hasAppliedLayout)
+            ApplyLibraryLayout(IsPortraitLayout);
     }
 
     private void ApplyFilterToggleLayout(bool isPortrait)
