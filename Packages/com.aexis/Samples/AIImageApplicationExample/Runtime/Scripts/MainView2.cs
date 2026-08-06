@@ -108,6 +108,28 @@ public sealed class MainView2 : BasePageView
     private Button _localMaskPaintButton;
     private static readonly List<string> YoloInpaintResourceSnapshotLines = new List<string>(256);
 
+    private struct AutoToneAnalysis
+    {
+        public float exposure;
+        public float shadows;
+        public float highlights;
+        public float contrast;
+        public float vibrance;
+        public float temperature;
+        public float tint;
+    }
+
+    private enum AutoToneProfile
+    {
+        General,
+        Portrait,
+        Food,
+        Landscape,
+        Night,
+        Architecture,
+        Document
+    }
+
     private System.Threading.CancellationTokenSource _lifetimeCts;
     private System.Threading.CancellationTokenSource _faceMaskCts;
     private System.Threading.CancellationTokenSource _maleFaceMaskCts;
@@ -434,6 +456,7 @@ public sealed class MainView2 : BasePageView
         AddTool(L("Face Repair", "修复人脸"), "🤦‍", OnOneClickFaceRepair, new Color(0.99f, 0.74f, 0.35f),66f, true);
         AddTool(L("Remove People", "去路人"), "🚶", OnOneClickRemovePassers, new Color(0.88f, 0.54f, 0.48f), 66f, true);
         AddTool(L("Background", "优化背景"), "🖼", OnOneClickOptimizeBackground, new Color(0.42f, 0.72f, 1f), 66f, true);
+        AddTool(L("Auto Tone", "一键调色"), "🎨", OnOneClickAutoTone, new Color(0.44f, 0.82f, 0.68f), 66f, true);
         _qwenAnalysisButton = AddTool(
             L("Analyze", "识别内容"),
             "◉",
@@ -2112,6 +2135,376 @@ public sealed class MainView2 : BasePageView
     private void OnOneClickFaceRepair() => ApplyOneClickFaceRepairAsync().Forget();
     private void OnOneClickRemovePassers() => ApplyOneClickRemovePassersAsync().Forget();
     private void OnOneClickOptimizeBackground() => ApplyOneClickOptimizeBackgroundAsync().Forget();
+    private void OnOneClickAutoTone() => ApplyOneClickAutoToneAsync().Forget();
+
+    private async UniTaskVoid ApplyOneClickAutoToneAsync()
+    {
+        var clipRunner = Host?.ClipRunner;
+        if (_aiRunning || _adjustRunning || _lifetimeCts == null || clipRunner == null)
+            return;
+
+        var source = GetCurrentHistoryTexture() ?? GetOriginalHistoryTexture();
+        if (source == null)
+            return;
+
+        if (!await Host.EnsureModelGroupsAvailableAsync(
+                "CLIP model download",
+                _lifetimeCts.Token,
+                AIImageModelGroupId.ClipMobileClipS0))
+            return;
+
+        _adjustRunning = true;
+        ShowProgress(L("Auto tone", "一键调色"));
+        try
+        {
+            Action<float, string> onClipProgress = (p, t) => SetProgress(p * 0.48f, string.IsNullOrWhiteSpace(t) ? "CLIP" : t);
+            ClipClassificationResult classification;
+            clipRunner.ProgressChanged -= onClipProgress;
+            clipRunner.ProgressChanged += onClipProgress;
+            try
+            {
+                classification = await clipRunner.ProcessAsync(source, _lifetimeCts.Token);
+            }
+            finally
+            {
+                clipRunner.ProgressChanged -= onClipProgress;
+            }
+
+            if (!string.IsNullOrWhiteSpace(classification.error))
+            {
+                ShowToast(classification.error, 3200);
+                return;
+            }
+
+            var currentPath = CurrentImagePath;
+            var preferFileIdentity = source == GetOriginalHistoryTexture() && !string.IsNullOrWhiteSpace(currentPath);
+            ClipClassificationCache.Store(clipRunner, classification, source, currentPath, preferFileIdentity);
+
+            SetProgress(0.52f, L("Analyze exposure and color", "分析曝光与色彩"));
+            if (!TryAnalyzeAutoTone(source, classification.bestLabel, out var analysis))
+            {
+                ShowToast(L("Unable to read image statistics.", "无法读取图像统计数据。"), 2800);
+                return;
+            }
+
+            var appliedSteps = new List<string>(6);
+            async UniTask ApplyStepAsync(
+                string kernelName,
+                Action<ComputeShader> configure,
+                string historyLabel,
+                string stepLabel)
+            {
+                SetProgress(0.58f + appliedSteps.Count * 0.07f, stepLabel);
+                await ApplyComputeAdjustmentAsync(kernelName, configure, historyLabel);
+                appliedSteps.Add(stepLabel);
+            }
+
+            if (Mathf.Abs(analysis.temperature) >= 1f || Mathf.Abs(analysis.tint) >= 1f)
+            {
+                await ApplyStepAsync(
+                    "WhiteBalance",
+                    cs =>
+                    {
+                        cs.SetFloat("_WhiteBalanceTemperature", analysis.temperature);
+                        cs.SetFloat("_WhiteBalanceTint", analysis.tint);
+                    },
+                    L("Auto tone white balance", "一键调色 白平衡"),
+                    L("White balance", "白平衡"));
+            }
+
+            if (Mathf.Abs(analysis.exposure) >= 0.07f)
+            {
+                await ApplyStepAsync(
+                    "AdjustExposure",
+                    cs => cs.SetFloat("_Exposure", analysis.exposure),
+                    L("Auto tone exposure", "一键调色 曝光"),
+                    L("Exposure", "曝光"));
+            }
+
+            if (analysis.shadows >= 0.03f)
+            {
+                await ApplyStepAsync(
+                    "AdjustShadows",
+                    cs => cs.SetFloat("_Shadows", analysis.shadows),
+                    L("Auto tone shadows", "一键调色 阴影"),
+                    L("Shadows", "阴影"));
+            }
+
+            if (analysis.highlights >= 0.03f)
+            {
+                await ApplyStepAsync(
+                    "AdjustHighlights",
+                    cs => cs.SetFloat("_Highlights", analysis.highlights),
+                    L("Auto tone highlights", "一键调色 高光"),
+                    L("Highlights", "高光"));
+            }
+
+            if (analysis.contrast >= 0.03f)
+            {
+                await ApplyStepAsync(
+                    "AdjustContrast",
+                    cs => cs.SetFloat("_Contrast", analysis.contrast),
+                    L("Auto tone contrast", "一键调色 对比度"),
+                    L("Contrast", "对比度"));
+            }
+
+            if (analysis.vibrance >= 0.03f)
+            {
+                await ApplyStepAsync(
+                    "AdjustVibrance",
+                    cs => cs.SetFloat("_Vibrance", analysis.vibrance),
+                    L("Auto tone vibrance", "一键调色 自然饱和度"),
+                    L("Vibrance", "自然饱和度"));
+            }
+
+            var kind = string.IsNullOrWhiteSpace(classification.bestLabel)
+                ? L("image", "图像")
+                : classification.bestLabel;
+            var summary = appliedSteps.Count == 0
+                ? L("No corrective tone adjustment was needed.", "未检测到需要校正的调色问题。")
+                : L("Auto tone applied to ", "已对") + kind + L(": ", "应用一键调色：") + string.Join(L(", ", "、"), appliedSteps);
+            ShowToast(summary, 3600);
+        }
+        finally
+        {
+            _adjustRunning = false;
+            HideProgress();
+        }
+    }
+
+    private static bool TryAnalyzeAutoTone(Texture2D source, string clipLabel, out AutoToneAnalysis analysis)
+    {
+        analysis = default;
+        if (source == null)
+            return false;
+
+        try
+        {
+            var useRawPixels = source.format == TextureFormat.RGBA32;
+            var rawPixels = useRawPixels ? source.GetRawTextureData<Color32>() : default;
+            var copiedPixels = useRawPixels ? null : source.GetPixels32();
+            var length = useRawPixels ? rawPixels.Length : copiedPixels?.Length ?? 0;
+            if (length == 0)
+                return false;
+
+            var stride = Mathf.Max(1, length / 65536);
+            var sumLuminance = 0f;
+            var sumSquares = 0f;
+            var sumRed = 0f;
+            var sumGreen = 0f;
+            var sumBlue = 0f;
+            var sumSaturation = 0f;
+            var darkPixels = 0;
+            var brightPixels = 0;
+            var clippedPixels = 0;
+            var count = 0;
+            for (var i = 0; i < length; i += stride)
+            {
+                var pixel = useRawPixels ? rawPixels[i] : copiedPixels[i];
+                var red = pixel.r / 255f;
+                var green = pixel.g / 255f;
+                var blue = pixel.b / 255f;
+                var luminance = red * 0.2126f + green * 0.7152f + blue * 0.0722f;
+                var maximum = Mathf.Max(red, Mathf.Max(green, blue));
+                var minimum = Mathf.Min(red, Mathf.Min(green, blue));
+                sumLuminance += luminance;
+                sumSquares += luminance * luminance;
+                sumRed += red;
+                sumGreen += green;
+                sumBlue += blue;
+                sumSaturation += maximum - minimum;
+                darkPixels += luminance <= 0.12f ? 1 : 0;
+                brightPixels += luminance >= 0.88f ? 1 : 0;
+                clippedPixels += maximum >= 0.98f ? 1 : 0;
+                count++;
+            }
+
+            if (count == 0)
+                return false;
+
+            var mean = sumLuminance / count;
+            var standardDeviation = Mathf.Sqrt(Mathf.Max(0f, sumSquares / count - mean * mean));
+            var darkFraction = darkPixels / (float)count;
+            var brightFraction = brightPixels / (float)count;
+            var clippedFraction = clippedPixels / (float)count;
+            var meanRed = sumRed / count;
+            var meanGreen = sumGreen / count;
+            var meanBlue = sumBlue / count;
+            var meanSaturation = sumSaturation / count;
+            var profile = ResolveAutoToneProfile(clipLabel);
+            var targetLuminance = 0.45f;
+            var maximumExposure = 0.48f;
+            var shadowStart = 0.18f;
+            var shadowScale = 0.46f;
+            var shadowMaximum = 0.20f;
+            var highlightStart = 0.12f;
+            var highlightScale = 0.48f;
+            var highlightMaximum = 0.20f;
+            var contrastDeviationTarget = 0.18f;
+            var contrastScale = 0.85f;
+            var contrastMaximum = 0.15f;
+            var targetSaturation = 0.25f;
+            var vibranceScale = 0.52f;
+            var vibranceMaximum = 0.14f;
+            var whiteBalanceScale = 1f;
+            switch (profile)
+            {
+                case AutoToneProfile.Portrait:
+                    targetLuminance = 0.46f;
+                    maximumExposure = 0.36f;
+                    shadowScale = 0.34f;
+                    shadowMaximum = 0.13f;
+                    highlightScale = 0.34f;
+                    highlightMaximum = 0.13f;
+                    contrastDeviationTarget = 0.17f;
+                    contrastScale = 0.55f;
+                    contrastMaximum = 0.08f;
+                    targetSaturation = 0.21f;
+                    vibranceMaximum = 0.06f;
+                    whiteBalanceScale = 0.45f;
+                    break;
+                case AutoToneProfile.Food:
+                    targetLuminance = 0.50f;
+                    maximumExposure = 0.40f;
+                    shadowStart = 0.20f;
+                    shadowScale = 0.32f;
+                    shadowMaximum = 0.14f;
+                    highlightStart = 0.10f;
+                    highlightScale = 0.42f;
+                    highlightMaximum = 0.18f;
+                    contrastDeviationTarget = 0.20f;
+                    contrastScale = 0.75f;
+                    contrastMaximum = 0.12f;
+                    targetSaturation = 0.32f;
+                    vibranceMaximum = 0.15f;
+                    whiteBalanceScale = 0.65f;
+                    break;
+                case AutoToneProfile.Landscape:
+                    targetLuminance = 0.46f;
+                    maximumExposure = 0.45f;
+                    shadowStart = 0.17f;
+                    shadowScale = 0.46f;
+                    shadowMaximum = 0.20f;
+                    highlightStart = 0.10f;
+                    highlightScale = 0.54f;
+                    highlightMaximum = 0.22f;
+                    contrastDeviationTarget = 0.21f;
+                    contrastScale = 0.90f;
+                    contrastMaximum = 0.16f;
+                    targetSaturation = 0.29f;
+                    vibranceMaximum = 0.16f;
+                    whiteBalanceScale = 0.80f;
+                    break;
+                case AutoToneProfile.Night:
+                    targetLuminance = 0.35f;
+                    maximumExposure = 0.45f;
+                    shadowStart = 0.50f;
+                    shadowScale = 0.28f;
+                    shadowMaximum = 0.10f;
+                    highlightStart = 0.18f;
+                    highlightScale = 0.25f;
+                    highlightMaximum = 0.10f;
+                    contrastDeviationTarget = 0.16f;
+                    contrastScale = 0.45f;
+                    contrastMaximum = 0.06f;
+                    targetSaturation = 0.19f;
+                    vibranceMaximum = 0.06f;
+                    whiteBalanceScale = 0.40f;
+                    break;
+                case AutoToneProfile.Architecture:
+                    targetLuminance = 0.48f;
+                    maximumExposure = 0.42f;
+                    shadowScale = 0.35f;
+                    shadowMaximum = 0.16f;
+                    highlightStart = 0.10f;
+                    highlightScale = 0.55f;
+                    highlightMaximum = 0.22f;
+                    contrastDeviationTarget = 0.21f;
+                    contrastScale = 0.75f;
+                    contrastMaximum = 0.14f;
+                    targetSaturation = 0.18f;
+                    vibranceMaximum = 0.07f;
+                    whiteBalanceScale = 0.75f;
+                    break;
+                case AutoToneProfile.Document:
+                    targetLuminance = 0.60f;
+                    maximumExposure = 0.45f;
+                    shadowStart = 0.35f;
+                    shadowScale = 0.35f;
+                    shadowMaximum = 0.15f;
+                    highlightStart = 0.09f;
+                    highlightScale = 0.60f;
+                    highlightMaximum = 0.28f;
+                    contrastDeviationTarget = 0.15f;
+                    contrastScale = 0.60f;
+                    contrastMaximum = 0.08f;
+                    targetSaturation = 0f;
+                    vibranceScale = 0f;
+                    vibranceMaximum = 0f;
+                    whiteBalanceScale = 1.15f;
+                    break;
+            }
+
+            analysis.exposure = Mathf.Clamp(
+                Mathf.Log(targetLuminance / Mathf.Max(0.04f, mean), 2f),
+                -maximumExposure,
+                maximumExposure);
+            if (brightFraction >= 0.18f || clippedFraction >= 0.06f)
+                analysis.exposure = Mathf.Min(analysis.exposure, -0.10f);
+            else if (darkFraction >= 0.48f && mean <= 0.30f)
+                analysis.exposure = Mathf.Max(analysis.exposure, 0.12f);
+
+            analysis.shadows = Mathf.Clamp((darkFraction - shadowStart) * shadowScale, 0f, shadowMaximum);
+            analysis.highlights = Mathf.Clamp(
+                (brightFraction - highlightStart) * highlightScale + clippedFraction * 0.26f,
+                0f,
+                highlightMaximum);
+            analysis.contrast = Mathf.Clamp(
+                (contrastDeviationTarget - standardDeviation) * contrastScale,
+                0f,
+                contrastMaximum);
+            analysis.vibrance = Mathf.Clamp(
+                (targetSaturation - meanSaturation) * vibranceScale,
+                0f,
+                vibranceMaximum);
+
+            var chromaSpread = Mathf.Max(meanRed, Mathf.Max(meanGreen, meanBlue))
+                               - Mathf.Min(meanRed, Mathf.Min(meanGreen, meanBlue));
+            if (chromaSpread >= 0.10f)
+            {
+                analysis.temperature = Mathf.Clamp((meanBlue - meanRed) * 52f * whiteBalanceScale, -12f, 12f);
+                analysis.tint = Mathf.Clamp(((meanRed + meanBlue) * 0.5f - meanGreen) * 42f * whiteBalanceScale, -9f, 9f);
+            }
+
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static AutoToneProfile ResolveAutoToneProfile(string clipLabel)
+    {
+        if (string.Equals(clipLabel, "Portrait", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(clipLabel, "Group", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(clipLabel, "Pet", StringComparison.OrdinalIgnoreCase))
+        {
+            return AutoToneProfile.Portrait;
+        }
+
+        if (string.Equals(clipLabel, "Food", StringComparison.OrdinalIgnoreCase))
+            return AutoToneProfile.Food;
+        if (string.Equals(clipLabel, "Landscape", StringComparison.OrdinalIgnoreCase))
+            return AutoToneProfile.Landscape;
+        if (string.Equals(clipLabel, "Night", StringComparison.OrdinalIgnoreCase))
+            return AutoToneProfile.Night;
+        if (string.Equals(clipLabel, "Architecture", StringComparison.OrdinalIgnoreCase))
+            return AutoToneProfile.Architecture;
+        if (string.Equals(clipLabel, "Document", StringComparison.OrdinalIgnoreCase))
+            return AutoToneProfile.Document;
+        return AutoToneProfile.General;
+    }
 
     private enum PeopleRemovalInpaintBackend
     {
