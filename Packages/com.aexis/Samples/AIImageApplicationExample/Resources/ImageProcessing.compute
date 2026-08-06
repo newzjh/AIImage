@@ -17,12 +17,14 @@
 #pragma kernel LevelsBlack
 #pragma kernel LevelsWhite
 #pragma kernel HslHue
+#pragma kernel CoastalWaterHue
 #pragma kernel HslSaturation
 #pragma kernel HslLuminance
 #pragma kernel ApplyLut
 #pragma kernel AddGrain
 #pragma kernel Vignette
 #pragma kernel LocalMaskExposure
+#pragma kernel CompositeBackgroundTone
 #pragma kernel PasteRectWithMask
 #pragma kernel BuildMaskFromBinary
 #pragma kernel BuildTransparentFromBinary
@@ -425,6 +427,15 @@ float3 ApplyHsl(float3 rgb, int mode)
         hsv.y = saturate(hsv.y * (1.0 + _HslAmount * weight));
     else
         hsv.z = saturate(hsv.z + _HslAmount * weight);
+    return HsvToRgb(hsv);
+}
+
+float3 ApplyCoastalWaterHue(float3 rgb)
+{
+    float3 hsv = RgbToHsv(saturate(rgb));
+    float hueWeight = HslRangeWeight(hsv.x, _HslCenter);
+    float lowSaturation = 1.0 - smoothstep(0.24, 0.34, hsv.y);
+    hsv.x = frac(hsv.x + _HslAmount * hueWeight * lowSaturation / 360.0);
     return HsvToRgb(hsv);
 }
 
@@ -980,6 +991,17 @@ void HslHue(uint3 id : SV_DispatchThreadID)
 }
 
 [numthreads(8,8,1)]
+void CoastalWaterHue(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _Result.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+    float4 sample = _Source[int2(id.xy)];
+    sample.rgb = ApplyCoastalWaterHue(sample.rgb);
+    _Result[int2(id.xy)] = sample;
+}
+
+[numthreads(8,8,1)]
 void HslSaturation(uint3 id : SV_DispatchThreadID)
 {
     uint w, h;
@@ -1049,6 +1071,39 @@ void LocalMaskExposure(uint3 id : SV_DispatchThreadID)
     float3 adjusted = saturate(sample.rgb * exp2(_LocalExposure));
     sample.rgb = lerp(sample.rgb, adjusted, saturate(_LocalMask[p]));
     _Result[p] = sample;
+}
+
+[numthreads(8,8,1)]
+void CompositeBackgroundTone(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _Result.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+
+    int2 p = int2(id.xy);
+    // Keep a one-pixel safety ring around the subject, then feather the next two
+    // pixels. Segmentation edges otherwise show a visible background color halo.
+    float dilatedForeground = 0.0;
+    float featheredForeground = 0.0;
+    for (int y = -2; y <= 2; y++)
+    {
+        for (int x = -2; x <= 2; x++)
+        {
+            int2 q = clamp(p + int2(x, y), int2(0, 0), int2((int)w - 1, (int)h - 1));
+            float mask = saturate(_FaceMaskIn[q]);
+            float weightX = x == 0 ? 6.0 : (abs(x) == 1 ? 4.0 : 1.0);
+            float weightY = y == 0 ? 6.0 : (abs(y) == 1 ? 4.0 : 1.0);
+            float weight = weightX * weightY;
+            featheredForeground += mask * weight;
+            if (abs(x) <= 1 && abs(y) <= 1)
+                dilatedForeground = max(dilatedForeground, mask);
+        }
+    }
+    float foreground = max(dilatedForeground, saturate(featheredForeground / 256.0 * 1.6));
+    float4 source = _Source[p];
+    float4 adjustedBackground = _BackgroundRef[p];
+    float4 composite = lerp(adjustedBackground, source, foreground);
+    _Result[p] = composite;
 }
 
 float OverlayAlphaAt(int2 p)

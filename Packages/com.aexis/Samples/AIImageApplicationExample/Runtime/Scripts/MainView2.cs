@@ -124,6 +124,12 @@ public sealed class MainView2 : BasePageView
         public float vibrance;
         public float temperature;
         public float tint;
+        public float cool;
+        public float yellowHueShift;
+        public float yellowLuminance;
+        public float blueSaturation;
+        public float blueLuminance;
+        public bool coastalWaterHue;
     }
 
     private sealed class SaveFileResult
@@ -2163,24 +2169,31 @@ public sealed class MainView2 : BasePageView
     private async UniTaskVoid ApplyOneClickAutoToneAsync()
     {
         var clipRunner = Host?.ClipRunner;
-        if (_aiRunning || _adjustRunning || _lifetimeCts == null || clipRunner == null)
+        var yoloRunner = Host?.YoloSegRunner;
+        if (_aiRunning || _adjustRunning || _lifetimeCts == null || clipRunner == null || yoloRunner == null)
             return;
 
         var source = GetCurrentHistoryTexture() ?? GetOriginalHistoryTexture();
         if (source == null)
             return;
 
+        var yoloGroup = yoloRunner.modelVariant == YoloSegNcnnReproRunner.YoloSegModelVariant.Yolo11nSeg
+            ? AIImageModelGroupId.Yolo11PersonSegmentation
+            : AIImageModelGroupId.YoloV8PersonSegmentation;
         if (!await Host.EnsureModelGroupsAvailableAsync(
-                "CLIP model download",
+                "Auto tone model download",
                 _lifetimeCts.Token,
-                AIImageModelGroupId.ClipMobileClipS0))
+                AIImageModelGroupId.ClipMobileClipS0,
+                yoloGroup))
             return;
 
         _adjustRunning = true;
         ShowProgress(L("Auto tone", "一键调色"));
+        var yoloResult = default(YoloSegResult);
+        Texture2D foregroundMask = null;
         try
         {
-            Action<float, string> onClipProgress = (p, t) => SetProgress(p * 0.48f, string.IsNullOrWhiteSpace(t) ? "CLIP" : t);
+            Action<float, string> onClipProgress = (p, t) => SetProgress(p * 0.28f, string.IsNullOrWhiteSpace(t) ? "CLIP" : t);
             ClipClassificationResult classification;
             clipRunner.ProgressChanged -= onClipProgress;
             clipRunner.ProgressChanged += onClipProgress;
@@ -2203,81 +2216,55 @@ public sealed class MainView2 : BasePageView
             var preferFileIdentity = source == GetOriginalHistoryTexture() && !string.IsNullOrWhiteSpace(currentPath);
             ClipClassificationCache.Store(clipRunner, classification, source, currentPath, preferFileIdentity);
 
-            SetProgress(0.52f, L("Analyze exposure and color", "分析曝光与色彩"));
-            if (!TryAnalyzeAutoTone(source, classification.bestLabel, out var analysis))
+            SetProgress(0.30f, L("Protect foreground people", "保护前景人物"));
+            Action<float, string> onYoloProgress = (p, t) =>
+                SetProgress(0.30f + p * 0.28f, string.IsNullOrWhiteSpace(t) ? "YOLO" : t);
+            var previousTargetPersonOnly = yoloRunner.targetPersonOnly;
+            var previousDisallowBufferAccess = yoloRunner.disallowBufferAccess;
+            var previousDisallowBufferOutputs = yoloRunner.disallowBufferOutputs;
+            var previousDisallowBufferToTextureMaterialization = yoloRunner.disallowBufferToTextureMaterialization;
+            try
+            {
+                yoloRunner.targetPersonOnly = true;
+                yoloRunner.disallowBufferAccess = true;
+                yoloRunner.disallowBufferOutputs = true;
+                yoloRunner.disallowBufferToTextureMaterialization = true;
+                yoloRunner.ProgressChanged -= onYoloProgress;
+                yoloRunner.ProgressChanged += onYoloProgress;
+                yoloResult = await yoloRunner.ProcessAsync(source, _lifetimeCts.Token);
+            }
+            finally
+            {
+                yoloRunner.ProgressChanged -= onYoloProgress;
+                yoloRunner.targetPersonOnly = previousTargetPersonOnly;
+                yoloRunner.disallowBufferAccess = previousDisallowBufferAccess;
+                yoloRunner.disallowBufferOutputs = previousDisallowBufferOutputs;
+                yoloRunner.disallowBufferToTextureMaterialization = previousDisallowBufferToTextureMaterialization;
+            }
+
+            if (!string.IsNullOrWhiteSpace(yoloResult.error) ||
+                !TryBuildForegroundPersonMask(yoloResult, out foregroundMask, out var foregroundPersonCount))
+            {
+                ShowToast(
+                    string.IsNullOrWhiteSpace(yoloResult.error)
+                        ? L("Unable to build the foreground protection mask.", "无法生成前景人物保护蒙版。")
+                        : yoloResult.error,
+                    3200);
+                return;
+            }
+
+            SetProgress(0.62f, L("Analyze background exposure and color", "分析背景曝光与色彩"));
+            if (!TryAnalyzeAutoTone(source, foregroundMask, classification.bestLabel, out var analysis))
             {
                 ShowToast(L("Unable to read image statistics.", "无法读取图像统计数据。"), 2800);
                 return;
             }
 
-            var appliedSteps = new List<string>(6);
-            async UniTask ApplyStepAsync(
-                string kernelName,
-                Action<ComputeShader> configure,
-                string historyLabel,
-                string stepLabel)
+            var appliedSteps = new List<string>(10);
+            if (!await ApplyAutoToneToBackgroundAsync(source, foregroundMask, analysis, appliedSteps, _lifetimeCts.Token))
             {
-                SetProgress(0.58f + appliedSteps.Count * 0.07f, stepLabel);
-                await ApplyComputeAdjustmentAsync(kernelName, configure, historyLabel);
-                appliedSteps.Add(stepLabel);
-            }
-
-            if (Mathf.Abs(analysis.temperature) >= 1f || Mathf.Abs(analysis.tint) >= 1f)
-            {
-                await ApplyStepAsync(
-                    "WhiteBalance",
-                    cs =>
-                    {
-                        cs.SetFloat("_WhiteBalanceTemperature", analysis.temperature);
-                        cs.SetFloat("_WhiteBalanceTint", analysis.tint);
-                    },
-                    L("Auto tone white balance", "一键调色 白平衡"),
-                    L("White balance", "白平衡"));
-            }
-
-            if (Mathf.Abs(analysis.exposure) >= 0.07f)
-            {
-                await ApplyStepAsync(
-                    "AdjustExposure",
-                    cs => cs.SetFloat("_Exposure", analysis.exposure),
-                    L("Auto tone exposure", "一键调色 曝光"),
-                    L("Exposure", "曝光"));
-            }
-
-            if (analysis.shadows >= 0.03f)
-            {
-                await ApplyStepAsync(
-                    "AdjustShadows",
-                    cs => cs.SetFloat("_Shadows", analysis.shadows),
-                    L("Auto tone shadows", "一键调色 阴影"),
-                    L("Shadows", "阴影"));
-            }
-
-            if (analysis.highlights >= 0.03f)
-            {
-                await ApplyStepAsync(
-                    "AdjustHighlights",
-                    cs => cs.SetFloat("_Highlights", analysis.highlights),
-                    L("Auto tone highlights", "一键调色 高光"),
-                    L("Highlights", "高光"));
-            }
-
-            if (analysis.contrast >= 0.03f)
-            {
-                await ApplyStepAsync(
-                    "AdjustContrast",
-                    cs => cs.SetFloat("_Contrast", analysis.contrast),
-                    L("Auto tone contrast", "一键调色 对比度"),
-                    L("Contrast", "对比度"));
-            }
-
-            if (analysis.vibrance >= 0.03f)
-            {
-                await ApplyStepAsync(
-                    "AdjustVibrance",
-                    cs => cs.SetFloat("_Vibrance", analysis.vibrance),
-                    L("Auto tone vibrance", "一键调色 自然饱和度"),
-                    L("Vibrance", "自然饱和度"));
+                ShowToast(L("Background tone could not be applied.", "无法应用背景调色。"), 2800);
+                return;
             }
 
             var kind = string.IsNullOrWhiteSpace(classification.bestLabel)
@@ -2286,16 +2273,292 @@ public sealed class MainView2 : BasePageView
             var summary = appliedSteps.Count == 0
                 ? L("No corrective tone adjustment was needed.", "未检测到需要校正的调色问题。")
                 : L("Auto tone applied to ", "已对") + kind + L(": ", "应用一键调色：") + string.Join(L(", ", "、"), appliedSteps);
+            if (foregroundPersonCount > 0)
+                summary += L(" (foreground people protected)", "（已保护前景人物）");
             ShowToast(summary, 3600);
         }
         finally
         {
+            if (foregroundMask != null)
+                Destroy(foregroundMask);
+            DisposeYoloSegOutputTextures(ref yoloResult);
+            yoloRunner.ReleaseRuntimeResources();
             _adjustRunning = false;
             HideProgress();
         }
     }
 
-    private static bool TryAnalyzeAutoTone(Texture2D source, string clipLabel, out AutoToneAnalysis analysis)
+    private static bool TryBuildForegroundPersonMask(
+        YoloSegResult result,
+        out Texture2D foregroundMask,
+        out int foregroundPersonCount)
+    {
+        foregroundMask = null;
+        foregroundPersonCount = 0;
+        if (result.mask == null || result.mask.width <= 0 || result.mask.height <= 0)
+            return false;
+
+        try
+        {
+            var width = result.mask.width;
+            var height = result.mask.height;
+            var sourcePixels = result.mask.GetPixels32();
+            if (sourcePixels == null || sourcePixels.Length != width * height)
+                return false;
+
+            var detections = result.detections;
+            var foregroundSubjects = new bool[detections?.Length ?? 0];
+            if (detections != null && detections.Length > 0)
+            {
+                var mainSubjectIndex = SelectMainSubjectIndex(detections, width, height);
+                if (mainSubjectIndex >= 0)
+                    foregroundSubjects = BuildForegroundSubjectGroup(detections, mainSubjectIndex, width, height);
+
+                for (var i = 0; i < foregroundSubjects.Length; i++)
+                {
+                    if (foregroundSubjects[i])
+                        foregroundPersonCount++;
+                }
+            }
+
+            var outputPixels = new Color32[sourcePixels.Length];
+            var instanceLabels = result.instanceMaskLabels;
+            var hasInstanceLabels = instanceLabels != null && instanceLabels.Length == sourcePixels.Length;
+            var protectedRects = new Rect[foregroundSubjects.Length];
+            for (var i = 0; i < protectedRects.Length; i++)
+            {
+                if (!foregroundSubjects[i])
+                    continue;
+
+                protectedRects[i] = ExpandRect(
+                    GetTextureSpaceDetectionRect(detections[i].rect, width, height),
+                    Mathf.Max(6f, Mathf.Min(width, height) * 0.012f),
+                    width,
+                    height);
+            }
+
+            for (var y = 0; y < height; y++)
+            {
+                var rowOffset = y * width;
+                for (var x = 0; x < width; x++)
+                {
+                    var index = rowOffset + x;
+                    var personPixel = sourcePixels[index];
+                    if (Mathf.Max(personPixel.r, Mathf.Max(personPixel.g, personPixel.b)) == 0)
+                        continue;
+
+                    var instanceIndex = hasInstanceLabels ? instanceLabels[index] - 1 : -1;
+                    var isForeground = instanceIndex >= 0 && instanceIndex < foregroundSubjects.Length
+                        ? foregroundSubjects[instanceIndex]
+                        : false;
+                    if (!isForeground && instanceIndex < 0)
+                    {
+                        var point = new Vector2(x + 0.5f, y + 0.5f);
+                        for (var detectionIndex = 0; detectionIndex < protectedRects.Length; detectionIndex++)
+                        {
+                            if (!foregroundSubjects[detectionIndex] || !protectedRects[detectionIndex].Contains(point))
+                                continue;
+
+                            isForeground = true;
+                            break;
+                        }
+                    }
+
+                    if (isForeground)
+                        outputPixels[index] = new Color32(255, 255, 255, 255);
+                }
+            }
+
+            foregroundMask = new Texture2D(width, height, TextureFormat.RGBA32, false, true)
+            {
+                name = "AutoTone_ForegroundPeopleMask",
+                filterMode = FilterMode.Bilinear,
+                wrapMode = TextureWrapMode.Clamp
+            };
+            foregroundMask.SetPixels32(outputPixels);
+            foregroundMask.Apply(false, false);
+            return true;
+        }
+        catch
+        {
+            if (foregroundMask != null)
+                Destroy(foregroundMask);
+            foregroundMask = null;
+            foregroundPersonCount = 0;
+            return false;
+        }
+    }
+
+    private async UniTask<bool> ApplyAutoToneToBackgroundAsync(
+        Texture2D source,
+        Texture2D foregroundMask,
+        AutoToneAnalysis analysis,
+        List<string> appliedSteps,
+        CancellationToken cancellationToken)
+    {
+        var cs = Host?.ImageProcessingCS;
+        if (source == null || foregroundMask == null || cs == null)
+            return false;
+
+        RenderTexture workA = null;
+        RenderTexture workB = null;
+        RenderTexture composite = null;
+        try
+        {
+            workA = new RenderTexture(source.width, source.height, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear)
+            {
+                enableRandomWrite = true
+            };
+            workB = new RenderTexture(source.width, source.height, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear)
+            {
+                enableRandomWrite = true
+            };
+            composite = new RenderTexture(source.width, source.height, 0, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Linear)
+            {
+                enableRandomWrite = true
+            };
+            workA.Create();
+            workB.Create();
+            composite.Create();
+
+            Texture current = source;
+            var write = workA;
+            void DispatchStep(string kernelName, Action<ComputeShader, int> configure, string label)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                int kernel;
+                try
+                {
+                    kernel = cs.FindKernel(kernelName);
+                }
+                catch
+                {
+                    throw new InvalidOperationException("Invalid auto tone kernel: " + kernelName);
+                }
+
+                var progress = 0.68f + appliedSteps.Count * 0.025f;
+                SetProgress(Mathf.Min(0.92f, progress), label);
+                cs.SetTexture(kernel, "_Source", current);
+                cs.SetTexture(kernel, "_Result", write);
+                configure?.Invoke(cs, kernel);
+                cs.Dispatch(kernel, Mathf.CeilToInt(source.width / 8f), Mathf.CeilToInt(source.height / 8f), 1);
+                current = write;
+                write = ReferenceEquals(write, workA) ? workB : workA;
+                appliedSteps.Add(label);
+            }
+
+            // For hazy coastal landscapes, restore the outdoor palette before the neutral tone corrections.
+            if (Mathf.Abs(analysis.yellowHueShift) >= 1f)
+            {
+                DispatchStep(analysis.coastalWaterHue ? "CoastalWaterHue" : "HslHue", (shader, _) =>
+                {
+                    shader.SetFloat("_HslCenter", 45f / 360f);
+                    shader.SetFloat("_HslAmount", analysis.yellowHueShift);
+                }, L("Yellow hue", "黄色色相"));
+            }
+
+            if (Mathf.Abs(analysis.yellowLuminance) >= 0.01f)
+            {
+                DispatchStep("HslLuminance", (shader, _) =>
+                {
+                    shader.SetFloat("_HslCenter", 45f / 360f);
+                    shader.SetFloat("_HslAmount", analysis.yellowLuminance);
+                }, L("Yellow luminance", "黄色明亮度"));
+            }
+
+            if (Mathf.Abs(analysis.blueSaturation) >= 0.03f)
+            {
+                DispatchStep("HslSaturation", (shader, _) =>
+                {
+                    shader.SetFloat("_HslCenter", 205f / 360f);
+                    shader.SetFloat("_HslAmount", analysis.blueSaturation);
+                }, L("Blue saturation", "蓝色饱和度"));
+            }
+
+            if (Mathf.Abs(analysis.blueLuminance) >= 0.01f)
+            {
+                DispatchStep("HslLuminance", (shader, _) =>
+                {
+                    shader.SetFloat("_HslCenter", 205f / 360f);
+                    shader.SetFloat("_HslAmount", analysis.blueLuminance);
+                }, L("Blue luminance", "蓝色明亮度"));
+            }
+
+            if (Mathf.Abs(analysis.temperature) >= 1f || Mathf.Abs(analysis.tint) >= 1f)
+            {
+                DispatchStep("WhiteBalance", (shader, _) =>
+                {
+                    shader.SetFloat("_WhiteBalanceTemperature", analysis.temperature);
+                    shader.SetFloat("_WhiteBalanceTint", analysis.tint);
+                }, L("White balance", "白平衡"));
+            }
+
+            if (analysis.cool >= 0.03f)
+                DispatchStep("CoolFilter", (shader, _) => shader.SetFloat("_Cool", analysis.cool), L("Cool filter", "冷色滤镜"));
+            if (Mathf.Abs(analysis.exposure) >= 0.07f)
+                DispatchStep("AdjustExposure", (shader, _) => shader.SetFloat("_Exposure", analysis.exposure), L("Exposure", "曝光"));
+            if (analysis.shadows >= 0.03f)
+                DispatchStep("AdjustShadows", (shader, _) => shader.SetFloat("_Shadows", analysis.shadows), L("Shadows", "阴影"));
+            if (analysis.highlights >= 0.03f)
+                DispatchStep("AdjustHighlights", (shader, _) => shader.SetFloat("_Highlights", analysis.highlights), L("Highlights", "高光"));
+            if (analysis.contrast >= 0.03f)
+                DispatchStep("AdjustContrast", (shader, _) => shader.SetFloat("_Contrast", analysis.contrast), L("Contrast", "对比度"));
+            if (analysis.vibrance >= 0.03f)
+                DispatchStep("AdjustVibrance", (shader, _) => shader.SetFloat("_Vibrance", analysis.vibrance), L("Vibrance", "自然饱和度"));
+
+            if (appliedSteps.Count == 0)
+                return true;
+
+            cancellationToken.ThrowIfCancellationRequested();
+            int compositeKernel;
+            try
+            {
+                compositeKernel = cs.FindKernel("CompositeBackgroundTone");
+            }
+            catch
+            {
+                return false;
+            }
+
+            SetProgress(0.95f, L("Apply background tone", "应用背景调色"));
+            cs.SetTexture(compositeKernel, "_Source", source);
+            cs.SetTexture(compositeKernel, "_BackgroundRef", current);
+            cs.SetTexture(compositeKernel, "_FaceMaskIn", foregroundMask);
+            cs.SetTexture(compositeKernel, "_Result", composite);
+            cs.Dispatch(compositeKernel, Mathf.CeilToInt(source.width / 8f), Mathf.CeilToInt(source.height / 8f), 1);
+
+            var result = await ReadbackTextureAsync(composite, source.width, source.height);
+            if (result == null)
+                return false;
+
+            AddHistory(result, L("Auto tone background", "一键调色 背景"));
+            return true;
+        }
+        finally
+        {
+            if (workA != null)
+            {
+                workA.Release();
+                Destroy(workA);
+            }
+            if (workB != null)
+            {
+                workB.Release();
+                Destroy(workB);
+            }
+            if (composite != null)
+            {
+                composite.Release();
+                Destroy(composite);
+            }
+        }
+    }
+
+    private static bool TryAnalyzeAutoTone(
+        Texture2D source,
+        Texture2D foregroundMask,
+        string clipLabel,
+        out AutoToneAnalysis analysis)
     {
         analysis = default;
         if (source == null)
@@ -2307,7 +2570,8 @@ public sealed class MainView2 : BasePageView
             var rawPixels = useRawPixels ? source.GetRawTextureData<Color32>() : default;
             var copiedPixels = useRawPixels ? null : source.GetPixels32();
             var length = useRawPixels ? rawPixels.Length : copiedPixels?.Length ?? 0;
-            if (length == 0)
+            var maskPixels = foregroundMask != null ? foregroundMask.GetPixels32() : null;
+            if (length == 0 || maskPixels == null || maskPixels.Length != length)
                 return false;
 
             var stride = Mathf.Max(1, length / 65536);
@@ -2323,6 +2587,9 @@ public sealed class MainView2 : BasePageView
             var count = 0;
             for (var i = 0; i < length; i += stride)
             {
+                if (maskPixels[i].r >= 128)
+                    continue;
+
                 var pixel = useRawPixels ? rawPixels[i] : copiedPixels[i];
                 var red = pixel.r / 255f;
                 var green = pixel.g / 255f;
@@ -2355,6 +2622,13 @@ public sealed class MainView2 : BasePageView
             var meanBlue = sumBlue / count;
             var meanSaturation = sumSaturation / count;
             var profile = ResolveAutoToneProfile(clipLabel);
+            var isHazyOutdoorBackground =
+                profile != AutoToneProfile.Food &&
+                profile != AutoToneProfile.Document &&
+                profile != AutoToneProfile.Night &&
+                brightFraction >= 0.09f &&
+                meanSaturation <= 0.24f &&
+                meanBlue >= meanRed * 0.90f;
             var targetLuminance = 0.45f;
             var maximumExposure = 0.48f;
             var shadowStart = 0.18f;
@@ -2497,6 +2771,25 @@ public sealed class MainView2 : BasePageView
             {
                 analysis.temperature = Mathf.Clamp((meanBlue - meanRed) * 52f * whiteBalanceScale, -12f, 12f);
                 analysis.tint = Mathf.Clamp(((meanRed + meanBlue) * 0.5f - meanGreen) * 42f * whiteBalanceScale, -9f, 9f);
+            }
+
+            if (isHazyOutdoorBackground)
+            {
+                // Match the intended outdoor correction: recover blue sky and cleaner water
+                // without darkening a naturally bright, hazy background.
+                analysis.shadows = 0f;
+                analysis.highlights = 0f;
+                analysis.contrast = 0f;
+                analysis.vibrance = 0f;
+                analysis.exposure = 0.02f;
+                analysis.temperature = -45f;
+                analysis.tint = 0f;
+                analysis.cool = 0f;
+                analysis.yellowHueShift = 84f;
+                analysis.yellowLuminance = 0.13f;
+                analysis.blueSaturation = 0.28f;
+                analysis.blueLuminance = 0.05f;
+                analysis.coastalWaterHue = true;
             }
 
             return true;
