@@ -92,6 +92,7 @@ public sealed class LibraryView : BasePageView
         public DateTime? mappedOriginalCaptureTime;
         public float metadataOriginalScore;
         public float mappedOriginalSimilarity;
+        public bool hasExplicitOriginalLink;
         public bool favorite;
 
         public DateTime DisplayTime => captureTime ?? modifiedTime;
@@ -2028,11 +2029,71 @@ public sealed class LibraryView : BasePageView
 
         _selectedThumbnailPath = imagePath;
 
-        if (_visibleEntries.Count == 0)
+        if (_entryByPath.TryGetValue(imagePath, out var entry))
+        {
+            TryApplyExplicitOriginalLink(entry);
+            UpdateThumbnailVisuals(entry);
+            if (_visibleEntries.Count == 0)
+                return;
+            SelectVisibleThumbnail(entry, false);
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(_selectedDirectoryPath) &&
+            string.Equals(_materializedDirectoryPath, _selectedDirectoryPath, StringComparison.OrdinalIgnoreCase))
+        {
+            RefreshThumbnailGrid(_selectedDirectoryPath, true);
+        }
+    }
+
+    public bool TryGetLinkedOriginalSourcePath(string imagePath, out string originalPath)
+    {
+        originalPath = null;
+        if (string.IsNullOrWhiteSpace(imagePath))
+            return false;
+
+        if (_entryByPath.TryGetValue(imagePath, out var entry) &&
+            entry != null &&
+            !string.IsNullOrWhiteSpace(entry.mappedOriginalPath) &&
+            File.Exists(entry.mappedOriginalPath))
+        {
+            originalPath = entry.mappedOriginalPath;
+            return true;
+        }
+
+        return ClipClassificationCache.TryGetOriginalSourcePathForFile(imagePath, out originalPath) &&
+               File.Exists(originalPath);
+    }
+
+    public void RegisterSavedImageSourceLink(string imagePath, string originalPath)
+    {
+        if (string.IsNullOrWhiteSpace(imagePath) ||
+            string.IsNullOrWhiteSpace(originalPath) ||
+            !File.Exists(imagePath) ||
+            !File.Exists(originalPath))
+        {
+            return;
+        }
+
+        if (!_entryByPath.TryGetValue(imagePath, out var entry) || entry == null)
             return;
 
-        if (_entryByPath.TryGetValue(imagePath, out var entry))
-            SelectVisibleThumbnail(entry, false);
+        try
+        {
+            var info = new FileInfo(imagePath);
+            entry.fileSize = info.Length;
+            entry.modifiedTime = info.LastWriteTime;
+        }
+        catch
+        {
+        }
+
+        if (TryApplyExplicitOriginalLink(entry))
+        {
+            UpdateThumbnailVisuals(entry);
+            if (string.Equals(_selectedThumbnailPath, entry.fullPath, StringComparison.OrdinalIgnoreCase))
+                UpdateSelectionTips(entry);
+        }
     }
 
     private void RestoreSelectedThumbnailTips()
@@ -3442,6 +3503,9 @@ public sealed class LibraryView : BasePageView
         if (entry == null)
             return;
 
+        if (TryApplyExplicitOriginalLink(entry))
+            return;
+
         if (IsHiddenOriginalSourcePath(entry.fullPath))
         {
             entry.type = LibraryImageType.Original;
@@ -3484,6 +3548,9 @@ public sealed class LibraryView : BasePageView
             return;
 
         if (entry.type == LibraryImageType.RawOriginal)
+            return;
+
+        if (TryApplyExplicitOriginalLink(entry))
             return;
 
         if (entry.metadataOriginalScore >= 0.62f)
@@ -3568,8 +3635,10 @@ public sealed class LibraryView : BasePageView
         }
 
         entry.type = LibraryImageType.Edited;
+        entry.hasExplicitOriginalLink = false;
         entry.mappedOriginalSimilarity = best.cosineSimilarity;
         entry.mappedOriginalPath = best.target.filePath;
+        ClipClassificationCache.StoreOriginalSourcePath(entry.fullPath, best.target.filePath);
 
         if (_entryByPath.TryGetValue(best.target.filePath, out var originalEntry))
         {
@@ -3865,6 +3934,34 @@ public sealed class LibraryView : BasePageView
         }
     }
 
+    private bool TryApplyExplicitOriginalLink(ThumbnailEntry entry)
+    {
+        if (entry == null ||
+            string.IsNullOrWhiteSpace(entry.fullPath) ||
+            IsHiddenOriginalSourcePath(entry.fullPath) ||
+            IsRawOriginalFile(entry.fullPath) ||
+            !ClipClassificationCache.TryGetOriginalSourcePathForFile(entry.fullPath, out var originalPath) ||
+            string.IsNullOrWhiteSpace(originalPath) ||
+            string.Equals(entry.fullPath, originalPath, StringComparison.OrdinalIgnoreCase) ||
+            !File.Exists(originalPath))
+        {
+            return false;
+        }
+
+        entry.type = LibraryImageType.Edited;
+        entry.hasExplicitOriginalLink = true;
+        entry.metadataOriginalScore = 0f;
+        entry.mappedOriginalSimilarity = 0f;
+        entry.mappedOriginalPath = originalPath;
+        entry.mappedOriginalName = Path.GetFileName(originalPath);
+        entry.mappedOriginalLocationText = null;
+        entry.mappedOriginalCameraText = null;
+        entry.mappedOriginalApertureText = null;
+        entry.mappedOriginalCaptureTime = null;
+        ApplyMappedOriginalSnapshot(entry, originalPath);
+        return true;
+    }
+
     private static bool HasUsableMetadata(string text)
     {
         if (string.IsNullOrWhiteSpace(text))
@@ -3978,6 +4075,7 @@ public sealed class LibraryView : BasePageView
         entry.mappedOriginalApertureText = null;
         entry.mappedOriginalCaptureTime = null;
         entry.mappedOriginalSimilarity = 0f;
+        entry.hasExplicitOriginalLink = false;
     }
 
     private static string ResolveDisplayLocation(ThumbnailEntry entry)
@@ -4021,6 +4119,9 @@ public sealed class LibraryView : BasePageView
     {
         if (entry == null || entry.type != LibraryImageType.Edited || string.IsNullOrWhiteSpace(entry.mappedOriginalName))
             return null;
+
+        if (entry.hasExplicitOriginalLink)
+            return entry.mappedOriginalName;
 
         var percent = (entry.mappedOriginalSimilarity * 100f).ToString("0.0", CultureInfo.InvariantCulture) + "%";
         return entry.mappedOriginalName + " (" + percent + ")";

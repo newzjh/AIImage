@@ -11,6 +11,9 @@ using Aexis.Ncnn;
 using UnityEngine;
 using UnityEngine.UIElements;
 using Aexis.Execution;
+#if UNITY_ANDROID
+using UnityEngine.Android;
+#endif
 
 public sealed class MainView2 : BasePageView
 {
@@ -87,6 +90,10 @@ public sealed class MainView2 : BasePageView
     private bool _aiRunning;
     private bool _adjustRunning;
     private bool _qwenAnalysisRunning;
+    private bool _saveCurrentImageRunning;
+#if UNITY_ANDROID
+    private bool _saveStoragePermissionRequestInFlight;
+#endif
     private VisualElement _qwenAnalysisOverlay;
     private Label _qwenAnalysisStatus;
     private Label _qwenAnalysisOutput;
@@ -117,6 +124,22 @@ public sealed class MainView2 : BasePageView
         public float vibrance;
         public float temperature;
         public float tint;
+    }
+
+    private sealed class SaveFileResult
+    {
+        public bool success;
+        public bool usedFallback;
+        public string path;
+        public string error;
+    }
+
+    private sealed class OriginalBackupResult
+    {
+        public bool success;
+        public bool moved;
+        public string path;
+        public string error;
     }
 
     private enum AutoToneProfile
@@ -3716,30 +3739,119 @@ public sealed class MainView2 : BasePageView
 
     private async UniTaskVoid SaveCurrentImageAsync()
     {
+        if (_saveCurrentImageRunning)
+            return;
+
+        _saveCurrentImageRunning = true;
         var path = CurrentImagePath;
-        if (string.IsNullOrWhiteSpace(path))
-            return;
-        var tex = GetCurrentHistoryTexture();
-        if (tex == null)
-            return;
-
-        if (!StandardImageIO.TrySaveTextureWithMetadata(tex, path, path, 95, out var saveError))
-        {
-            ShowToast(string.IsNullOrWhiteSpace(saveError) ? "Save failed" : saveError, 2400);
-            return;
-        }
-
+        Texture2D tex = null;
         try
         {
-            Host?.InvalidateTextureCacheForPath(path);
-            if (Host != null && Host.ReloadMainImageFromDisk(path))
-                ShowToast("Saved and reloaded", 1800);
+            if (string.IsNullOrWhiteSpace(path))
+                return;
+
+            tex = GetCurrentHistoryTexture();
+            if (tex == null)
+                return;
+
+            var cancellationToken = _lifetimeCts != null
+                ? _lifetimeCts.Token
+                : CancellationToken.None;
+            var isRaw = RawPhotoParser.IsRawExtension(path);
+            string existingOriginalPath = null;
+            if (!isRaw)
+            {
+                try
+                {
+                    existingOriginalPath = await ResolveExistingOriginalSourcePathAsync(path, cancellationToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    return;
+                }
+            }
+
+            var preferredPath = isRaw ? Path.ChangeExtension(path, ".jpg") : path;
+            if (!StandardImageIO.TryEncodeTextureWithMetadata(
+                    tex,
+                    preferredPath,
+                    path,
+                    95,
+                    out var outputBytes,
+                    out var encodeError))
+            {
+                ShowToast(string.IsNullOrWhiteSpace(encodeError) ? "Save failed" : encodeError, 2400);
+                return;
+            }
+
+            var isUnlinkedNormalImage = !isRaw && string.IsNullOrWhiteSpace(existingOriginalPath);
+            OriginalBackupResult backup = null;
+            if (isUnlinkedNormalImage && await CanAttemptDirectSaveAsync(preferredPath, cancellationToken))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                // Once source preservation starts, let the commit/rollback sequence finish even if the page closes.
+                backup = await TryPreserveOriginalAsync(path, CancellationToken.None);
+            }
+
+            SaveFileResult saveResult;
+            string originalSourcePath;
+            if (isUnlinkedNormalImage)
+            {
+                originalSourcePath = backup != null && backup.success ? backup.path : path;
+                if (backup != null && backup.success)
+                {
+                    var commitToken = backup.moved ? CancellationToken.None : cancellationToken;
+                    saveResult = await TryWriteBytesAsync(preferredPath, outputBytes, commitToken);
+                    if (!saveResult.success)
+                    {
+                        saveResult = await TryWriteFallbackAsync(outputBytes, preferredPath, commitToken);
+                        if (!saveResult.success && backup.moved)
+                            await TryRestoreMovedOriginalAsync(path, backup.path, CancellationToken.None);
+                    }
+                }
+                else
+                {
+                    // Do not overwrite the only copy when Originals cannot be created or copied.
+                    saveResult = await TryWriteFallbackAsync(outputBytes, preferredPath, cancellationToken);
+                }
+            }
             else
-                ShowToast("Saved", 1800);
+            {
+                originalSourcePath = isRaw ? path : existingOriginalPath;
+                saveResult = await TrySavePreferredOrFallbackAsync(
+                    outputBytes,
+                    preferredPath,
+                    cancellationToken);
+            }
+
+            if (!saveResult.success)
+            {
+                UnityEngine.Debug.LogWarning("[AIIMAGE-SAVE] File operation failed: " + (saveResult.error ?? "unknown error"));
+                ShowToast(
+                    L("Save failed. The original image was kept.", "保存失败，原图已保留。"),
+                    3000);
+                return;
+            }
+
+            CompleteSavedImage(saveResult.path, originalSourcePath);
+            if (saveResult.usedFallback)
+            {
+                ShowToast(
+                    L("Saved to app storage because the original folder is not writable.", "原目录不可写，已保存到应用存储。"),
+                    3600);
+            }
         }
-        catch
+        catch (OperationCanceledException)
         {
-            ShowToast("Save failed", 2200);
+        }
+        catch (Exception exception)
+        {
+            UnityEngine.Debug.LogWarning("[AIIMAGE-SAVE] Save failed: " + exception.Message);
+            ShowToast(L("Save failed. The original image was kept.", "保存失败，原图已保留。"), 3000);
+        }
+        finally
+        {
+            _saveCurrentImageRunning = false;
         }
 
         return;
@@ -3776,6 +3888,375 @@ public sealed class MainView2 : BasePageView
         catch
         {
             ShowToast("保存失败", 2200);
+        }
+    }
+
+    private async UniTask<string> ResolveExistingOriginalSourcePathAsync(string imagePath, CancellationToken cancellationToken)
+    {
+        if (Host?.LibraryPage != null &&
+            Host.LibraryPage.TryGetLinkedOriginalSourcePath(imagePath, out var libraryOriginalPath) &&
+            File.Exists(libraryOriginalPath))
+        {
+            return libraryOriginalPath;
+        }
+
+        var cachedOriginalPath = await ClipClassificationCache.GetOriginalSourcePathForFileAsync(imagePath, cancellationToken);
+        return !string.IsNullOrWhiteSpace(cachedOriginalPath) && File.Exists(cachedOriginalPath)
+            ? cachedOriginalPath
+            : null;
+    }
+
+    private void CompleteSavedImage(string savedPath, string originalPath)
+    {
+        try
+        {
+            ClipClassificationCache.StoreOriginalSourcePath(savedPath, originalPath);
+            Host?.LibraryPage?.RegisterSavedImageSourceLink(savedPath, originalPath);
+            Host?.InvalidateTextureCacheForPath(savedPath);
+            if (Host != null && Host.ReloadMainImageFromDisk(savedPath))
+                ShowToast(L("Saved and reloaded", "已保存并重新载入"), 1800);
+            else
+                ShowToast(L("Saved", "已保存"), 1800);
+        }
+        catch
+        {
+            ShowToast(L("Save failed", "保存失败"), 2200);
+        }
+    }
+
+    private async UniTask<SaveFileResult> TrySavePreferredOrFallbackAsync(
+        byte[] outputBytes,
+        string preferredPath,
+        CancellationToken cancellationToken)
+    {
+        SaveFileResult primary = null;
+        if (await CanAttemptDirectSaveAsync(preferredPath, cancellationToken))
+            primary = await TryWriteBytesAsync(preferredPath, outputBytes, cancellationToken);
+
+        if (primary != null && primary.success)
+            return primary;
+
+        var fallback = await TryWriteFallbackAsync(outputBytes, preferredPath, cancellationToken);
+        if (fallback.success)
+            return fallback;
+
+        return new SaveFileResult
+        {
+            success = false,
+            error = primary?.error ?? fallback.error
+        };
+    }
+
+    private async UniTask<OriginalBackupResult> TryPreserveOriginalAsync(
+        string imagePath,
+        CancellationToken cancellationToken)
+    {
+        return await UniTask.RunOnThreadPool(() =>
+        {
+            var result = new OriginalBackupResult();
+            try
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (string.IsNullOrWhiteSpace(imagePath) || !File.Exists(imagePath))
+                {
+                    result.error = "Image file is missing";
+                    return result;
+                }
+
+                var directory = Path.GetDirectoryName(imagePath);
+                var fileName = Path.GetFileName(imagePath);
+                if (string.IsNullOrWhiteSpace(directory) || string.IsNullOrWhiteSpace(fileName))
+                {
+                    result.error = "Image path is invalid";
+                    return result;
+                }
+
+                var originalsDirectory = Path.Combine(directory, "Originals");
+                if (!Directory.Exists(originalsDirectory))
+                    Directory.CreateDirectory(originalsDirectory);
+
+                var originalPath = GetAvailableOriginalPath(originalsDirectory, fileName);
+                try
+                {
+                    File.Move(imagePath, originalPath);
+                    result.success = true;
+                    result.moved = true;
+                    result.path = originalPath;
+                    return result;
+                }
+                catch (Exception moveException)
+                {
+                    // Scoped storage, cross-volume moves, and provider-backed files can reject Move.
+                    try
+                    {
+                        File.Copy(imagePath, originalPath, false);
+                        result.success = true;
+                        result.path = originalPath;
+                        result.error = moveException.Message;
+                        return result;
+                    }
+                    catch (Exception copyException)
+                    {
+                        result.error = moveException.Message + " | " + copyException.Message;
+                        return result;
+                    }
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                result.error = exception.Message;
+                return result;
+            }
+        }, cancellationToken: cancellationToken);
+    }
+
+    private async UniTask<SaveFileResult> TryWriteFallbackAsync(
+        byte[] outputBytes,
+        string preferredPath,
+        CancellationToken cancellationToken)
+    {
+        var fallbackPath = BuildFallbackSavePath(preferredPath);
+        var result = await TryWriteBytesAsync(fallbackPath, outputBytes, cancellationToken);
+        if (result.success)
+            result.usedFallback = true;
+        return result;
+    }
+
+    private static async UniTask<SaveFileResult> TryWriteBytesAsync(
+        string destinationPath,
+        byte[] outputBytes,
+        CancellationToken cancellationToken)
+    {
+        return await UniTask.RunOnThreadPool(() =>
+        {
+            var result = new SaveFileResult { path = destinationPath };
+            string temporaryPath = null;
+            try
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (string.IsNullOrWhiteSpace(destinationPath) || outputBytes == null || outputBytes.Length == 0)
+                {
+                    result.error = "Output image is empty";
+                    return result;
+                }
+
+                var directory = Path.GetDirectoryName(destinationPath);
+                if (string.IsNullOrWhiteSpace(directory))
+                {
+                    result.error = "Output path is invalid";
+                    return result;
+                }
+
+                if (!Directory.Exists(directory))
+                    Directory.CreateDirectory(directory);
+
+                temporaryPath = Path.Combine(
+                    directory,
+                    "." + Path.GetFileName(destinationPath) + ".aexis-" + Guid.NewGuid().ToString("N") + ".tmp");
+                File.WriteAllBytes(temporaryPath, outputBytes);
+
+                if (File.Exists(destinationPath))
+                {
+                    try
+                    {
+                        File.Replace(temporaryPath, destinationPath, null);
+                        temporaryPath = null;
+                    }
+                    catch
+                    {
+                        File.Copy(temporaryPath, destinationPath, true);
+                    }
+                }
+                else
+                {
+                    File.Move(temporaryPath, destinationPath);
+                    temporaryPath = null;
+                }
+
+                result.success = File.Exists(destinationPath);
+                if (!result.success)
+                    result.error = "Output file was not created";
+                return result;
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception exception)
+            {
+                result.error = exception.Message;
+                return result;
+            }
+            finally
+            {
+                if (!string.IsNullOrWhiteSpace(temporaryPath))
+                {
+                    try
+                    {
+                        if (File.Exists(temporaryPath))
+                            File.Delete(temporaryPath);
+                    }
+                    catch
+                    {
+                    }
+                }
+            }
+        }, cancellationToken: cancellationToken);
+    }
+
+    private async UniTask<bool> CanAttemptDirectSaveAsync(string destinationPath, CancellationToken cancellationToken)
+    {
+#if UNITY_ANDROID && !UNITY_EDITOR
+        if (!IsPathInsideApplicationStorage(destinationPath))
+            return await EnsureAndroidExternalWritePermissionAsync(cancellationToken);
+#endif
+        return true;
+    }
+
+    private static string BuildFallbackSavePath(string preferredPath)
+    {
+        var directory = Path.Combine(Application.persistentDataPath, "SavedEdits");
+        var baseName = Path.GetFileNameWithoutExtension(preferredPath);
+        if (string.IsNullOrWhiteSpace(baseName))
+            baseName = "image";
+        var extension = Path.GetExtension(preferredPath);
+        if (string.IsNullOrWhiteSpace(extension))
+            extension = ".jpg";
+
+        return Path.Combine(
+            directory,
+            baseName + "_" + DateTime.UtcNow.ToString("yyyyMMdd_HHmmss_fff") + "_" +
+            Guid.NewGuid().ToString("N") + extension);
+    }
+
+    private static bool IsPathInsideApplicationStorage(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return false;
+
+        return IsPathInsideRoot(path, Application.persistentDataPath) ||
+               IsPathInsideRoot(path, Application.temporaryCachePath);
+    }
+
+    private static bool IsPathInsideRoot(string path, string root)
+    {
+        try
+        {
+            var normalizedPath = Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            var normalizedRoot = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            return string.Equals(normalizedPath, normalizedRoot, StringComparison.OrdinalIgnoreCase) ||
+                   normalizedPath.StartsWith(normalizedRoot + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase) ||
+                   normalizedPath.StartsWith(normalizedRoot + Path.AltDirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+#if UNITY_ANDROID
+    private async UniTask<bool> EnsureAndroidExternalWritePermissionAsync(CancellationToken cancellationToken)
+    {
+        const string writeExternalStoragePermission = "android.permission.WRITE_EXTERNAL_STORAGE";
+        if (Permission.HasUserAuthorizedPermission(writeExternalStoragePermission))
+            return true;
+
+        if (_saveStoragePermissionRequestInFlight)
+        {
+            while (_saveStoragePermissionRequestInFlight)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                await UniTask.Yield();
+            }
+
+            return Permission.HasUserAuthorizedPermission(writeExternalStoragePermission);
+        }
+
+        _saveStoragePermissionRequestInFlight = true;
+        try
+        {
+            var callbacks = new PermissionCallbacks();
+            var finished = false;
+            var granted = false;
+            callbacks.PermissionGranted += _ =>
+            {
+                granted = true;
+                finished = true;
+            };
+            callbacks.PermissionDenied += _ => finished = true;
+            callbacks.PermissionDeniedAndDontAskAgain += _ => finished = true;
+
+            try
+            {
+                Permission.RequestUserPermission(writeExternalStoragePermission, callbacks);
+            }
+            catch
+            {
+                return false;
+            }
+
+            while (!finished)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                await UniTask.Yield();
+            }
+
+            return granted || Permission.HasUserAuthorizedPermission(writeExternalStoragePermission);
+        }
+        finally
+        {
+            _saveStoragePermissionRequestInFlight = false;
+        }
+    }
+#endif
+
+    private async UniTask TryRestoreMovedOriginalAsync(
+        string imagePath,
+        string originalPath,
+        CancellationToken cancellationToken)
+    {
+        await UniTask.RunOnThreadPool(() =>
+        {
+            try
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (string.IsNullOrWhiteSpace(imagePath) || string.IsNullOrWhiteSpace(originalPath) ||
+                    !File.Exists(originalPath))
+                {
+                    return;
+                }
+
+                if (File.Exists(imagePath))
+                    File.Delete(imagePath);
+                File.Move(originalPath, imagePath);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch
+            {
+            }
+        }, cancellationToken: cancellationToken);
+    }
+
+    private static string GetAvailableOriginalPath(string originalsDirectory, string fileName)
+    {
+        var candidate = Path.Combine(originalsDirectory, fileName);
+        if (!File.Exists(candidate))
+            return candidate;
+
+        var baseName = Path.GetFileNameWithoutExtension(fileName);
+        var extension = Path.GetExtension(fileName);
+        for (var index = 2; ; index++)
+        {
+            candidate = Path.Combine(originalsDirectory, baseName + "_" + index + extension);
+            if (!File.Exists(candidate))
+                return candidate;
         }
     }
 

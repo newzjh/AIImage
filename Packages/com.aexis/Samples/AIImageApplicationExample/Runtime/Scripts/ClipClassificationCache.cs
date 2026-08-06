@@ -106,6 +106,7 @@ public static class ClipClassificationCache
         public string signature;
         public string identityPath;
         public string filePath;
+        public string originalSourcePath;
         public string bestLabel;
         public float bestProbability;
         public ClipLabelScore[] scores;
@@ -118,8 +119,8 @@ public static class ClipClassificationCache
         public long updatedUtcTicks;
     }
 
-    private const int CurrentVersion = 2;
-    private const int CurrentEntryVersion = 2;
+    private const int CurrentVersion = 3;
+    private const int CurrentEntryVersion = 3;
     private const int MaxEntries = 4096;
     private const string FileKeyPrefix = "file|";
     private const string TextureKeyPrefix = "texture|";
@@ -179,6 +180,85 @@ public static class ClipClassificationCache
             metadata = BuildCachedMetadata(entry);
             return metadata != null;
         }
+    }
+
+    public static async UniTask<string> GetOriginalSourcePathForFileAsync(
+        string filePath,
+        CancellationToken cancellationToken)
+    {
+        await EnsureLoadedAsync(cancellationToken);
+        return TryGetOriginalSourcePathForFile(filePath, out var originalSourcePath)
+            ? originalSourcePath
+            : null;
+    }
+
+    public static bool TryGetOriginalSourcePathForFile(string filePath, out string originalSourcePath)
+    {
+        originalSourcePath = null;
+
+        var key = BuildFileKey(filePath, out _);
+        if (string.IsNullOrWhiteSpace(key))
+            return false;
+
+        EnsureLoaded();
+        lock (Sync)
+        {
+            if (!Entries.TryGetValue(key, out var entry) || entry == null)
+                return false;
+
+            originalSourcePath = NormalizePath(entry.originalSourcePath);
+            return !string.IsNullOrWhiteSpace(originalSourcePath);
+        }
+    }
+
+    public static void StoreOriginalSourcePath(string filePath, string originalSourcePath)
+    {
+        var key = BuildFileKey(filePath, out var normalizedFilePath);
+        var normalizedSourcePath = NormalizePath(originalSourcePath);
+        if (string.IsNullOrWhiteSpace(key) ||
+            string.IsNullOrWhiteSpace(normalizedFilePath) ||
+            string.IsNullOrWhiteSpace(normalizedSourcePath) ||
+            string.Equals(normalizedFilePath, normalizedSourcePath, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        EnsureLoaded();
+
+        var startSaveLoop = false;
+        lock (Sync)
+        {
+            RemoveStaleEntriesForIdentityNoLock(key, normalizedFilePath);
+
+            Entries.TryGetValue(key, out var existingEntry);
+            var entry = existingEntry != null ? CloneCacheEntry(existingEntry) : new ClipClassificationCacheEntry
+            {
+                key = key
+            };
+
+            var changed = UpdateSharedEntryFields(entry, key, normalizedFilePath, normalizedFilePath);
+            changed |= !string.Equals(entry.originalSourcePath, normalizedSourcePath, StringComparison.OrdinalIgnoreCase);
+            if (!changed)
+                return;
+
+            entry.originalSourcePath = normalizedSourcePath;
+            entry.updatedUtcTicks = DateTime.UtcNow.Ticks;
+            RemoveImageRecordFromIndexNoLock(existingEntry);
+            Entries[key] = entry;
+            UpdateImageRecordIndexNoLock(entry);
+
+            PruneIfNeededNoLock();
+
+            _dirty = true;
+            if (_saveRunning || !_loaded)
+                return;
+
+            _saveRunning = true;
+            startSaveLoop = true;
+        }
+
+        if (startSaveLoop)
+            PersistDirtyAsync().Forget();
     }
 
     public static void StoreFileMetadata(
@@ -688,8 +768,7 @@ public static class ClipClassificationCache
         }
 
         list.Sort((a, b) => b.updatedUtcTicks.CompareTo(a.updatedUtcTicks));
-        if (list.Count > MaxEntries)
-            list.RemoveRange(MaxEntries, list.Count - MaxEntries);
+        TrimClassificationEntries(list);
 
         var cache = new CacheFile
         {
@@ -711,9 +790,10 @@ public static class ClipClassificationCache
 
         var list = new List<ClipClassificationCacheEntry>(Entries.Values);
         list.Sort((a, b) => b.updatedUtcTicks.CompareTo(a.updatedUtcTicks));
+        TrimClassificationEntries(list);
 
         var keep = new HashSet<string>(StringComparer.Ordinal);
-        for (var i = 0; i < list.Count && i < MaxEntries; i++)
+        for (var i = 0; i < list.Count; i++)
         {
             if (!string.IsNullOrWhiteSpace(list[i]?.key))
                 keep.Add(list[i].key);
@@ -731,6 +811,33 @@ public static class ClipClassificationCache
             if (Entries.TryGetValue(staleKeys[i], out var staleEntry))
                 RemoveImageRecordFromIndexNoLock(staleEntry);
             Entries.Remove(staleKeys[i]);
+        }
+    }
+
+    // Saved edit-to-original links must outlive CLIP classification cache churn.
+    private static void TrimClassificationEntries(List<ClipClassificationCacheEntry> entries)
+    {
+        if (entries == null || entries.Count <= MaxEntries)
+            return;
+
+        var keptClassificationEntries = 0;
+        for (var i = 0; i < entries.Count;)
+        {
+            var entry = entries[i];
+            if (!string.IsNullOrWhiteSpace(entry?.originalSourcePath))
+            {
+                i++;
+                continue;
+            }
+
+            keptClassificationEntries++;
+            if (keptClassificationEntries <= MaxEntries)
+            {
+                i++;
+                continue;
+            }
+
+            entries.RemoveAt(i);
         }
     }
 
@@ -773,6 +880,7 @@ public static class ClipClassificationCache
             signature = entry.signature,
             identityPath = entry.identityPath,
             filePath = entry.filePath,
+            originalSourcePath = entry.originalSourcePath,
             bestLabel = entry.bestLabel,
             bestProbability = entry.bestProbability,
             scores = entry.scores,
@@ -800,6 +908,8 @@ public static class ClipClassificationCache
             merged.identityPath = secondary.identityPath;
         if (string.IsNullOrWhiteSpace(merged.filePath))
             merged.filePath = secondary.filePath;
+        if (string.IsNullOrWhiteSpace(merged.originalSourcePath))
+            merged.originalSourcePath = secondary.originalSourcePath;
 
         if (!HasClassificationResult(merged) && HasClassificationResult(secondary))
         {
