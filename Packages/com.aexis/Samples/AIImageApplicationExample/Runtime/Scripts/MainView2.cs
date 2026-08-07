@@ -129,7 +129,7 @@ public sealed class MainView2 : BasePageView
         public float yellowLuminance;
         public float blueSaturation;
         public float blueLuminance;
-        public bool coastalWaterHue;
+        public bool coastalSceneOnly;
     }
 
     private sealed class SaveFileResult
@@ -2447,17 +2447,22 @@ public sealed class MainView2 : BasePageView
                 appliedSteps.Add(label);
             }
 
-            // For hazy coastal landscapes, restore the outdoor palette before the neutral tone corrections.
-            if (Mathf.Abs(analysis.yellowHueShift) >= 1f)
+            // A fixed coastal balance avoids the texture-scale flecks caused by
+            // selecting individual yellow pixels in waves, stone or pavement.
+            if (analysis.coastalSceneOnly)
             {
-                DispatchStep(analysis.coastalWaterHue ? "CoastalWaterHue" : "HslHue", (shader, _) =>
+                DispatchStep("CoastalColorBalance", null, L("Coastal color balance", "海景色彩平衡"));
+            }
+            else if (Mathf.Abs(analysis.yellowHueShift) >= 1f)
+            {
+                DispatchStep("HslHue", (shader, _) =>
                 {
                     shader.SetFloat("_HslCenter", 45f / 360f);
                     shader.SetFloat("_HslAmount", analysis.yellowHueShift);
                 }, L("Yellow hue", "黄色色相"));
             }
 
-            if (Mathf.Abs(analysis.yellowLuminance) >= 0.01f)
+            if (!analysis.coastalSceneOnly && Mathf.Abs(analysis.yellowLuminance) >= 0.01f)
             {
                 DispatchStep("HslLuminance", (shader, _) =>
                 {
@@ -2466,7 +2471,7 @@ public sealed class MainView2 : BasePageView
                 }, L("Yellow luminance", "黄色明亮度"));
             }
 
-            if (Mathf.Abs(analysis.blueSaturation) >= 0.03f)
+            if (!analysis.coastalSceneOnly && Mathf.Abs(analysis.blueSaturation) >= 0.03f)
             {
                 DispatchStep("HslSaturation", (shader, _) =>
                 {
@@ -2475,7 +2480,7 @@ public sealed class MainView2 : BasePageView
                 }, L("Blue saturation", "蓝色饱和度"));
             }
 
-            if (Mathf.Abs(analysis.blueLuminance) >= 0.01f)
+            if (!analysis.coastalSceneOnly && Mathf.Abs(analysis.blueLuminance) >= 0.01f)
             {
                 DispatchStep("HslLuminance", (shader, _) =>
                 {
@@ -2525,6 +2530,7 @@ public sealed class MainView2 : BasePageView
             cs.SetTexture(compositeKernel, "_BackgroundRef", current);
             cs.SetTexture(compositeKernel, "_FaceMaskIn", foregroundMask);
             cs.SetTexture(compositeKernel, "_Result", composite);
+            cs.SetInt("_AutoToneCoastalOnly", analysis.coastalSceneOnly ? 1 : 0);
             cs.Dispatch(compositeKernel, Mathf.CeilToInt(source.width / 8f), Mathf.CeilToInt(source.height / 8f), 1);
 
             var result = await ReadbackTextureAsync(composite, source.width, source.height);
@@ -2789,7 +2795,7 @@ public sealed class MainView2 : BasePageView
                 analysis.yellowLuminance = 0.13f;
                 analysis.blueSaturation = 0.28f;
                 analysis.blueLuminance = 0.05f;
-                analysis.coastalWaterHue = true;
+                analysis.coastalSceneOnly = true;
             }
 
             return true;

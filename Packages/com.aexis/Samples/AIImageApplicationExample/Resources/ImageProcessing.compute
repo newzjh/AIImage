@@ -17,9 +17,9 @@
 #pragma kernel LevelsBlack
 #pragma kernel LevelsWhite
 #pragma kernel HslHue
-#pragma kernel CoastalWaterHue
 #pragma kernel HslSaturation
 #pragma kernel HslLuminance
+#pragma kernel CoastalColorBalance
 #pragma kernel ApplyLut
 #pragma kernel AddGrain
 #pragma kernel Vignette
@@ -322,6 +322,7 @@ float3 _LutDomainMax;
 float _GrainAmount;
 float _VignetteAmount;
 float _LocalExposure;
+int _AutoToneCoastalOnly;
 int2 _DesignViewLayerSize;
 int2 _DesignViewCanvasSize;
 int _DesignViewCloseRadius;
@@ -430,13 +431,14 @@ float3 ApplyHsl(float3 rgb, int mode)
     return HsvToRgb(hsv);
 }
 
-float3 ApplyCoastalWaterHue(float3 rgb)
+float3 ApplyCoastalColorBalance(float3 rgb)
 {
-    float3 hsv = RgbToHsv(saturate(rgb));
-    float hueWeight = HslRangeWeight(hsv.x, _HslCenter);
-    float lowSaturation = 1.0 - smoothstep(0.24, 0.34, hsv.y);
-    hsv.x = frac(hsv.x + _HslAmount * hueWeight * lowSaturation / 360.0);
-    return HsvToRgb(hsv);
+    // A fixed colour balance is continuous across texture detail. In contrast to
+    // hue-range selection, it cannot split a wave, road or rock into individually
+    // shifted colour patches.
+    // White balance follows this pass for coastal scenes, producing an effective
+    // approximately 0.88 / 1.08 / 1.16 RGB balance without hue thresholding.
+    return saturate(rgb * float3(0.97, 1.08, 1.06));
 }
 
 float3 ApplyWhiteBalance(float3 c)
@@ -991,17 +993,6 @@ void HslHue(uint3 id : SV_DispatchThreadID)
 }
 
 [numthreads(8,8,1)]
-void CoastalWaterHue(uint3 id : SV_DispatchThreadID)
-{
-    uint w, h;
-    _Result.GetDimensions(w, h);
-    if (id.x >= w || id.y >= h) return;
-    float4 sample = _Source[int2(id.xy)];
-    sample.rgb = ApplyCoastalWaterHue(sample.rgb);
-    _Result[int2(id.xy)] = sample;
-}
-
-[numthreads(8,8,1)]
 void HslSaturation(uint3 id : SV_DispatchThreadID)
 {
     uint w, h;
@@ -1020,6 +1011,17 @@ void HslLuminance(uint3 id : SV_DispatchThreadID)
     if (id.x >= w || id.y >= h) return;
     float4 sample = _Source[int2(id.xy)];
     sample.rgb = ApplyHsl(sample.rgb, 2);
+    _Result[int2(id.xy)] = sample;
+}
+
+[numthreads(8,8,1)]
+void CoastalColorBalance(uint3 id : SV_DispatchThreadID)
+{
+    uint w, h;
+    _Result.GetDimensions(w, h);
+    if (id.x >= w || id.y >= h) return;
+    float4 sample = _Source[int2(id.xy)];
+    sample.rgb = ApplyCoastalColorBalance(sample.rgb);
     _Result[int2(id.xy)] = sample;
 }
 
@@ -1102,8 +1104,51 @@ void CompositeBackgroundTone(uint3 id : SV_DispatchThreadID)
     float foreground = max(dilatedForeground, saturate(featheredForeground / 256.0 * 1.6));
     float4 source = _Source[p];
     float4 adjustedBackground = _BackgroundRef[p];
-    float4 composite = lerp(adjustedBackground, source, foreground);
-    _Result[p] = composite;
+
+    float backgroundWeight = 1.0;
+    if (_AutoToneCoastalOnly != 0)
+    {
+        // Use the broad neighbourhood only for continuity. Material rejection uses
+        // the current texel so nearby water cannot spill its correction over rock,
+        // statues, pavement or foreground edges.
+        int radius = max(12, min((int)min(w, h) / 64, 32));
+        int2 right = int2(radius, 0);
+        int2 up = int2(0, radius);
+        int2 minPoint = int2(0, 0);
+        int2 maxPoint = int2((int)w - 1, (int)h - 1);
+        float3 left = _Source[clamp(p - right, minPoint, maxPoint)].rgb;
+        float3 rightSample = _Source[clamp(p + right, minPoint, maxPoint)].rgb;
+        float3 down = _Source[clamp(p - up, minPoint, maxPoint)].rgb;
+        float3 upSample = _Source[clamp(p + up, minPoint, maxPoint)].rgb;
+        float3 blurred = (left + rightSample + down + upSample) * 0.25;
+
+        float maximum = max(blurred.r, max(blurred.g, blurred.b));
+        float saturation = (maximum - min(blurred.r, min(blurred.g, blurred.b))) / max(0.001, maximum);
+        float skyCoolness = smoothstep(0.0, 0.04, blurred.b - blurred.r);
+        float centerMaximum = max(source.r, max(source.g, source.b));
+        float centerSaturation = (centerMaximum - min(source.r, min(source.g, source.b))) / max(0.001, centerMaximum);
+        // Do not let ordinary wave/chop contrast switch the selection on and off.
+        // Only texture with rock-like saturation is excluded here.
+        float waterSurface = 1.0 - smoothstep(0.35, 0.55, centerSaturation);
+        float warmObject = smoothstep(0.10, 0.22, source.r - source.b);
+        float vegetation = smoothstep(0.05, 0.16, source.g - source.r);
+        float horizontalSpread = max(
+            abs(left.r - rightSample.r),
+            max(abs(left.g - rightSample.g), abs(left.b - rightSample.b)));
+        float verticalSpread = max(
+            abs(down.r - upSample.r),
+            max(abs(down.g - upSample.g), abs(down.b - upSample.b)));
+        float localSpread = max(horizontalSpread, verticalSpread);
+        float coherentSurface = 1.0 - smoothstep(0.10, 0.28, localSpread);
+        float lowSaturation = 1.0 - smoothstep(0.45, 0.75, saturation);
+        float y = (float)p.y / max(1.0, (float)h - 1.0);
+        float sky = smoothstep(0.60, 0.72, y) * skyCoolness * lowSaturation * coherentSurface;
+        float water = smoothstep(0.16, 0.30, y) * (1.0 - smoothstep(0.56, 0.70, y)) * waterSurface * (1.0 - warmObject) * (1.0 - vegetation);
+        backgroundWeight = saturate(max(sky, water));
+    }
+
+    float4 composite = lerp(source, adjustedBackground, backgroundWeight);
+    _Result[p] = lerp(composite, source, foreground);
 }
 
 float OverlayAlphaAt(int2 p)
