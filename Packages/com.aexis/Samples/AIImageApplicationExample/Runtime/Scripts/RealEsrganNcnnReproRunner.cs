@@ -626,6 +626,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         if (modelInput == null)
             return Finish(new RealEsrganResult { error = "Model input copy failed" });
 
+        Texture2D alphaInput = null;
         try
         {
             var runFactor = InferModelFactor(modelName);
@@ -666,6 +667,51 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
                     {
                     }
                     var r = await ProcessOnceAsync(modelInput, ct, originalW, originalH, runInW, runInH, runFactor, effectiveTileSize, effectiveTilePad);
+                    if (!string.IsNullOrWhiteSpace(r.error) || r.texture == null)
+                        return Finish(r);
+
+                    // Real-ESRGAN is an RGB model; run transparency as a grayscale RGB input
+                    // so alpha receives the same learned upscale/restoration treatment.
+                    if (!HasNonOpaqueAlpha(src))
+                    {
+                        SetOpaqueAlpha(r.texture);
+                        return Finish(r);
+                    }
+
+                    DestroyObjectSafe(alphaInput);
+                    alphaInput = CreateAlphaModelInput(src);
+                    if (alphaInput == null)
+                    {
+                        DestroyObjectSafe(r.texture);
+                        return Finish(new RealEsrganResult { error = "Alpha model input copy failed" });
+                    }
+
+                    UnityEngine.Debug.Log("[RealESRGAN(repro)] alpha pass start | source alpha processed independently");
+                    RealEsrganResult alphaResult;
+                    try
+                    {
+                        alphaResult = await ProcessOnceAsync(alphaInput, ct, originalW, originalH, runInW, runInH, runFactor, effectiveTileSize, effectiveTilePad);
+                    }
+                    catch
+                    {
+                        DestroyObjectSafe(r.texture);
+                        throw;
+                    }
+                    if (!string.IsNullOrWhiteSpace(alphaResult.error) || alphaResult.texture == null)
+                    {
+                        DestroyObjectSafe(r.texture);
+                        DestroyObjectSafe(alphaResult.texture);
+                        return Finish(new RealEsrganResult { error = "Alpha ESRGAN pass failed: " + (alphaResult.error ?? "unknown error") });
+                    }
+
+                    if (!ApplyAlphaFromEsrgan(r.texture, alphaResult.texture))
+                    {
+                        DestroyObjectSafe(r.texture);
+                        DestroyObjectSafe(alphaResult.texture);
+                        return Finish(new RealEsrganResult { error = "Alpha ESRGAN output size mismatch" });
+                    }
+
+                    DestroyObjectSafe(alphaResult.texture);
                     return Finish(r);
                 }
                 catch (Exception e)
@@ -682,6 +728,7 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         finally
         {
             DestroyObjectSafe(modelInput);
+            DestroyObjectSafe(alphaInput);
         }
     }
 
@@ -1133,12 +1180,6 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             DestroyObjectSafe(scaledTex);
             if (finalTex == null)
                 return new RealEsrganResult { error = "Display texture copy failed" };
-            if (!RestoreSourceAlpha(src, finalTex))
-            {
-                DestroyObjectSafe(finalTex);
-                return new RealEsrganResult { error = "Source alpha restoration failed" };
-            }
-
             ReportProgress(1f, "完成");
             profileOutcome = "completed";
             return new RealEsrganResult { texture = finalTex, error = null };
@@ -1484,20 +1525,75 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         return tex;
     }
 
-    private static bool RestoreSourceAlpha(Texture2D source, Texture2D result)
+    private static bool HasNonOpaqueAlpha(Texture2D source)
     {
-        if (source == null || result == null
-            || source.width != result.width || source.height != result.height)
+        if (source == null)
             return false;
 
         var sourcePixels = source.GetPixels32();
+        for (var index = 0; index < sourcePixels.Length; index++)
+        {
+            if (sourcePixels[index].a != 255)
+                return true;
+        }
+        return false;
+    }
+
+    private static Texture2D CreateAlphaModelInput(Texture2D source)
+    {
+        if (source == null)
+            return null;
+
+        var sourcePixels = source.GetPixels32();
+        var alphaPixels = new Color32[sourcePixels.Length];
+        for (var index = 0; index < sourcePixels.Length; index++)
+        {
+            var alpha = sourcePixels[index].a;
+            alphaPixels[index] = new Color32(alpha, alpha, alpha, 255);
+        }
+
+        var result = new Texture2D(source.width, source.height, TextureFormat.RGBA32, false, true);
+        result.SetPixels32(alphaPixels);
+        result.Apply(false, false);
+        result.wrapMode = TextureWrapMode.Clamp;
+        result.filterMode = FilterMode.Bilinear;
+        return result;
+    }
+
+    private static void SetOpaqueAlpha(Texture2D result)
+    {
+        if (result == null)
+            return;
+
         var resultPixels = result.GetPixels32();
-        if (sourcePixels.Length != resultPixels.Length)
+        for (var index = 0; index < resultPixels.Length; index++)
+            resultPixels[index].a = 255;
+
+        result.SetPixels32(resultPixels);
+        result.Apply(false, false);
+    }
+
+    private static bool ApplyAlphaFromEsrgan(Texture2D result, Texture2D alphaResult)
+    {
+        if (result == null || alphaResult == null
+            || result.width != alphaResult.width || result.height != alphaResult.height)
             return false;
 
-        // ESRGAN produces RGB only; MainView2 must save the original transparency unchanged.
+        var resultPixels = result.GetPixels32();
+        var alphaPixels = alphaResult.GetPixels32();
+        if (resultPixels.Length != alphaPixels.Length)
+            return false;
+
         for (var index = 0; index < resultPixels.Length; index++)
-            resultPixels[index].a = sourcePixels[index].a;
+        {
+            var alpha = Mathf.Clamp(
+                Mathf.RoundToInt(alphaPixels[index].r * 0.299f
+                    + alphaPixels[index].g * 0.587f
+                    + alphaPixels[index].b * 0.114f),
+                0,
+                255);
+            resultPixels[index].a = (byte)alpha;
+        }
 
         result.SetPixels32(resultPixels);
         result.Apply(false, false);

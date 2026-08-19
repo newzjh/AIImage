@@ -252,7 +252,7 @@ public sealed class NcnnRunnerBatchValidationTests
     }
 
     [UnityTest]
-    public IEnumerator RealEsrgan_Preserves_Source_Alpha()
+    public IEnumerator RealEsrgan_Processes_Source_Alpha_Independently()
     {
         const int width = 64;
         const int height = 48;
@@ -271,11 +271,27 @@ public sealed class NcnnRunnerBatchValidationTests
         var runner = go.AddComponent<RealEsrganNcnnReproRunner>();
         runner.enableGpuLayerProfiling = false;
         runner.useCommandBuffer = false;
+        var alphaInput = new Texture2D(width, height, TextureFormat.RGBA32, false, true);
+        var alphaPixels = new Color32[inputPixels.Length];
+        for (var index = 0; index < alphaPixels.Length; index++)
+        {
+            var alpha = inputPixels[index].a;
+            alphaPixels[index] = new Color32(alpha, alpha, alpha, 255);
+        }
+        alphaInput.SetPixels32(alphaPixels);
+        alphaInput.Apply(false, false);
+        var alphaGo = new GameObject("RealEsrganAlphaPassTest");
+        var alphaRunner = alphaGo.AddComponent<RealEsrganNcnnReproRunner>();
+        alphaRunner.enableGpuLayerProfiling = false;
+        alphaRunner.useCommandBuffer = false;
         var temporarySourcePath = Path.Combine(Path.GetTempPath(), "aexis-esrgan-alpha-" + Guid.NewGuid().ToString("N") + ".png");
         Texture2D savedTexture = null;
+        Texture2D alphaResultTexture = null;
 
         var task = runner.ProcessAsync(input, CancellationToken.None).AsTask();
         yield return WaitForTask(task);
+        var alphaTask = alphaRunner.ProcessAsync(alphaInput, CancellationToken.None).AsTask();
+        yield return WaitForTask(alphaTask);
 
         try
         {
@@ -283,11 +299,23 @@ public sealed class NcnnRunnerBatchValidationTests
             Assert.That(task.Result.texture, Is.Not.Null, "RealESRGAN output texture");
             Assert.That(task.Result.texture.width, Is.EqualTo(width));
             Assert.That(task.Result.texture.height, Is.EqualTo(height));
+            Assert.That(alphaTask.Result.error, Is.Null.Or.Empty, "Alpha ESRGAN error");
+            Assert.That(alphaTask.Result.texture, Is.Not.Null, "Alpha ESRGAN output texture");
+            alphaResultTexture = alphaTask.Result.texture;
 
             var outputPixels = task.Result.texture.GetPixels32();
             Assert.That(outputPixels.Length, Is.EqualTo(inputPixels.Length));
+            var alphaResultPixels = alphaResultTexture.GetPixels32();
             for (var index = 0; index < inputPixels.Length; index++)
-                Assert.That(outputPixels[index].a, Is.EqualTo(inputPixels[index].a), "alpha mismatch at pixel " + index);
+            {
+                var expectedAlpha = Mathf.Clamp(
+                    Mathf.RoundToInt(alphaResultPixels[index].r * 0.299f
+                        + alphaResultPixels[index].g * 0.587f
+                        + alphaResultPixels[index].b * 0.114f),
+                    0,
+                    255);
+                Assert.That(outputPixels[index].a, Is.EqualTo(expectedAlpha), "alpha ESRGAN mismatch at pixel " + index);
+            }
 
             File.WriteAllBytes(temporarySourcePath, input.EncodeToPNG());
             Assert.That(
@@ -304,14 +332,17 @@ public sealed class NcnnRunnerBatchValidationTests
             Assert.That(ImageConversion.LoadImage(savedTexture, savedBytes, false), Is.True);
             var savedPixels = savedTexture.GetPixels32();
             for (var index = 0; index < inputPixels.Length; index++)
-                Assert.That(savedPixels[index].a, Is.EqualTo(inputPixels[index].a), "saved alpha mismatch at pixel " + index);
+                Assert.That(savedPixels[index].a, Is.EqualTo(outputPixels[index].a), "saved alpha mismatch at pixel " + index);
         }
         finally
         {
             DestroyImmediateSafe(savedTexture);
             DestroyImmediateSafe(task.Result.texture);
+            DestroyImmediateSafe(alphaResultTexture);
             DestroyImmediateSafe(go);
+            DestroyImmediateSafe(alphaGo);
             DestroyImmediateSafe(input);
+            DestroyImmediateSafe(alphaInput);
             if (File.Exists(temporarySourcePath))
                 File.Delete(temporarySourcePath);
         }
