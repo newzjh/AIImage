@@ -1133,6 +1133,11 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
             DestroyObjectSafe(scaledTex);
             if (finalTex == null)
                 return new RealEsrganResult { error = "Display texture copy failed" };
+            if (!RestoreSourceAlpha(src, finalTex))
+            {
+                DestroyObjectSafe(finalTex);
+                return new RealEsrganResult { error = "Source alpha restoration failed" };
+            }
 
             ReportProgress(1f, "完成");
             profileOutcome = "completed";
@@ -1477,6 +1482,26 @@ public sealed class RealEsrganNcnnReproRunner : MonoBehaviour
         tex.wrapMode = TextureWrapMode.Clamp;
         tex.filterMode = FilterMode.Bilinear;
         return tex;
+    }
+
+    private static bool RestoreSourceAlpha(Texture2D source, Texture2D result)
+    {
+        if (source == null || result == null
+            || source.width != result.width || source.height != result.height)
+            return false;
+
+        var sourcePixels = source.GetPixels32();
+        var resultPixels = result.GetPixels32();
+        if (sourcePixels.Length != resultPixels.Length)
+            return false;
+
+        // ESRGAN produces RGB only; MainView2 must save the original transparency unchanged.
+        for (var index = 0; index < resultPixels.Length; index++)
+            resultPixels[index].a = sourcePixels[index].a;
+
+        result.SetPixels32(resultPixels);
+        result.Apply(false, false);
+        return true;
     }
 
     private void ReportProgress(float p, string t)

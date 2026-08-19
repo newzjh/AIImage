@@ -251,6 +251,72 @@ public sealed class NcnnRunnerBatchValidationTests
         }
     }
 
+    [UnityTest]
+    public IEnumerator RealEsrgan_Preserves_Source_Alpha()
+    {
+        const int width = 64;
+        const int height = 48;
+        var input = new Texture2D(width, height, TextureFormat.RGBA32, false, true);
+        var inputPixels = new Color32[width * height];
+        for (var index = 0; index < inputPixels.Length; index++)
+        {
+            var x = index % width;
+            var y = index / width;
+            inputPixels[index] = new Color32((byte)(x * 3), (byte)(y * 5), 127, (byte)((x * 17 + y * 31) % 256));
+        }
+        input.SetPixels32(inputPixels);
+        input.Apply(false, false);
+
+        var go = new GameObject("RealEsrganAlphaRunnerTest");
+        var runner = go.AddComponent<RealEsrganNcnnReproRunner>();
+        runner.enableGpuLayerProfiling = false;
+        runner.useCommandBuffer = false;
+        var temporarySourcePath = Path.Combine(Path.GetTempPath(), "aexis-esrgan-alpha-" + Guid.NewGuid().ToString("N") + ".png");
+        Texture2D savedTexture = null;
+
+        var task = runner.ProcessAsync(input, CancellationToken.None).AsTask();
+        yield return WaitForTask(task);
+
+        try
+        {
+            Assert.That(task.Result.error, Is.Null.Or.Empty, "RealESRGAN error");
+            Assert.That(task.Result.texture, Is.Not.Null, "RealESRGAN output texture");
+            Assert.That(task.Result.texture.width, Is.EqualTo(width));
+            Assert.That(task.Result.texture.height, Is.EqualTo(height));
+
+            var outputPixels = task.Result.texture.GetPixels32();
+            Assert.That(outputPixels.Length, Is.EqualTo(inputPixels.Length));
+            for (var index = 0; index < inputPixels.Length; index++)
+                Assert.That(outputPixels[index].a, Is.EqualTo(inputPixels[index].a), "alpha mismatch at pixel " + index);
+
+            File.WriteAllBytes(temporarySourcePath, input.EncodeToPNG());
+            Assert.That(
+                StandardImageIO.TryEncodeTextureWithMetadata(
+                    task.Result.texture,
+                    temporarySourcePath,
+                    temporarySourcePath,
+                    95,
+                    out var savedBytes,
+                    out var saveError),
+                Is.True,
+                saveError);
+            savedTexture = new Texture2D(2, 2, TextureFormat.RGBA32, false, true);
+            Assert.That(ImageConversion.LoadImage(savedTexture, savedBytes, false), Is.True);
+            var savedPixels = savedTexture.GetPixels32();
+            for (var index = 0; index < inputPixels.Length; index++)
+                Assert.That(savedPixels[index].a, Is.EqualTo(inputPixels[index].a), "saved alpha mismatch at pixel " + index);
+        }
+        finally
+        {
+            DestroyImmediateSafe(savedTexture);
+            DestroyImmediateSafe(task.Result.texture);
+            DestroyImmediateSafe(go);
+            DestroyImmediateSafe(input);
+            if (File.Exists(temporarySourcePath))
+                File.Delete(temporarySourcePath);
+        }
+    }
+
     private static IEnumerator WaitForTask(Task task)
     {
         while (!task.IsCompleted)
